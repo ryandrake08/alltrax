@@ -110,6 +110,46 @@ static int test_get_write_values_group(void)
     return 0;
 }
 
+static int test_get_tach_group(void)
+{
+    size_t count;
+    const alltrax_var_def* vars = alltrax_get_var_defs(ALLTRAX_VARS_TACH, &count);
+    ASSERT_NOT_NULL(vars);
+    ASSERT_EQ(count, 2);
+    ASSERT_STR_EQ(vars[0].name, "F_Speed_Limit_On");
+    return 0;
+}
+
+static int test_get_field_group(void)
+{
+    size_t count;
+    const alltrax_var_def* vars = alltrax_get_var_defs(ALLTRAX_VARS_FIELD, &count);
+    ASSERT_NOT_NULL(vars);
+    ASSERT_EQ(count, 14);
+    ASSERT_STR_EQ(vars[0].name, "F_Table_Name");
+    return 0;
+}
+
+static int test_get_raw_adc_group(void)
+{
+    size_t count;
+    const alltrax_var_def* vars = alltrax_get_var_defs(ALLTRAX_VARS_RAW_ADC, &count);
+    ASSERT_NOT_NULL(vars);
+    ASSERT_EQ(count, 14);
+    ASSERT_STR_EQ(vars[0].name, "Raw_Keyswitch");
+    return 0;
+}
+
+static int test_get_avg_adc_group(void)
+{
+    size_t count;
+    const alltrax_var_def* vars = alltrax_get_var_defs(ALLTRAX_VARS_AVG_ADC, &count);
+    ASSERT_NOT_NULL(vars);
+    ASSERT_EQ(count, 13);
+    ASSERT_STR_EQ(vars[0].name, "Avg_Keyswitch");
+    return 0;
+}
+
 static int test_get_invalid_group(void)
 {
     size_t count;
@@ -401,6 +441,10 @@ void run_variables_tests(void)
     RUN_TEST(test_get_voltage_group);
     RUN_TEST(test_get_flags_group);
     RUN_TEST(test_get_write_values_group);
+    RUN_TEST(test_get_tach_group);
+    RUN_TEST(test_get_field_group);
+    RUN_TEST(test_get_raw_adc_group);
+    RUN_TEST(test_get_avg_adc_group);
     RUN_TEST(test_get_invalid_group);
 
     /* Byte sizes */

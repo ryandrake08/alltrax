@@ -13,6 +13,8 @@
 #define SCALE_FIELD_Y       0.01
 #define SCALE_TEMP          0.1289
 #define OFFSET_TEMP         527
+#define SCALE_ADC_V         0.0429
+#define SCALE_ADC_BATV      0.04
 
 /* ------------------------------------------------------------------ */
 /* Variable group definitions                                          */
@@ -128,6 +130,69 @@ static const alltrax_var_def other_settings_vars[] = {
     VAR_STR_RW("Throttle_Type_Name", "Name of selected throttle type", 0x080020C0, 16),
 };
 #define OTHER_SETTINGS_COUNT (sizeof(other_settings_vars) / sizeof(other_settings_vars[0]))
+
+/* --- TACH (factory defaults only — user versions in throttle_vars) --- */
+static const alltrax_var_def tach_vars[] = {
+    VAR_BOOL_RO("F_Speed_Limit_On", "Speed limiting enabled (factory)", 0x080010A7),
+    VAR_BOOL_RO("F_Tach_4_8", "false=4-pole, true=8-pole (factory)", 0x080010A8),
+};
+#define TACH_COUNT (sizeof(tach_vars) / sizeof(tach_vars[0]))
+
+/* --- FIELD (scalars + strings; array curve tables skipped) --- */
+static const alltrax_var_def field_vars[] = {
+    VAR_STR_RW("F_Table_Name", "Field table name", 0x08002200, 32),
+    VAR_RW("Reverse_Field_Weaken_Percent", "Reverse field weaken", 0x08002400, ALLTRAX_TYPE_UINT8, 1.0, 0, "%"),
+    VAR_RW("Zero_RPM_Field_Boost_Percent", "Zero RPM field boost", 0x08002401, ALLTRAX_TYPE_UINT8, 1.0, 0, "%"),
+    VAR_RW("RPM_Field_Boost_Stop", "RPM field boost stop", 0x08002402, ALLTRAX_TYPE_UINT16, 1.0, 0, "RPM"),
+    VAR_RW("Max_Field_Weaken_Amps", "Max field weaken current", 0x08002404, ALLTRAX_TYPE_UINT16, 0.01, 0, "A"),
+    VAR_RW("Turbo_Start_RPM", "Turbo start RPM", 0x08002406, ALLTRAX_TYPE_UINT16, 1.0, 0, "RPM"),
+    VAR_RW("Turbo_Weaken_Percent", "Turbo weaken percent", 0x08002408, ALLTRAX_TYPE_UINT8, 1.0, 0, "%"),
+    VAR_STR_RO("F_F_Table_Name", "Field table name (factory)", 0x08001200, 32),
+    VAR_RO("F_Reverse_Field_Weaken_Percent", "Reverse field weaken (factory)", 0x08001400, ALLTRAX_TYPE_UINT8, 1.0, 0, "%"),
+    VAR_RO("F_Zero_RPM_Field_Boost_Percent", "Zero RPM field boost (factory)", 0x08001401, ALLTRAX_TYPE_UINT8, 1.0, 0, "%"),
+    VAR_RO("F_RPM_Field_Boost_Stop", "RPM field boost stop (factory)", 0x08001402, ALLTRAX_TYPE_UINT16, 1.0, 0, "RPM"),
+    VAR_RO("F_Max_Field_Weaken_Amps", "Max field weaken current (factory)", 0x08001404, ALLTRAX_TYPE_UINT16, 0.01, 0, "A"),
+    VAR_RO("F_Turbo_Start_RPM", "Turbo start RPM (factory)", 0x08001406, ALLTRAX_TYPE_UINT16, 1.0, 0, "RPM"),
+    VAR_RO("F_Turbo_Weaken_Percent", "Turbo weaken percent (factory)", 0x08001408, ALLTRAX_TYPE_UINT8, 1.0, 0, "%"),
+};
+#define FIELD_COUNT (sizeof(field_vars) / sizeof(field_vars[0]))
+
+/* --- RAW ADC (raw analog readings, read-only RAM) --- */
+static const alltrax_var_def raw_adc_vars[] = {
+    VAR_RAM_RO("Raw_Keyswitch", "Raw keyswitch ADC", 0x2000F0B0, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+    VAR_RAM_RO("Raw_Reverse", "Raw reverse ADC", 0x2000F0B2, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+    VAR_RAM_RO("Raw_BatV", "Raw battery voltage ADC", 0x2000F0B4, ALLTRAX_TYPE_INT16, SCALE_ADC_BATV, 0, "V"),
+    VAR_RAM_RO("Raw_Temp", "Raw temperature ADC", 0x2000F0B6, ALLTRAX_TYPE_INT16, SCALE_TEMP, OFFSET_TEMP, "C"),
+    VAR_RAM_RO("Raw_MotorHall", "Raw motor hall ADC", 0x2000F0BA, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RAM_RO("Raw_F1Hall", "Raw field 1 hall ADC", 0x2000F0BC, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RAM_RO("Raw_F2Hall", "Raw field 2 hall ADC", 0x2000F0BE, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RAM_RO("Raw_ThrotHigh", "Raw throttle high ADC", 0x2000F0C0, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RAM_RO("Raw_ThrotLow", "Raw throttle low ADC", 0x2000F0C2, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RAM_RO("Raw_Footswitch", "Raw footswitch ADC", 0x2000F0C4, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+    VAR_RAM_RO("Raw_Forward", "Raw forward ADC", 0x2000F0C6, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+    VAR_RAM_RO("Raw_User1", "Raw user input 1 ADC", 0x2000F0C8, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+    VAR_RAM_RO("Raw_User2", "Raw user input 2 ADC", 0x2000F0CA, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+    VAR_RAM_RO("Raw_User3", "Raw user input 3 ADC", 0x2000F0CC, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+};
+#define RAW_ADC_COUNT (sizeof(raw_adc_vars) / sizeof(raw_adc_vars[0]))
+
+/* --- AVG ADC (averaged analog readings, read-only RAM) --- */
+static const alltrax_var_def avg_adc_vars[] = {
+    VAR_RAM_RO("Avg_Keyswitch", "Avg keyswitch ADC", 0x2000F0E0, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+    VAR_RAM_RO("Avg_Reverse", "Avg reverse ADC", 0x2000F0E2, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+    VAR_RAM_RO("Avg_BatV", "Avg battery voltage ADC", 0x2000F0E4, ALLTRAX_TYPE_INT16, SCALE_ADC_BATV, 0, "V"),
+    VAR_RAM_RO("Avg_MotorHall", "Avg motor hall ADC", 0x2000F0EA, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RAM_RO("Avg_F1Hall", "Avg field 1 hall ADC", 0x2000F0EC, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RAM_RO("Avg_F2Hall", "Avg field 2 hall ADC", 0x2000F0EE, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RAM_RO("Avg_ThrotHigh", "Avg throttle high ADC", 0x2000F0F0, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RAM_RO("Avg_ThrotLow", "Avg throttle low ADC", 0x2000F0F2, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RAM_RO("Avg_Footswitch", "Avg footswitch ADC", 0x2000F0F4, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+    VAR_RAM_RO("Avg_Forward", "Avg forward ADC", 0x2000F0F6, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+    VAR_RAM_RO("Avg_User1", "Avg user input 1 ADC", 0x2000F0F8, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+    VAR_RAM_RO("Avg_User2", "Avg user input 2 ADC", 0x2000F0FA, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+    VAR_RAM_RO("Avg_User3", "Avg user input 3 ADC", 0x2000F0FC, ALLTRAX_TYPE_INT16, SCALE_ADC_V, 0, "V"),
+};
+#define AVG_ADC_COUNT (sizeof(avg_adc_vars) / sizeof(avg_adc_vars[0]))
 
 /* --- FLAGS (error flags, read-only RAM) --- */
 static const alltrax_var_def flag_vars[] = {
@@ -249,13 +314,13 @@ static const struct var_group_entry group_table[] = {
     [ALLTRAX_VARS_NORMAL_USER]    = { normal_user_vars, NORMAL_USER_COUNT },
     [ALLTRAX_VARS_USER1]          = { user1_vars, USER1_COUNT },
     [ALLTRAX_VARS_USER2]          = { user2_vars, USER2_COUNT },
-    [ALLTRAX_VARS_TACH]           = { NULL, 0 },
+    [ALLTRAX_VARS_TACH]           = { tach_vars, TACH_COUNT },
     [ALLTRAX_VARS_OTHER_SETTINGS] = { other_settings_vars, OTHER_SETTINGS_COUNT },
     [ALLTRAX_VARS_THROTTLE]       = { throttle_vars, THROTTLE_COUNT },
-    [ALLTRAX_VARS_FIELD]          = { NULL, 0 },
+    [ALLTRAX_VARS_FIELD]          = { field_vars, FIELD_COUNT },
     [ALLTRAX_VARS_FLAGS]          = { flag_vars, FLAGS_COUNT },
-    [ALLTRAX_VARS_RAW_ADC]        = { NULL, 0 },
-    [ALLTRAX_VARS_AVG_ADC]        = { NULL, 0 },
+    [ALLTRAX_VARS_RAW_ADC]        = { raw_adc_vars, RAW_ADC_COUNT },
+    [ALLTRAX_VARS_AVG_ADC]        = { avg_adc_vars, AVG_ADC_COUNT },
     [ALLTRAX_VARS_READ_VALUES]    = { read_values_vars, READ_VALUES_COUNT },
     [ALLTRAX_VARS_WRITE_VALUES]   = { write_values_vars, WRITE_VALUES_COUNT },
 };
