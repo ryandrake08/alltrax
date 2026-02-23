@@ -43,19 +43,22 @@ int cmd_get(int argc, char** argv)
 
         for (size_t g = 0; g < ngroups; g++) {
             size_t count;
-            const alltrax_var_def* vars = alltrax_get_var_defs(groups[g], &count);
-            if (!vars || count == 0) continue;
+            const alltrax_var_def* defs = alltrax_get_var_defs(groups[g], &count);
+            if (!defs || count == 0) continue;
+
+            const alltrax_var_def* ptrs[64];
+            for (size_t i = 0; i < count && i < 64; i++)
+                ptrs[i] = &defs[i];
 
             alltrax_var_value vals[64];
-            size_t got;
-            err = alltrax_read_var_group(ctrl, groups[g], vals, &got);
+            err = alltrax_read_vars(ctrl, ptrs, count, vals);
             if (err) {
                 cli_error(ctrl, err, "reading variables");
                 alltrax_close(ctrl);
                 return 1;
             }
 
-            for (size_t i = 0; i < got; i++)
+            for (size_t i = 0; i < count; i++)
                 print_var(&vals[i]);
         }
     } else {
@@ -69,7 +72,7 @@ int cmd_get(int argc, char** argv)
             }
 
             alltrax_var_value val;
-            err = alltrax_read_var(ctrl, var, &val);
+            err = alltrax_read_vars(ctrl, &var, 1, &val);
             if (err) {
                 cli_error(ctrl, err, argv[i]);
                 alltrax_close(ctrl);

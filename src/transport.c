@@ -6,38 +6,39 @@
  */
 
 #include "internal.h"
+#include <hidapi.h>
 #include <stdlib.h>
 
 /* Default read timeout in milliseconds */
 #define DEFAULT_TIMEOUT_MS 1000
 
+alltrax_error alltrax_init(void)
+{
+    return hid_init() == 0 ? ALLTRAX_OK : ALLTRAX_ERR_USB;
+}
+
+void alltrax_exit(void)
+{
+    hid_exit();
+}
+
 alltrax_error alltrax_open(alltrax_controller** out, bool allow_writes)
 {
-    if (!out)
+    if (!out || *out)
         return ALLTRAX_ERR_INVALID_ARG;
 
-    *out = NULL;
+    hid_device* hid = hid_open(ALLTRAX_VID, ALLTRAX_PID, NULL);
+    if (!hid)
+        return ALLTRAX_ERR_NO_DEVICE;
 
     alltrax_controller* ctrl = calloc(1, sizeof(*ctrl));
-    if (!ctrl)
-        return ALLTRAX_ERR_USB;
+    if (!ctrl) {
+        hid_close(hid);
+        return ALLTRAX_ERR_NO_MEMORY;
+    }
 
+    ctrl->hid = hid;
     ctrl->allow_writes = allow_writes;
-
-    if (hid_init() != 0) {
-        free(ctrl);
-        return ALLTRAX_ERR_USB;
-    }
-
-    ctrl->hid = hid_open(ALLTRAX_VID, ALLTRAX_PID, NULL);
-    if (!ctrl->hid) {
-        set_error_detail(ctrl, "No Alltrax device found (VID=0x%04X PID=0x%04X)",
-                         ALLTRAX_VID, ALLTRAX_PID);
-        hid_exit();
-        free(ctrl);
-        return ALLTRAX_ERR_NO_DEVICE;
-    }
-
     *out = ctrl;
     return ALLTRAX_OK;
 }
@@ -52,7 +53,6 @@ void alltrax_close(alltrax_controller* ctrl)
         ctrl->hid = NULL;
     }
 
-    hid_exit();
     free(ctrl);
 }
 
@@ -86,24 +86,21 @@ alltrax_error transport_write(alltrax_controller* ctrl,
 }
 
 alltrax_error transport_read(alltrax_controller* ctrl,
-    uint8_t buf[PACKET_SIZE], int timeout_ms)
+    uint8_t buf[PACKET_SIZE])
 {
     if (!ctrl->hid) {
         set_error_detail(ctrl, "Device not open");
         return ALLTRAX_ERR_USB;
     }
 
-    if (timeout_ms <= 0)
-        timeout_ms = DEFAULT_TIMEOUT_MS;
-
-    int n = hid_read_timeout(ctrl->hid, buf, PACKET_SIZE, timeout_ms);
+    int n = hid_read_timeout(ctrl->hid, buf, PACKET_SIZE, DEFAULT_TIMEOUT_MS);
     if (n < 0) {
         set_error_detail(ctrl, "USB read failed: %ls",
                          hid_error(ctrl->hid));
         return ALLTRAX_ERR_USB;
     }
     if (n == 0) {
-        set_error_detail(ctrl, "USB read timed out after %dms", timeout_ms);
+        set_error_detail(ctrl, "USB read timed out after %dms", DEFAULT_TIMEOUT_MS);
         return ALLTRAX_ERR_TIMEOUT;
     }
 
@@ -126,6 +123,7 @@ const char* alltrax_strerror(alltrax_error err)
     case ALLTRAX_ERR_ADDRESS:     return "Address out of range";
     case ALLTRAX_ERR_NO_DEVICE:   return "No Alltrax device found";
     case ALLTRAX_ERR_BLOCKED:     return "Write blocked (read-only mode)";
+    case ALLTRAX_ERR_NO_MEMORY:   return "Memory allocation failed";
     }
     return "Unknown error";
 }

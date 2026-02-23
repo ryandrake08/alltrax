@@ -10,7 +10,7 @@
 /* Memory read/write                                                   */
 /* ------------------------------------------------------------------ */
 
-alltrax_error alltrax_read_memory(alltrax_controller* ctrl, uint32_t addr,
+static alltrax_error read_memory(alltrax_controller* ctrl, uint32_t addr,
     size_t num_bytes, uint8_t* buf, size_t* out_len)
 {
     if (num_bytes < 1 || num_bytes > MAX_PAYLOAD) {
@@ -26,12 +26,12 @@ alltrax_error alltrax_read_memory(alltrax_controller* ctrl, uint32_t addr,
     if (rc) return rc;
 
     uint8_t response[PACKET_SIZE];
-    rc = transport_read(ctrl, response, 0);
+    rc = transport_read(ctrl, response);
     if (rc) return rc;
 
     uint8_t result, n;
     uint8_t payload[MAX_PAYLOAD];
-    rc = parse_read_response(response, &result, &n, payload);
+    rc = parse_response(response, RESPONSE_TYPE_RW, &result, &n, payload);
     if (rc) {
         set_error_detail(ctrl, "Malformed response reading 0x%08X", addr);
         return rc;
@@ -48,7 +48,7 @@ alltrax_error alltrax_read_memory(alltrax_controller* ctrl, uint32_t addr,
     return ALLTRAX_OK;
 }
 
-alltrax_error alltrax_read_memory_range(alltrax_controller* ctrl, uint32_t addr,
+static alltrax_error read_memory_range(alltrax_controller* ctrl, uint32_t addr,
     size_t total_bytes, uint8_t* buf)
 {
     size_t offset = 0;
@@ -57,7 +57,7 @@ alltrax_error alltrax_read_memory_range(alltrax_controller* ctrl, uint32_t addr,
         if (chunk > MAX_PAYLOAD) chunk = MAX_PAYLOAD;
 
         size_t got;
-        alltrax_error rc = alltrax_read_memory(ctrl, addr + (uint32_t)offset,
+        alltrax_error rc = read_memory(ctrl, addr + (uint32_t)offset,
                                                 chunk, buf + offset, &got);
         if (rc) return rc;
         offset += chunk;
@@ -65,7 +65,7 @@ alltrax_error alltrax_read_memory_range(alltrax_controller* ctrl, uint32_t addr,
     return ALLTRAX_OK;
 }
 
-alltrax_error alltrax_write_memory(alltrax_controller* ctrl, uint32_t addr,
+static alltrax_error write_memory(alltrax_controller* ctrl, uint32_t addr,
     const uint8_t* data, size_t len)
 {
     if (len < 1 || len > MAX_PAYLOAD) {
@@ -81,12 +81,12 @@ alltrax_error alltrax_write_memory(alltrax_controller* ctrl, uint32_t addr,
     if (rc) return rc;
 
     uint8_t response[PACKET_SIZE];
-    rc = transport_read(ctrl, response, 0);
+    rc = transport_read(ctrl, response);
     if (rc) return rc;
 
     uint8_t result, n;
     uint8_t echo[MAX_PAYLOAD];
-    rc = parse_write_response(response, &result, &n, echo);
+    rc = parse_response(response, RESPONSE_TYPE_RW, &result, &n, echo);
     if (rc) {
         set_error_detail(ctrl, "Malformed write response at 0x%08X", addr);
         return rc;
@@ -115,7 +115,7 @@ static alltrax_error write_memory_range(alltrax_controller* ctrl,
         size_t chunk = len - offset;
         if (chunk > MAX_PAYLOAD) chunk = MAX_PAYLOAD;
 
-        alltrax_error rc = alltrax_write_memory(ctrl, addr + (uint32_t)offset,
+        alltrax_error rc = write_memory(ctrl, addr + (uint32_t)offset,
                                                  data + offset, chunk);
         if (rc) return rc;
         offset += chunk;
@@ -127,6 +127,14 @@ static alltrax_error write_memory_range(alltrax_controller* ctrl,
 /* Controller info                                                     */
 /* ------------------------------------------------------------------ */
 
+static char* format_rev(uint32_t rev, char* buf, size_t buflen)
+{
+    uint32_t major = rev / 1000;
+    uint32_t minor = rev % 1000;
+    snprintf(buf, buflen, "V%u.%03u", major, minor);
+    return buf;
+}
+
 alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
 {
     if (!out)
@@ -134,92 +142,99 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
 
     memset(out, 0, sizeof(*out));
     alltrax_error rc;
+    uint8_t buf[56];
 
-    /* Read controller identity block (52 bytes) */
-    uint8_t info_buf[56];
-    rc = alltrax_read_memory(ctrl, ADDR_CONTROLLER_INFO, 52, info_buf, NULL);
+    /* Controller identity (52 bytes from 0x08000800) */
+    rc = read_memory(ctrl, ADDR_CONTROLLER_INFO, 52, buf, NULL);
     if (rc) return rc;
 
-    rc = parse_controller_info(info_buf, 52, out);
+    get_string(buf, 15, out->model, sizeof(out->model));
+    get_string(buf + 0x10, 15, out->build_date, sizeof(out->build_date));
+    out->serial_number        = get_le32(buf + 0x20);
+    out->original_boot_rev    = get_le32(buf + 0x24);
+    out->original_program_rev = get_le32(buf + 0x28);
+    out->program_type         = get_le32(buf + 0x2C);
+    out->hardware_rev         = get_le32(buf + 0x30);
+
+    /* Hardware config (24 bytes from 0x08000880) */
+    rc = read_memory(ctrl, ADDR_HARDWARE_CONFIG, 24, buf, NULL);
     if (rc) return rc;
 
-    /* Read hardware config (rated voltage/amps) */
-    uint8_t hw_buf[24];
-    rc = alltrax_read_memory(ctrl, ADDR_HARDWARE_CONFIG, 24, hw_buf, NULL);
-    if (rc) return rc;
+    out->rated_voltage     = get_le16(buf);
+    out->rated_amps        = get_le16(buf + 2);
+    out->rated_field_amps  = get_le16(buf + 4);
+    out->speed_sensor      = buf[6] != 0;
+    /* buf[7] is padding */
+    out->has_bms_can       = buf[8] != 0;
+    out->has_throt_can     = buf[9] != 0;
+    out->has_user2         = buf[10] != 0;
+    out->has_user3         = buf[11] != 0;
+    out->has_aux_out1      = buf[12] != 0;
+    out->has_aux_out2      = buf[13] != 0;
+    /* buf[14..15] is padding */
+    out->throttles_allowed = get_le32(buf + 16);
+    out->has_forward       = buf[20] != 0;
+    out->has_user1         = buf[21] != 0;
+    out->can_high_side     = buf[22] != 0;
+    out->is_stock_mode     = buf[23] != 0;
 
-    rc = parse_hardware_config(hw_buf, 24, out);
-    if (rc) return rc;
-
-    /* Read boot revision */
+    /* Read boot revision (4 bytes) */
     uint8_t boot_buf[4];
-    rc = alltrax_read_memory(ctrl, ADDR_BOOT_REV, 4, boot_buf, NULL);
+    rc = read_memory(ctrl, ADDR_BOOT_REV, 4, boot_buf, NULL);
     if (rc) return rc;
-    out->boot_rev = (uint32_t)boot_buf[0] | ((uint32_t)boot_buf[1] << 8)
-                  | ((uint32_t)boot_buf[2] << 16) | ((uint32_t)boot_buf[3] << 24);
+    out->boot_rev = get_le32(boot_buf);
 
-    /* Read program revision + version */
+    /* Read program revision + version (6 bytes) */
     uint8_t prgm_buf[6];
-    rc = alltrax_read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf, NULL);
+    rc = read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf, NULL);
     if (rc) return rc;
-    out->program_rev = (uint32_t)prgm_buf[0] | ((uint32_t)prgm_buf[1] << 8)
-                     | ((uint32_t)prgm_buf[2] << 16) | ((uint32_t)prgm_buf[3] << 24);
-    out->program_ver = (uint16_t)prgm_buf[4] | ((uint16_t)prgm_buf[5] << 8);
+    out->program_rev = get_le32(prgm_buf);
+    out->program_ver = get_le16(prgm_buf + 4);
 
-    /* Cache info */
-    ctrl->info = *out;
-    ctrl->info_valid = true;
+    /* Format revision strings */
+    format_rev(out->boot_rev, out->boot_rev_str,
+               sizeof(out->boot_rev_str));
+    format_rev(out->original_boot_rev, out->original_boot_rev_str,
+               sizeof(out->original_boot_rev_str));
+    format_rev(out->program_rev, out->program_rev_str,
+               sizeof(out->program_rev_str));
+    format_rev(out->original_program_rev, out->original_program_rev_str,
+               sizeof(out->original_program_rev_str));
 
-    return ALLTRAX_OK;
-}
-
-alltrax_error alltrax_check_firmware(alltrax_controller* ctrl)
-{
-    if (!ctrl->info_valid) {
-        alltrax_info info;
-        alltrax_error rc = alltrax_get_info(ctrl, &info);
-        if (rc) return rc;
-    }
-
-    uint32_t rev = ctrl->info.program_rev;
-    if (rev < 1 || rev >= 6000) {
-        char buf[16];
-        alltrax_format_rev(rev, buf, sizeof(buf));
+    /* Reject firmware versions outside the Toolkit's known range */
+    if (out->program_rev < 1 || out->program_rev >= 6000) {
+        char rev_str[16];
+        format_rev(out->program_rev, rev_str, sizeof(rev_str));
         set_error_detail(ctrl,
-            "Firmware %s (rev %u) is outside known bounds (1-5999). "
-            "Reads allowed, writes blocked unless --force",
-            buf, rev);
+            "Unsupported firmware %s (expected V0.001-V5.999)", rev_str);
         return ALLTRAX_ERR_FIRMWARE;
     }
 
     return ALLTRAX_OK;
 }
 
-bool alltrax_has_feature(const alltrax_controller* ctrl, alltrax_feature feat)
+bool alltrax_has_feature(const alltrax_info* info, alltrax_feature feat)
 {
-    if (!ctrl->info_valid)
-        return false;
-
-    uint32_t orig = ctrl->info.original_program_rev;
-    uint32_t prgm = ctrl->info.program_rev;
+    uint32_t orig = info->original_program_rev;
+    uint32_t prgm = info->program_rev;
 
     switch (feat) {
+    case ALLTRAX_FEAT_THROTTLE_CAPS:  return orig > 2;
+    case ALLTRAX_FEAT_FORWARD_INPUT:  return orig >= 68;
+    case ALLTRAX_FEAT_USER1_INPUT:    return orig >= 70;
     case ALLTRAX_FEAT_USER_PROFILES:  return prgm >= 1005;
     case ALLTRAX_FEAT_USER_DEFAULTS:  return orig >= 1007;
     case ALLTRAX_FEAT_CAN_HIGHSIDE:   return orig >= 1008;
-    case ALLTRAX_FEAT_FORWARD_INPUT:  return orig >= 68;
-    case ALLTRAX_FEAT_USER1_INPUT:    return orig >= 70;
-    case ALLTRAX_FEAT_THROTTLE_CAPS:  return orig > 2;
     case ALLTRAX_FEAT_BAD_VARS_CODE:  return prgm >= 1107;
     }
     return false;
 }
 
 /* ------------------------------------------------------------------ */
-/* Variable read                                                       */
+/* Variable read                                                      */
 /* ------------------------------------------------------------------ */
 
-alltrax_error alltrax_read_var(alltrax_controller* ctrl,
+static alltrax_error read_var(alltrax_controller* ctrl,
     const alltrax_var_def* var, alltrax_var_value* out)
 {
     size_t var_size = alltrax_var_byte_size(var);
@@ -230,56 +245,55 @@ alltrax_error alltrax_read_var(alltrax_controller* ctrl,
 
     uint8_t buf[MAX_PAYLOAD];
     size_t got;
-    alltrax_error rc = alltrax_read_memory(ctrl, var->address, var_size,
+    alltrax_error rc = read_memory(ctrl, var->address, var_size,
                                             buf, &got);
     if (rc) return rc;
 
     return alltrax_decode_var(buf, got, var, var->address, out);
 }
 
-alltrax_error alltrax_read_var_group(alltrax_controller* ctrl,
-    alltrax_var_group group, alltrax_var_value* out, size_t* count)
+alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
+    const alltrax_var_def** vars, size_t count, alltrax_var_value* out)
 {
-    size_t n;
-    const alltrax_var_def* vars = alltrax_get_var_defs(group, &n);
-    if (!vars) {
-        *count = 0;
-        return ALLTRAX_OK;
+    for (size_t i = 0; i < count; i++) {
+        alltrax_error rc = read_var(ctrl, vars[i], &out[i]);
+        if (rc) return rc;
     }
-
-    for (size_t i = 0; i < n; i++) {
-        alltrax_error rc = alltrax_read_var(ctrl, &vars[i], &out[i]);
-        if (rc) {
-            *count = i;
-            return rc;
-        }
-    }
-
-    *count = n;
     return ALLTRAX_OK;
 }
 
 /* ------------------------------------------------------------------ */
-/* RAM variable write (with CAL/RUN bracket)                           */
+/* RAM variable write (with CAL/RUN bracket)                          */
 /* ------------------------------------------------------------------ */
 
-alltrax_error alltrax_write_ram_var(alltrax_controller* ctrl,
-    const alltrax_var_def* var, double value)
+alltrax_error alltrax_write_ram_vars(alltrax_controller* ctrl,
+    const alltrax_var_def** vars, const double* values, size_t count)
 {
-    /* Only RAM addresses allowed */
-    if (var->address < RAM_BASE || var->address >= RAM_END) {
-        set_error_detail(ctrl,
-            "Address 0x%08X is outside RAM range (0x%08X-0x%08X)",
-            var->address, RAM_BASE, RAM_END);
-        return ALLTRAX_ERR_ADDRESS;
+    if (count == 0) {
+        set_error_detail(ctrl, "No variables to write");
+        return ALLTRAX_ERR_INVALID_ARG;
     }
 
-    /* Encode value */
-    uint8_t encoded[MAX_PAYLOAD];
-    int len = alltrax_encode_var(var, value, encoded);
-    if (len <= 0) {
-        set_error_detail(ctrl, "Cannot encode variable %s", var->name);
-        return ALLTRAX_ERR_INVALID_ARG;
+    /* Validate all addresses and encode all values before any USB I/O */
+    typedef struct { uint8_t data[MAX_PAYLOAD]; int len; uint32_t addr; } encoded_t;
+    encoded_t* encoded = calloc(count, sizeof(encoded_t));
+    if (!encoded) return ALLTRAX_ERR_NO_MEMORY;
+
+    for (size_t i = 0; i < count; i++) {
+        if (vars[i]->address < RAM_BASE || vars[i]->address >= RAM_END) {
+            set_error_detail(ctrl,
+                "Address 0x%08X is outside RAM range (0x%08X-0x%08X)",
+                vars[i]->address, RAM_BASE, RAM_END);
+            free(encoded);
+            return ALLTRAX_ERR_ADDRESS;
+        }
+        encoded[i].addr = vars[i]->address;
+        encoded[i].len = alltrax_encode_var(vars[i], values[i], encoded[i].data);
+        if (encoded[i].len <= 0) {
+            set_error_detail(ctrl, "Cannot encode variable %s", vars[i]->name);
+            free(encoded);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
     }
 
     alltrax_error rc;
@@ -287,30 +301,36 @@ alltrax_error alltrax_write_ram_var(alltrax_controller* ctrl,
 
     /* Read RunMode — confirm in RUN mode */
     uint8_t mode_buf[1];
-    rc = alltrax_read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf, NULL);
-    if (rc) return rc;
+    rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf, NULL);
+    if (rc) { free(encoded); return rc; }
 
     if (mode_buf[0] != RUN_MODE_RUN) {
         set_error_detail(ctrl,
             "Controller not in RUN mode (RunMode=0x%02X)", mode_buf[0]);
+        free(encoded);
         return ALLTRAX_ERR_NOT_RUN;
     }
 
     /* Enter CAL mode */
     uint8_t cal = RUN_MODE_CAL;
-    rc = alltrax_write_memory(ctrl, ADDR_RUN_MODE, &cal, 1);
+    rc = write_memory(ctrl, ADDR_RUN_MODE, &cal, 1);
     if (rc) goto cleanup;
     in_cal = true;
 
-    /* Write the actual variable */
-    rc = alltrax_write_memory(ctrl, var->address, encoded, (size_t)len);
+    /* Write all variables */
+    for (size_t i = 0; i < count; i++) {
+        rc = write_memory(ctrl, encoded[i].addr,
+                                   encoded[i].data, (size_t)encoded[i].len);
+        if (rc) goto cleanup;
+    }
 
 cleanup:
     if (in_cal) {
         uint8_t run = RUN_MODE_RUN;
-        alltrax_error rc2 = alltrax_write_memory(ctrl, ADDR_RUN_MODE, &run, 1);
+        alltrax_error rc2 = write_memory(ctrl, ADDR_RUN_MODE, &run, 1);
         if (!rc) rc = rc2;
     }
+    free(encoded);
     return rc;
 }
 
@@ -318,7 +338,7 @@ cleanup:
 /* FLASH write — full page read-modify-erase-write cycle               */
 /* ------------------------------------------------------------------ */
 
-alltrax_error alltrax_page_erase(alltrax_controller* ctrl, uint8_t page)
+static alltrax_error page_erase(alltrax_controller* ctrl, uint8_t page)
 {
     if (page > 63) {
         set_error_detail(ctrl, "Page must be 0-63, got %d", page);
@@ -332,12 +352,12 @@ alltrax_error alltrax_page_erase(alltrax_controller* ctrl, uint8_t page)
     if (rc) return rc;
 
     uint8_t response[PACKET_SIZE];
-    rc = transport_read(ctrl, response, 0);
+    rc = transport_read(ctrl, response);
     if (rc) return rc;
 
     uint8_t result, n;
     uint8_t payload[MAX_PAYLOAD];
-    rc = parse_special_response(response, &result, &n, payload);
+    rc = parse_response(response, RESPONSE_TYPE_SP, &result, &n, payload);
     if (rc) return rc;
 
     if (result != RESULT_PASS) {
@@ -358,12 +378,6 @@ alltrax_error alltrax_reset_device(alltrax_controller* ctrl)
     return transport_write(ctrl, request);
 }
 
-alltrax_error alltrax_write_flash_var(alltrax_controller* ctrl,
-    const alltrax_var_def* var, double value)
-{
-    return alltrax_write_flash_vars(ctrl, &var, &value, 1);
-}
-
 alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, const double* values, size_t count)
 {
@@ -375,7 +389,7 @@ alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
     /* 1. Validate all addresses and encode all values (before any USB I/O) */
     typedef struct { size_t offset; uint8_t data[MAX_PAYLOAD]; int len; } patch_t;
     patch_t* patches = calloc(count, sizeof(patch_t));
-    if (!patches) return ALLTRAX_ERR_USB;
+    if (!patches) return ALLTRAX_ERR_NO_MEMORY;
 
     for (size_t i = 0; i < count; i++) {
         const alltrax_var_def* var = vars[i];
@@ -407,14 +421,13 @@ alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
 
     /* 2. Validate firmware version */
     uint8_t prgm_buf[6];
-    rc = alltrax_read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf, NULL);
+    rc = read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf, NULL);
     if (rc) { free(patches); return rc; }
 
-    uint32_t prgm_rev = (uint32_t)prgm_buf[0] | ((uint32_t)prgm_buf[1] << 8)
-                      | ((uint32_t)prgm_buf[2] << 16) | ((uint32_t)prgm_buf[3] << 24);
+    uint32_t prgm_rev = get_le32(prgm_buf);
     if (prgm_rev != VALIDATED_FIRMWARE) {
         char buf[16];
-        alltrax_format_rev(prgm_rev, buf, sizeof(buf));
+        format_rev(prgm_rev, buf, sizeof(buf));
         set_error_detail(ctrl,
             "Firmware %s is not validated. Only V5.005 is supported",
             buf);
@@ -425,13 +438,13 @@ alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
     /* 3. Check GoodSet markers */
     uint8_t gs_buf[2];
 
-    rc = alltrax_read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf, NULL);
+    rc = read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf, NULL);
     if (rc) { free(patches); return rc; }
-    uint16_t v_gs = (uint16_t)gs_buf[0] | ((uint16_t)gs_buf[1] << 8);
+    uint16_t v_gs = get_le16(gs_buf);
 
-    rc = alltrax_read_memory(ctrl, ADDR_F_GOODSET, 2, gs_buf, NULL);
+    rc = read_memory(ctrl, ADDR_F_GOODSET, 2, gs_buf, NULL);
     if (rc) { free(patches); return rc; }
-    uint16_t f_gs = (uint16_t)gs_buf[0] | ((uint16_t)gs_buf[1] << 8);
+    uint16_t f_gs = get_le16(gs_buf);
 
     if (f_gs != 0x0000) {
         set_error_detail(ctrl,
@@ -450,7 +463,7 @@ alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
 
     /* 4. Read RunMode — confirm in RUN mode */
     uint8_t mode_buf[1];
-    rc = alltrax_read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf, NULL);
+    rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf, NULL);
     if (rc) { free(patches); return rc; }
 
     if (mode_buf[0] != RUN_MODE_RUN) {
@@ -463,16 +476,16 @@ alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
     /* 5-10: CAL bracket with goto cleanup */
     bool in_cal = false;
     uint8_t* page_data = malloc(VARSET_SIZE);
-    if (!page_data) { free(patches); return ALLTRAX_ERR_USB; }
+    if (!page_data) { free(patches); return ALLTRAX_ERR_NO_MEMORY; }
 
     /* Enter CAL mode */
     uint8_t cal = RUN_MODE_CAL;
-    rc = alltrax_write_memory(ctrl, ADDR_RUN_MODE, &cal, 1);
+    rc = write_memory(ctrl, ADDR_RUN_MODE, &cal, 1);
     if (rc) goto flash_cleanup;
     in_cal = true;
 
     /* 6. Read full VARSET page (2048 bytes) */
-    rc = alltrax_read_memory_range(ctrl, VARSET_ADDR, VARSET_SIZE, page_data);
+    rc = read_memory_range(ctrl, VARSET_ADDR, VARSET_SIZE, page_data);
     if (rc) goto flash_cleanup;
 
     /* 7. Patch all variables into page buffer */
@@ -486,7 +499,7 @@ alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
     page_data[1] = 0xFF;
 
     /* 8. Erase page */
-    rc = alltrax_page_erase(ctrl, VARSET_PAGE);
+    rc = page_erase(ctrl, VARSET_PAGE);
     if (rc) goto flash_cleanup;
 
     /* 9. Write full page back */
@@ -496,9 +509,9 @@ alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
     /* 10. Read-back verification */
     {
         uint8_t* readback = malloc(VARSET_SIZE);
-        if (!readback) { rc = ALLTRAX_ERR_USB; goto flash_cleanup; }
+        if (!readback) { rc = ALLTRAX_ERR_NO_MEMORY; goto flash_cleanup; }
 
-        rc = alltrax_read_memory_range(ctrl, VARSET_ADDR, VARSET_SIZE, readback);
+        rc = read_memory_range(ctrl, VARSET_ADDR, VARSET_SIZE, readback);
         if (rc) { free(readback); goto flash_cleanup; }
 
         if (memcmp(readback, page_data, VARSET_SIZE) != 0) {
@@ -521,13 +534,13 @@ alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
     /* 11. Clear GoodSet (mark settings as valid) */
     {
         uint8_t zeros[2] = { 0x00, 0x00 };
-        rc = alltrax_write_memory(ctrl, VARSET_ADDR, zeros, 2);
+        rc = write_memory(ctrl, VARSET_ADDR, zeros, 2);
     }
 
 flash_cleanup:
     if (in_cal) {
         uint8_t run = RUN_MODE_RUN;
-        alltrax_error rc2 = alltrax_write_memory(ctrl, ADDR_RUN_MODE, &run, 1);
+        alltrax_error rc2 = write_memory(ctrl, ADDR_RUN_MODE, &run, 1);
         if (!rc) rc = rc2;
     }
     free(page_data);
@@ -557,7 +570,7 @@ alltrax_error alltrax_read_monitor(alltrax_controller* ctrl,
 
     uint8_t blocks[MONITOR_BLOCK_COUNT][MAX_PAYLOAD];
     for (int i = 0; i < MONITOR_BLOCK_COUNT; i++) {
-        alltrax_error rc = alltrax_read_memory(ctrl,
+        alltrax_error rc = read_memory(ctrl,
             monitor_blocks[i].addr, monitor_blocks[i].size,
             blocks[i], NULL);
         if (rc) return rc;
@@ -567,68 +580,47 @@ alltrax_error alltrax_read_monitor(alltrax_controller* ctrl,
     memcpy(out->errors, blocks[0], 17);
 
     /* Block 1: Error history (17 x uint16) */
-    for (int i = 0; i < 17; i++) {
-        out->error_history[i] = (uint16_t)blocks[1][i * 2]
-                              | ((uint16_t)blocks[1][i * 2 + 1] << 8);
-    }
+    for (int i = 0; i < 17; i++)
+        out->error_history[i] = get_le16(blocks[1] + i * 2);
 
     /* Block 2: Digital inputs (17 bytes at 0x2000F090) */
-    out->keyswitch  = blocks[2][0] != 0;   /* 0x2000F090 */
-    out->reverse    = blocks[2][1] != 0;   /* 0x2000F091 */
-    out->relay_on   = (int16_t)((uint16_t)blocks[2][2]
-                    | ((uint16_t)blocks[2][3] << 8));  /* 0x2000F092 */
-    out->fan_status = blocks[2][4] != 0;   /* 0x2000F094 */
-    out->hpd_ran    = blocks[2][5] != 0;   /* 0x2000F095 */
-    out->bad_vars_code = (int16_t)((uint16_t)blocks[2][6]
-                       | ((uint16_t)blocks[2][7] << 8)); /* 0x2000F096 */
-    out->footswitch = blocks[2][8] != 0;   /* 0x2000F098 */
-    out->forward    = blocks[2][9] != 0;   /* 0x2000F099 */
-    out->user1_input = blocks[2][10] != 0; /* 0x2000F09A */
-    out->user2_input = blocks[2][11] != 0; /* 0x2000F09B */
-    out->user3_input = blocks[2][12] != 0; /* 0x2000F09C */
-    out->charger    = blocks[2][13] != 0;  /* 0x2000F09D */
-    out->blower     = blocks[2][14] != 0;  /* 0x2000F09E */
-    out->check_motor = blocks[2][15] != 0; /* 0x2000F09F */
-    out->horn       = blocks[2][16] != 0;  /* 0x2000F0A0 */
+    out->keyswitch   = blocks[2][0] != 0;   /* 0x2000F090 */
+    out->reverse     = blocks[2][1] != 0;   /* 0x2000F091 */
+    out->relay_on    = (int16_t)get_le16(blocks[2] + 2);  /* 0x2000F092 */
+    out->fan_status  = blocks[2][4] != 0;   /* 0x2000F094 */
+    out->hpd_ran     = blocks[2][5] != 0;   /* 0x2000F095 */
+    out->bad_vars_code = (int16_t)get_le16(blocks[2] + 6); /* 0x2000F096 */
+    out->footswitch  = blocks[2][8] != 0;   /* 0x2000F098 */
+    out->forward     = blocks[2][9] != 0;   /* 0x2000F099 */
+    out->user1_input = blocks[2][10] != 0;  /* 0x2000F09A */
+    out->user2_input = blocks[2][11] != 0;  /* 0x2000F09B */
+    out->user3_input = blocks[2][12] != 0;  /* 0x2000F09C */
+    out->charger     = blocks[2][13] != 0;  /* 0x2000F09D */
+    out->blower      = blocks[2][14] != 0;  /* 0x2000F09E */
+    out->check_motor = blocks[2][15] != 0;  /* 0x2000F09F */
+    out->horn        = blocks[2][16] != 0;  /* 0x2000F0A0 */
 
     /* Block 3: Temperature (2 bytes at 0x2000F0E6) */
-    {
-        int16_t raw = (int16_t)((uint16_t)blocks[3][0]
-                    | ((uint16_t)blocks[3][1] << 8));
-        out->temp_c = ((double)raw - 527.0) * 0.1289;
-    }
+    out->temp_c = ((double)(int16_t)get_le16(blocks[3]) - 527.0) * 0.1289;
 
     /* Block 4: Power (56 bytes at 0x2000F110) */
     {
         const uint8_t* p = blocks[4];
-        int16_t bplus = (int16_t)((uint16_t)p[0] | ((uint16_t)p[1] << 8));
-        out->battery_volts = (double)bplus * 0.1;
-
-        out->throttle_local = (int16_t)((uint16_t)p[6] | ((uint16_t)p[7] << 8));
-        out->throttle_position = (int16_t)((uint16_t)p[8] | ((uint16_t)p[9] << 8));
-
-        int32_t out_amps = (int32_t)((uint32_t)p[10] | ((uint32_t)p[11] << 8)
-                         | ((uint32_t)p[12] << 16) | ((uint32_t)p[13] << 24));
-        out->output_amps = (double)out_amps * 0.1;
-
-        int32_t field = (int32_t)((uint32_t)p[14] | ((uint32_t)p[15] << 8)
-                      | ((uint32_t)p[16] << 16) | ((uint32_t)p[17] << 24));
-        out->field_amps = (double)field * 0.01;
-
-        out->throttle_pointer = (int16_t)((uint16_t)p[24] | ((uint16_t)p[25] << 8));
-        out->overtemp_cap = (int16_t)((uint16_t)p[40] | ((uint16_t)p[41] << 8));
-        out->speed_rpm = (int16_t)((uint16_t)p[42] | ((uint16_t)p[43] << 8));
+        out->battery_volts     = (double)(int16_t)get_le16(p) * 0.1;
+        out->throttle_local    = (int16_t)get_le16(p + 6);
+        out->throttle_position = (int16_t)get_le16(p + 8);
+        out->output_amps       = (double)(int32_t)get_le32(p + 10) * 0.1;
+        out->field_amps        = (double)(int32_t)get_le32(p + 14) * 0.01;
+        out->throttle_pointer  = (int16_t)get_le16(p + 24);
+        out->overtemp_cap      = (int16_t)get_le16(p + 40);
+        out->speed_rpm         = (int16_t)get_le16(p + 42);
     }
 
     /* Block 5: Battery (22 bytes at 0x2000F148) */
     {
         const uint8_t* p = blocks[5];
-        int16_t soc = (int16_t)((uint16_t)p[2] | ((uint16_t)p[3] << 8));
-        out->state_of_charge = (double)soc * 0.1;
-
-        int32_t batt_amps = (int32_t)((uint32_t)p[18] | ((uint32_t)p[19] << 8)
-                          | ((uint32_t)p[20] << 16) | ((uint32_t)p[21] << 24));
-        out->battery_amps = (double)batt_amps * 0.1;
+        out->state_of_charge = (double)(int16_t)get_le16(p + 2) * 0.1;
+        out->battery_amps    = (double)(int32_t)get_le32(p + 18) * 0.1;
     }
 
     return ALLTRAX_OK;

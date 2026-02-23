@@ -4,6 +4,7 @@
 
 #include "helpers.h"
 #include "alltrax.h"
+#include "internal.h"
 
 /* ------------------------------------------------------------------ */
 /* 1. Variable lookup                                                  */

@@ -71,22 +71,33 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    alltrax_error err = alltrax_init();
+    if (err) {
+        fprintf(stderr, "Error: %s\n", alltrax_strerror(err));
+        return 1;
+    }
+
     const char* cmd = argv[1];
+    int rc;
 
     if (strcmp(cmd, "info") == 0)
-        return cmd_info(argc - 1, argv + 1);
-    if (strcmp(cmd, "get") == 0)
-        return cmd_get(argc - 1, argv + 1);
-    if (strcmp(cmd, "write") == 0)
-        return cmd_write(argc - 1, argv + 1);
-    if (strcmp(cmd, "reset") == 0)
-        return cmd_reset(argc - 1, argv + 1);
-    if (strcmp(cmd, "monitor") == 0)
-        return cmd_monitor(argc - 1, argv + 1);
-    if (strcmp(cmd, "errors") == 0)
-        return cmd_errors(argc - 1, argv + 1);
+        rc = cmd_info(argc - 1, argv + 1);
+    else if (strcmp(cmd, "get") == 0)
+        rc = cmd_get(argc - 1, argv + 1);
+    else if (strcmp(cmd, "write") == 0)
+        rc = cmd_write(argc - 1, argv + 1);
+    else if (strcmp(cmd, "reset") == 0)
+        rc = cmd_reset(argc - 1, argv + 1);
+    else if (strcmp(cmd, "monitor") == 0)
+        rc = cmd_monitor(argc - 1, argv + 1);
+    else if (strcmp(cmd, "errors") == 0)
+        rc = cmd_errors(argc - 1, argv + 1);
+    else {
+        fprintf(stderr, "Unknown command: %s\n", cmd);
+        print_usage();
+        rc = 1;
+    }
 
-    fprintf(stderr, "Unknown command: %s\n", cmd);
-    print_usage();
-    return 1;
+    alltrax_exit();
+    return rc;
 }

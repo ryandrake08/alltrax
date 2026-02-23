@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include "cli.h"
 
+static const char* yn(bool v) { return v ? "Yes" : "No"; }
+
 int cmd_info(int argc, char** argv)
 {
     (void)argc; (void)argv;
@@ -21,22 +23,35 @@ int cmd_info(int argc, char** argv)
         return 1;
     }
 
-    char rev_buf[16];
-
     printf("Model:            %s\n", info.model);
     printf("Build Date:       %s\n", info.build_date);
     printf("Serial Number:    %u\n", info.serial_number);
-    printf("Boot Rev:         %s\n",
-           alltrax_format_rev(info.boot_rev, rev_buf, sizeof(rev_buf)));
-    printf("Original Boot:    %s\n",
-           alltrax_format_rev(info.original_boot_rev, rev_buf, sizeof(rev_buf)));
-    printf("Program Rev:      %s\n",
-           alltrax_format_rev(info.program_rev, rev_buf, sizeof(rev_buf)));
-    printf("Original Program: %s\n",
-           alltrax_format_rev(info.original_program_rev, rev_buf, sizeof(rev_buf)));
+    printf("Boot Rev:         %s\n", info.boot_rev_str);
+    printf("Original Boot:    %s\n", info.original_boot_rev_str);
+    printf("Program Rev:      %s\n", info.program_rev_str);
+    printf("Original Program: %s\n", info.original_program_rev_str);
+    printf("Program Type:     %u\n", info.program_type);
     printf("Program Version:  %u\n", info.program_ver);
-    printf("Rated Voltage:    %uV\n", info.rated_voltage);
-    printf("Rated Current:    %uA\n", info.rated_amps);
+    printf("Hardware Rev:     %u\n", info.hardware_rev);
+
+    printf("\nRatings:\n");
+    printf("  Voltage:        %uV\n", info.rated_voltage);
+    printf("  Current:        %uA\n", info.rated_amps);
+    printf("  Field Current:  %uA\n", info.rated_field_amps);
+
+    printf("\nHardware:\n");
+    printf("  Speed Sensor:   %s\n", yn(info.speed_sensor));
+    printf("  BMS CAN:        %s\n", yn(info.has_bms_can));
+    printf("  Throttle CAN:   %s\n", yn(info.has_throt_can));
+    printf("  Forward Input:  %s\n", yn(info.has_forward));
+    printf("  User 1 Input:   %s\n", yn(info.has_user1));
+    printf("  User 2 Input:   %s\n", yn(info.has_user2));
+    printf("  User 3 Input:   %s\n", yn(info.has_user3));
+    printf("  Aux Out 1:      %s\n", yn(info.has_aux_out1));
+    printf("  Aux Out 2:      %s\n", yn(info.has_aux_out2));
+    printf("  High Side:      %s\n", yn(info.can_high_side));
+    printf("  Stock Mode:     %s\n", yn(info.is_stock_mode));
+    printf("  Throttles:      0x%04X\n", info.throttles_allowed);
 
     alltrax_close(ctrl);
     return 0;

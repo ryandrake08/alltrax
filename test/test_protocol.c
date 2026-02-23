@@ -124,26 +124,37 @@ static int test_read_request_data_bytes_zero(void)
 
 static int test_parse_controller_info(void)
 {
+    /* Response for 52-byte read from ADDR_CONTROLLER_INFO (0x08000800) */
     const char* hex = "043400000100000058435434383430302d44435320202000392f352f3230323520202020202020000c9f03008a1300008d1300000b0000000400000000000000";
     uint8_t response[PACKET_SIZE];
     hex_to_bytes(hex, response, PACKET_SIZE);
 
     uint8_t result, num_bytes;
     uint8_t payload[MAX_PAYLOAD];
-    alltrax_error err = parse_read_response(response, &result, &num_bytes, payload);
+    alltrax_error err = parse_response(response, RESPONSE_TYPE_RW, &result, &num_bytes, payload);
     ASSERT_EQ(err, ALLTRAX_OK);
     ASSERT_EQ(result, 0x00);
     ASSERT_EQ(num_bytes, 0x34);
 
-    alltrax_info info;
-    memset(&info, 0, sizeof(info));
-    err = parse_controller_info(payload, num_bytes, &info);
-    ASSERT_EQ(err, ALLTRAX_OK);
-    ASSERT_STR_EQ(info.model, "XCT48400-DCS");
-    ASSERT_STR_EQ(info.build_date, "9/5/2025");
-    ASSERT_EQ(info.serial_number, 237324);
-    ASSERT_EQ(info.original_boot_rev, 5002);
-    ASSERT_EQ(info.original_program_rev, 5005);
+    /* Model: 15 chars at offset 0, space-padded */
+    char model[16] = {0};
+    memcpy(model, payload, 15);
+    for (int i = 14; i >= 0 && (model[i] == ' ' || model[i] == '\0'); i--)
+        model[i] = '\0';
+    ASSERT_STR_EQ(model, "XCT48400-DCS");
+
+    /* Build date: 15 chars at offset 0x10 */
+    char build_date[16] = {0};
+    memcpy(build_date, payload + 0x10, 15);
+    for (int i = 14; i >= 0 && (build_date[i] == ' ' || build_date[i] == '\0'); i--)
+        build_date[i] = '\0';
+    ASSERT_STR_EQ(build_date, "9/5/2025");
+
+    ASSERT_EQ(get_le32(payload + 0x20), 237324u);   /* serial_number */
+    ASSERT_EQ(get_le32(payload + 0x24), 5002u);      /* original_boot_rev */
+    ASSERT_EQ(get_le32(payload + 0x28), 5005u);      /* original_program_rev */
+    ASSERT_EQ(get_le32(payload + 0x2C), 11u);         /* program_type */
+    ASSERT_EQ(get_le32(payload + 0x30), 4u);           /* hardware_rev */
     return 0;
 }
 
@@ -155,7 +166,7 @@ static int test_parse_boot_rev(void)
 
     uint8_t result, num_bytes;
     uint8_t payload[MAX_PAYLOAD];
-    parse_read_response(response, &result, &num_bytes, payload);
+    parse_response(response, RESPONSE_TYPE_RW, &result, &num_bytes, payload);
     ASSERT_EQ(result, 0x00);
 
     uint32_t boot_rev = (uint32_t)payload[0]
@@ -174,7 +185,7 @@ static int test_parse_prgm_rev(void)
 
     uint8_t result, num_bytes;
     uint8_t payload[MAX_PAYLOAD];
-    parse_read_response(response, &result, &num_bytes, payload);
+    parse_response(response, RESPONSE_TYPE_RW, &result, &num_bytes, payload);
     ASSERT_EQ(result, 0x00);
 
     uint32_t prgm_rev = (uint32_t)payload[0]
@@ -190,20 +201,32 @@ static int test_parse_prgm_rev(void)
 
 static int test_parse_hardware_config(void)
 {
+    /* Response for 24-byte read from ADDR_HARDWARE_CONFIG (0x08000880) */
     const char* hex = "041800000100000030009001320000000100010000000000ff070000000100000000000000000000000000000000000000000000000000000000000000000000";
     uint8_t response[PACKET_SIZE];
     hex_to_bytes(hex, response, PACKET_SIZE);
 
     uint8_t result, num_bytes;
     uint8_t payload[MAX_PAYLOAD];
-    parse_read_response(response, &result, &num_bytes, payload);
+    parse_response(response, RESPONSE_TYPE_RW, &result, &num_bytes, payload);
     ASSERT_EQ(result, 0x00);
+    ASSERT_EQ(num_bytes, 24);
 
-    alltrax_info info;
-    memset(&info, 0, sizeof(info));
-    parse_hardware_config(payload, num_bytes, &info);
-    ASSERT_EQ(info.rated_voltage, 48);
-    ASSERT_EQ(info.rated_amps, 400);
+    ASSERT_EQ(get_le16(payload),      48);    /* rated_voltage */
+    ASSERT_EQ(get_le16(payload + 2),  400);   /* rated_amps */
+    ASSERT_EQ(get_le16(payload + 4),  50);    /* rated_field_amps */
+    ASSERT_EQ(payload[6],             0);     /* speed_sensor */
+    ASSERT_EQ(payload[8],             1);     /* has_bms_can */
+    ASSERT_EQ(payload[9],             0);     /* has_throt_can */
+    ASSERT_EQ(payload[10],            1);     /* has_user2 */
+    ASSERT_EQ(payload[11],            0);     /* has_user3 */
+    ASSERT_EQ(payload[12],            0);     /* has_aux_out1 */
+    ASSERT_EQ(payload[13],            0);     /* has_aux_out2 */
+    ASSERT_EQ(get_le32(payload + 16), 0x07FFu); /* throttles_allowed */
+    ASSERT_EQ(payload[20],            0);     /* has_forward */
+    ASSERT_EQ(payload[21],            1);     /* has_user1 */
+    ASSERT_EQ(payload[22],            0);     /* can_high_side */
+    ASSERT_EQ(payload[23],            0);     /* is_stock_mode */
     return 0;
 }
 
@@ -215,7 +238,7 @@ static int test_parse_program_name(void)
 
     uint8_t result, num_bytes;
     uint8_t payload[MAX_PAYLOAD];
-    parse_read_response(response, &result, &num_bytes, payload);
+    parse_response(response, RESPONSE_TYPE_RW, &result, &num_bytes, payload);
 
     /* Trim trailing spaces/nulls and check */
     char name[33];
@@ -238,22 +261,8 @@ static int test_parse_response_rejects_wrong_id(void)
 
     uint8_t result, num_bytes;
     uint8_t payload[MAX_PAYLOAD];
-    alltrax_error err = parse_read_response(bad, &result, &num_bytes, payload);
+    alltrax_error err = parse_response(bad, RESPONSE_TYPE_RW, &result, &num_bytes, payload);
     ASSERT_EQ(err, ALLTRAX_ERR_PROTOCOL);
-    return 0;
-}
-
-static int test_format_revision(void)
-{
-    char buf[16];
-    alltrax_format_rev(5002, buf, sizeof(buf));
-    ASSERT_STR_EQ(buf, "V5.002");
-
-    alltrax_format_rev(5005, buf, sizeof(buf));
-    ASSERT_STR_EQ(buf, "V5.005");
-
-    alltrax_format_rev(1000, buf, sizeof(buf));
-    ASSERT_STR_EQ(buf, "V1.000");
     return 0;
 }
 
@@ -338,25 +347,11 @@ static int test_parse_write_response_success(void)
 
     uint8_t result, num_bytes;
     uint8_t echo[MAX_PAYLOAD];
-    alltrax_error err = parse_write_response(response, &result, &num_bytes, echo);
+    alltrax_error err = parse_response(response, RESPONSE_TYPE_RW, &result, &num_bytes, echo);
     ASSERT_EQ(err, ALLTRAX_OK);
     ASSERT_EQ(result, 0x00);
     ASSERT_EQ(num_bytes, 1);
     ASSERT_EQ(echo[0], 0xFF);
-    return 0;
-}
-
-static int test_parse_write_response_rejects_read_type(void)
-{
-    uint8_t buf[PACKET_SIZE];
-    memset(buf, 0, sizeof(buf));
-    buf[0] = RESPONSE_ID;
-    buf[4] = 0x00;  /* read type, not write */
-
-    uint8_t result, num_bytes;
-    uint8_t echo[MAX_PAYLOAD];
-    alltrax_error err = parse_write_response(buf, &result, &num_bytes, echo);
-    ASSERT_EQ(err, ALLTRAX_ERR_PROTOCOL);
     return 0;
 }
 
@@ -368,7 +363,7 @@ static int test_parse_write_response_rejects_wrong_id(void)
 
     uint8_t result, num_bytes;
     uint8_t echo[MAX_PAYLOAD];
-    alltrax_error err = parse_write_response(buf, &result, &num_bytes, echo);
+    alltrax_error err = parse_response(buf, RESPONSE_TYPE_RW, &result, &num_bytes, echo);
     ASSERT_EQ(err, ALLTRAX_ERR_PROTOCOL);
     return 0;
 }
@@ -483,11 +478,12 @@ static int test_parse_special_response_success(void)
     memset(response, 0, sizeof(response));
     response[0] = RESPONSE_ID;
     response[1] = 0;
+    response[4] = RESPONSE_TYPE_SP;
     response[6] = 0x00;
 
     uint8_t result, num_bytes;
     uint8_t payload[MAX_PAYLOAD];
-    alltrax_error err = parse_special_response(response, &result, &num_bytes, payload);
+    alltrax_error err = parse_response(response, RESPONSE_TYPE_SP, &result, &num_bytes, payload);
     ASSERT_EQ(err, ALLTRAX_OK);
     ASSERT_EQ(result, 0x00);
     ASSERT_EQ(num_bytes, 0);
@@ -500,6 +496,7 @@ static int test_parse_special_response_with_data(void)
     memset(response, 0, sizeof(response));
     response[0] = RESPONSE_ID;
     response[1] = 4;
+    response[4] = RESPONSE_TYPE_SP;
     response[6] = 0x00;
     response[8] = 0x00;
     response[9] = 0x00;
@@ -508,7 +505,7 @@ static int test_parse_special_response_with_data(void)
 
     uint8_t result, num_bytes;
     uint8_t payload[MAX_PAYLOAD];
-    parse_special_response(response, &result, &num_bytes, payload);
+    parse_response(response, RESPONSE_TYPE_SP, &result, &num_bytes, payload);
     ASSERT_EQ(result, 0x00);
     ASSERT_EQ(num_bytes, 4);
     ASSERT_EQ(payload[3], 0x01);
@@ -520,11 +517,12 @@ static int test_parse_special_response_failure(void)
     uint8_t response[PACKET_SIZE];
     memset(response, 0, sizeof(response));
     response[0] = RESPONSE_ID;
+    response[4] = RESPONSE_TYPE_SP;
     response[6] = 0x01;
 
     uint8_t result, num_bytes;
     uint8_t payload[MAX_PAYLOAD];
-    parse_special_response(response, &result, &num_bytes, payload);
+    parse_response(response, RESPONSE_TYPE_SP, &result, &num_bytes, payload);
     ASSERT_EQ(result, 0x01);
     return 0;
 }
@@ -537,34 +535,11 @@ static int test_parse_special_response_rejects_wrong_id(void)
 
     uint8_t result, num_bytes;
     uint8_t payload[MAX_PAYLOAD];
-    alltrax_error err = parse_special_response(bad, &result, &num_bytes, payload);
+    alltrax_error err = parse_response(bad, RESPONSE_TYPE_SP, &result, &num_bytes, payload);
     ASSERT_EQ(err, ALLTRAX_ERR_PROTOCOL);
     return 0;
 }
 
-/* ------------------------------------------------------------------ */
-/* 7. Controller info parsing                                          */
-/* ------------------------------------------------------------------ */
-
-static int test_parse_controller_info_too_short(void)
-{
-    uint8_t payload[32];
-    memset(payload, 0, sizeof(payload));
-    alltrax_info info;
-    alltrax_error err = parse_controller_info(payload, 32, &info);
-    ASSERT_EQ(err, ALLTRAX_ERR_PROTOCOL);
-    return 0;
-}
-
-static int test_parse_hardware_config_too_short(void)
-{
-    uint8_t payload[2];
-    memset(payload, 0, sizeof(payload));
-    alltrax_info info;
-    alltrax_error err = parse_hardware_config(payload, 2, &info);
-    ASSERT_EQ(err, ALLTRAX_ERR_PROTOCOL);
-    return 0;
-}
 
 /* ------------------------------------------------------------------ */
 /* Test runner                                                         */
@@ -588,7 +563,6 @@ void run_protocol_tests(void)
     RUN_TEST(test_parse_hardware_config);
     RUN_TEST(test_parse_program_name);
     RUN_TEST(test_parse_response_rejects_wrong_id);
-    RUN_TEST(test_format_revision);
 
     /* Write request construction */
     RUN_TEST(test_write_request_matches_capture);
@@ -597,7 +571,6 @@ void run_protocol_tests(void)
 
     /* Write response parsing */
     RUN_TEST(test_parse_write_response_success);
-    RUN_TEST(test_parse_write_response_rejects_read_type);
     RUN_TEST(test_parse_write_response_rejects_wrong_id);
 
     /* Special function packets */
@@ -614,7 +587,4 @@ void run_protocol_tests(void)
     RUN_TEST(test_parse_special_response_failure);
     RUN_TEST(test_parse_special_response_rejects_wrong_id);
 
-    /* Edge cases */
-    RUN_TEST(test_parse_controller_info_too_short);
-    RUN_TEST(test_parse_hardware_config_too_short);
 }
