@@ -13,6 +13,7 @@ typedef struct {
     bool no_cal;
     bool no_verify;
     bool force;
+    bool reset;
 } cli_flags;
 
 /* Parse global flags from argv. Returns index of first non-flag arg. */

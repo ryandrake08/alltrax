@@ -65,8 +65,11 @@ Alltrax Controller Monitor
 ### Write examples
 
 ```sh
-# Write a single FLASH setting (controller reboots to apply)
+# Write a single FLASH setting
 alltrax write LoBat_Vlim=28.1
+
+# Write and reboot so firmware reloads from FLASH immediately
+alltrax write --reset LoBat_Vlim=28.1
 
 # Batch write — multiple settings in one FLASH page cycle
 alltrax write LoBat_Vlim=28.1 HiBat_Vlim=61.0
@@ -82,6 +85,7 @@ alltrax write Fan_On=1
 | `--no-cal` | Skip CAL/RUN mode bracket (safe for bench programming with no motor) |
 | `--no-verify` | Skip read-back verification after FLASH write |
 | `--force` | Allow writes on unrecognized firmware versions |
+| `--reset` | Reboot controller after FLASH write (`write` only) |
 
 ## Building
 

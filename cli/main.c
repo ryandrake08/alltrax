@@ -38,6 +38,8 @@ int cli_parse_flags(int argc, char** argv, cli_flags* flags)
             flags->no_verify = true;
         else if (strcmp(argv[i], "--force") == 0)
             flags->force = true;
+        else if (strcmp(argv[i], "--reset") == 0)
+            flags->reset = true;
         else
             break;  /* First non-flag arg */
     }

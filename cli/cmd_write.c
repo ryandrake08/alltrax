@@ -24,7 +24,7 @@ int cmd_write(int argc, char** argv)
 
     if (first_arg >= argc) {
         fprintf(stderr, "Usage: alltrax write [--no-cal] [--no-verify] "
-                        "[--force] var=value ...\n");
+                        "[--force] [--reset] var=value ...\n");
         return 1;
     }
 
@@ -153,14 +153,15 @@ int cmd_write(int argc, char** argv)
         for (size_t i = 0; i < flash_count; i++)
             printf("Wrote %s (FLASH)\n", flash_vars[i]->name);
 
-        /* Send device reset so firmware reloads from FLASH */
-        err = alltrax_reset_device(ctrl);
-        if (err) {
-            cli_error(ctrl, err, "resetting device");
-            ret = 1;
-            goto done;
+        if (flags.reset) {
+            err = alltrax_reset_device(ctrl);
+            if (err) {
+                cli_error(ctrl, err, "resetting device");
+                ret = 1;
+                goto done;
+            }
+            printf("Device reset sent (controller will reboot)\n");
         }
-        printf("Device reset sent (controller will reboot)\n");
     }
 
 done:
