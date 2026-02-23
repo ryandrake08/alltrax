@@ -8,11 +8,12 @@
 #include "alltrax.h"
 #include <stdbool.h>
 
-/* Global flags parsed from argv */
+/* Write flags parsed from argv */
 typedef struct {
     bool no_cal;
     bool no_verify;
-    bool force;
+    bool no_goodset;
+    bool no_fw_version;
     bool reset;
 } cli_flags;
 

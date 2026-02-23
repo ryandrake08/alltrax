@@ -205,10 +205,19 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
 /* Write operations                                                    */
 /* ------------------------------------------------------------------ */
 
+typedef struct {
+    bool skip_cal;        /* Skip CAL/RUN bracket */
+    bool skip_verify;     /* Skip read-back verification (FLASH only) */
+    bool skip_goodset;    /* Skip GoodSet pre-check (FLASH only) */
+    bool skip_fw_check;   /* Skip firmware version check */
+} alltrax_write_opts;
+
 alltrax_error alltrax_write_ram_vars(alltrax_controller* ctrl,
-    const alltrax_var_def** vars, const double* values, size_t count);
+    const alltrax_var_def** vars, const double* values, size_t count,
+    const alltrax_write_opts* opts);
 alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
-    const alltrax_var_def** vars, const double* values, size_t count);
+    const alltrax_var_def** vars, const double* values, size_t count,
+    const alltrax_write_opts* opts);
 
 /* ------------------------------------------------------------------ */
 /* Monitoring                                                          */

@@ -267,8 +267,11 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
 /* ------------------------------------------------------------------ */
 
 alltrax_error alltrax_write_ram_vars(alltrax_controller* ctrl,
-    const alltrax_var_def** vars, const double* values, size_t count)
+    const alltrax_var_def** vars, const double* values, size_t count,
+    const alltrax_write_opts* opts)
 {
+    alltrax_write_opts defaults = {0};
+    if (!opts) opts = &defaults;
     if (count == 0) {
         set_error_detail(ctrl, "No variables to write");
         return ALLTRAX_ERR_INVALID_ARG;
@@ -299,23 +302,25 @@ alltrax_error alltrax_write_ram_vars(alltrax_controller* ctrl,
     alltrax_error rc;
     bool in_cal = false;
 
-    /* Read RunMode — confirm in RUN mode */
-    uint8_t mode_buf[1];
-    rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf, NULL);
-    if (rc) { free(encoded); return rc; }
+    if (!opts->skip_cal) {
+        /* Read RunMode — confirm in RUN mode */
+        uint8_t mode_buf[1];
+        rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf, NULL);
+        if (rc) { free(encoded); return rc; }
 
-    if (mode_buf[0] != RUN_MODE_RUN) {
-        set_error_detail(ctrl,
-            "Controller not in RUN mode (RunMode=0x%02X)", mode_buf[0]);
-        free(encoded);
-        return ALLTRAX_ERR_NOT_RUN;
+        if (mode_buf[0] != RUN_MODE_RUN) {
+            set_error_detail(ctrl,
+                "Controller not in RUN mode (RunMode=0x%02X)", mode_buf[0]);
+            free(encoded);
+            return ALLTRAX_ERR_NOT_RUN;
+        }
+
+        /* Enter CAL mode */
+        uint8_t cal = RUN_MODE_CAL;
+        rc = write_memory(ctrl, ADDR_RUN_MODE, &cal, 1);
+        if (rc) goto cleanup;
+        in_cal = true;
     }
-
-    /* Enter CAL mode */
-    uint8_t cal = RUN_MODE_CAL;
-    rc = write_memory(ctrl, ADDR_RUN_MODE, &cal, 1);
-    if (rc) goto cleanup;
-    in_cal = true;
 
     /* Write all variables */
     for (size_t i = 0; i < count; i++) {
@@ -379,8 +384,11 @@ alltrax_error alltrax_reset_device(alltrax_controller* ctrl)
 }
 
 alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
-    const alltrax_var_def** vars, const double* values, size_t count)
+    const alltrax_var_def** vars, const double* values, size_t count,
+    const alltrax_write_opts* opts)
 {
+    alltrax_write_opts defaults = {0};
+    if (!opts) opts = &defaults;
     if (count == 0) {
         set_error_detail(ctrl, "No variables to write");
         return ALLTRAX_ERR_INVALID_ARG;
@@ -420,69 +428,74 @@ alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
     alltrax_error rc;
 
     /* 2. Validate firmware version */
-    uint8_t prgm_buf[6];
-    rc = read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf, NULL);
-    if (rc) { free(patches); return rc; }
+    if (!opts->skip_fw_check) {
+        uint8_t prgm_buf[6];
+        rc = read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf, NULL);
+        if (rc) { free(patches); return rc; }
 
-    uint32_t prgm_rev = get_le32(prgm_buf);
-    if (prgm_rev != VALIDATED_FIRMWARE) {
-        char buf[16];
-        format_rev(prgm_rev, buf, sizeof(buf));
-        set_error_detail(ctrl,
-            "Firmware %s is not validated. Only V5.005 is supported",
-            buf);
-        free(patches);
-        return ALLTRAX_ERR_FIRMWARE;
+        uint32_t prgm_rev = get_le32(prgm_buf);
+        if (prgm_rev != VALIDATED_FIRMWARE) {
+            char buf[16];
+            format_rev(prgm_rev, buf, sizeof(buf));
+            set_error_detail(ctrl,
+                "Firmware %s is not validated. Only V5.005 is supported",
+                buf);
+            free(patches);
+            return ALLTRAX_ERR_FIRMWARE;
+        }
     }
 
     /* 3. Check GoodSet markers */
-    uint8_t gs_buf[2];
+    if (!opts->skip_goodset) {
+        uint8_t gs_buf[2];
 
-    rc = read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf, NULL);
-    if (rc) { free(patches); return rc; }
-    uint16_t v_gs = get_le16(gs_buf);
+        rc = read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf, NULL);
+        if (rc) { free(patches); return rc; }
+        uint16_t v_gs = get_le16(gs_buf);
 
-    rc = read_memory(ctrl, ADDR_F_GOODSET, 2, gs_buf, NULL);
-    if (rc) { free(patches); return rc; }
-    uint16_t f_gs = get_le16(gs_buf);
+        rc = read_memory(ctrl, ADDR_F_GOODSET, 2, gs_buf, NULL);
+        if (rc) { free(patches); return rc; }
+        uint16_t f_gs = get_le16(gs_buf);
 
-    if (f_gs != 0x0000) {
-        set_error_detail(ctrl,
-            "Factory defaults corrupted (F_GoodSet=0x%04X, expected 0x0000)",
-            f_gs);
-        free(patches);
-        return ALLTRAX_ERR_FLASH;
-    }
-    if (v_gs != 0x0000) {
-        set_error_detail(ctrl,
-            "User settings invalid (V_GoodSet=0x%04X, expected 0x0000). "
-            "Previous write may have been interrupted", v_gs);
-        free(patches);
-        return ALLTRAX_ERR_FLASH;
-    }
-
-    /* 4. Read RunMode — confirm in RUN mode */
-    uint8_t mode_buf[1];
-    rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf, NULL);
-    if (rc) { free(patches); return rc; }
-
-    if (mode_buf[0] != RUN_MODE_RUN) {
-        set_error_detail(ctrl,
-            "Controller not in RUN mode (RunMode=0x%02X)", mode_buf[0]);
-        free(patches);
-        return ALLTRAX_ERR_NOT_RUN;
+        if (f_gs != 0x0000) {
+            set_error_detail(ctrl,
+                "Factory defaults corrupted (F_GoodSet=0x%04X, expected 0x0000)",
+                f_gs);
+            free(patches);
+            return ALLTRAX_ERR_FLASH;
+        }
+        if (v_gs != 0x0000) {
+            set_error_detail(ctrl,
+                "User settings invalid (V_GoodSet=0x%04X, expected 0x0000). "
+                "Previous write may have been interrupted", v_gs);
+            free(patches);
+            return ALLTRAX_ERR_FLASH;
+        }
     }
 
-    /* 5-10: CAL bracket with goto cleanup */
+    /* 4-5: CAL bracket (optional) */
     bool in_cal = false;
     uint8_t* page_data = malloc(VARSET_SIZE);
     if (!page_data) { free(patches); return ALLTRAX_ERR_NO_MEMORY; }
 
-    /* Enter CAL mode */
-    uint8_t cal = RUN_MODE_CAL;
-    rc = write_memory(ctrl, ADDR_RUN_MODE, &cal, 1);
-    if (rc) goto flash_cleanup;
-    in_cal = true;
+    if (!opts->skip_cal) {
+        uint8_t mode_buf[1];
+        rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf, NULL);
+        if (rc) { free(page_data); free(patches); return rc; }
+
+        if (mode_buf[0] != RUN_MODE_RUN) {
+            set_error_detail(ctrl,
+                "Controller not in RUN mode (RunMode=0x%02X)", mode_buf[0]);
+            free(page_data);
+            free(patches);
+            return ALLTRAX_ERR_NOT_RUN;
+        }
+
+        uint8_t cal = RUN_MODE_CAL;
+        rc = write_memory(ctrl, ADDR_RUN_MODE, &cal, 1);
+        if (rc) goto flash_cleanup;
+        in_cal = true;
+    }
 
     /* 6. Read full VARSET page (2048 bytes) */
     rc = read_memory_range(ctrl, VARSET_ADDR, VARSET_SIZE, page_data);
@@ -507,7 +520,7 @@ alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
     if (rc) goto flash_cleanup;
 
     /* 10. Read-back verification */
-    {
+    if (!opts->skip_verify) {
         uint8_t* readback = malloc(VARSET_SIZE);
         if (!readback) { rc = ALLTRAX_ERR_NO_MEMORY; goto flash_cleanup; }
 

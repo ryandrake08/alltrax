@@ -23,8 +23,16 @@ int cmd_write(int argc, char** argv)
     int first_arg = cli_parse_flags(argc, argv, &flags);
 
     if (first_arg >= argc) {
-        fprintf(stderr, "Usage: alltrax write [--no-cal] [--no-verify] "
-                        "[--force] [--reset] var=value ...\n");
+        fprintf(stderr,
+            "Usage: alltrax write [flags] var=value ...\n"
+            "\n"
+            "Flags:\n"
+            "  --no-cal         Skip CAL/RUN mode bracket\n"
+            "  --no-verify      Skip read-back verification (FLASH)\n"
+            "  --no-goodset     Skip GoodSet pre-check (allows write when\n"
+            "                   a previous interrupted write left GoodSet invalid)\n"
+            "  --no-fw-version  Skip firmware version check\n"
+            "  --reset          Reboot controller after FLASH write\n");
         return 1;
     }
 
@@ -129,9 +137,17 @@ int cmd_write(int argc, char** argv)
         }
     }
 
+    alltrax_write_opts write_opts = {
+        .skip_cal = flags.no_cal,
+        .skip_verify = flags.no_verify,
+        .skip_goodset = flags.no_goodset,
+        .skip_fw_check = flags.no_fw_version,
+    };
+
     /* Batch write RAM variables in one CAL/RUN bracket */
     if (ram_count > 0) {
-        err = alltrax_write_ram_vars(ctrl, ram_vars, ram_values, ram_count);
+        err = alltrax_write_ram_vars(ctrl, ram_vars, ram_values, ram_count,
+                                     &write_opts);
         if (err) {
             cli_error(ctrl, err, "writing RAM variables");
             ret = 1;
@@ -144,7 +160,7 @@ int cmd_write(int argc, char** argv)
     /* Batch write FLASH variables in one page cycle */
     if (flash_count > 0) {
         err = alltrax_write_flash_vars(ctrl, flash_vars, flash_values,
-                                       flash_count);
+                                       flash_count, &write_opts);
         if (err) {
             cli_error(ctrl, err, "writing FLASH settings");
             ret = 1;

@@ -36,8 +36,10 @@ int cli_parse_flags(int argc, char** argv, cli_flags* flags)
             flags->no_cal = true;
         else if (strcmp(argv[i], "--no-verify") == 0)
             flags->no_verify = true;
-        else if (strcmp(argv[i], "--force") == 0)
-            flags->force = true;
+        else if (strcmp(argv[i], "--no-goodset") == 0)
+            flags->no_goodset = true;
+        else if (strcmp(argv[i], "--no-fw-version") == 0)
+            flags->no_fw_version = true;
         else if (strcmp(argv[i], "--reset") == 0)
             flags->reset = true;
         else
@@ -58,11 +60,6 @@ static void print_usage(void)
         "  reset     Reboot controller\n"
         "  monitor   Live polling (Ctrl+C to stop)\n"
         "  errors    Error flags and history\n"
-        "\n"
-        "Global flags:\n"
-        "  --no-cal      Skip CAL/RUN bracket\n"
-        "  --no-verify   Skip read-back verification\n"
-        "  --force       Allow writes on unrecognized firmware\n"
     );
 }
 

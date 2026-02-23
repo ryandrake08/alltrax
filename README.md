@@ -78,14 +78,15 @@ alltrax write LoBat_Vlim=28.1 HiBat_Vlim=61.0
 alltrax write Fan_On=1
 ```
 
-### Flags
+### Write flags
 
 | Flag | Effect |
 |------|--------|
 | `--no-cal` | Skip CAL/RUN mode bracket (safe for bench programming with no motor) |
 | `--no-verify` | Skip read-back verification after FLASH write |
-| `--force` | Allow writes on unrecognized firmware versions |
-| `--reset` | Reboot controller after FLASH write (`write` only) |
+| `--no-goodset` | Skip GoodSet corruption pre-check (required to write when a previous interrupted write left GoodSet invalid) |
+| `--no-fw-version` | Skip firmware version check |
+| `--reset` | Reboot controller after FLASH write |
 
 ## Building
 
@@ -367,23 +368,34 @@ alltrax_read_vars(ctrl, ptrs, count, vals);
 
 ```c
 alltrax_error alltrax_write_ram_vars(alltrax_controller* ctrl,
-    const alltrax_var_def** vars, const double* values, size_t count);
+    const alltrax_var_def** vars, const double* values, size_t count,
+    const alltrax_write_opts* opts);
 alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
-    const alltrax_var_def** vars, const double* values, size_t count);
+    const alltrax_var_def** vars, const double* values, size_t count,
+    const alltrax_write_opts* opts);
 ```
 
 Both functions take arrays of variable definitions and display-scale values.
 Values are automatically converted from display units to raw device format.
+Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
+`alltrax_write_opts` struct to control individual safety checks:
+
+| Field | Effect |
+|-------|--------|
+| `skip_cal` | Skip CAL/RUN bracket (safe for bench programming with no motor) |
+| `skip_verify` | Skip read-back verification (FLASH only) |
+| `skip_goodset` | Skip GoodSet corruption pre-check (FLASH only) |
+| `skip_fw_check` | Skip firmware version check (FLASH only) |
 
 **RAM writes** take effect immediately but are not persistent across power
 cycles. The library enters CAL mode, writes all variables, then restores RUN
-mode.
+mode. Honors `skip_cal`.
 
 **FLASH writes** are persistent. The library performs a full page cycle: read
 the 2KB settings page, patch in the new values, erase the page, write it back,
 and verify. Multiple variables are batched into a single page cycle. The
 controller requires `allow_writes=true` and firmware V5.005. Only variables
-with `is_flash=true` can be written with this function.
+with `is_flash=true` can be written with this function. Honors all four flags.
 
 Example:
 
@@ -393,7 +405,7 @@ const alltrax_var_def* vars[] = {
     alltrax_find_var("HiBat_Vlim"),
 };
 double values[] = { 28.1, 61.0 };
-alltrax_write_flash_vars(ctrl, vars, values, 2);
+alltrax_write_flash_vars(ctrl, vars, values, 2, NULL);
 ```
 
 ### Monitoring
