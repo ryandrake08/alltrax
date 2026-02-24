@@ -470,21 +470,10 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
 
         if (!opts->skip_goodset) {
             uint8_t gs_buf[2];
-
             rc = read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf, NULL);
             if (rc) return rc;
             uint16_t v_gs = get_le16(gs_buf);
 
-            rc = read_memory(ctrl, ADDR_F_GOODSET, 2, gs_buf, NULL);
-            if (rc) return rc;
-            uint16_t f_gs = get_le16(gs_buf);
-
-            if (f_gs != 0x0000) {
-                set_error_detail(ctrl,
-                    "Factory defaults corrupted "
-                    "(F_GoodSet=0x%04X, expected 0x0000)", f_gs);
-                return ALLTRAX_ERR_FLASH;
-            }
             if (v_gs != 0x0000) {
                 set_error_detail(ctrl,
                     "User settings invalid "
