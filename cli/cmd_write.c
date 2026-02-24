@@ -94,6 +94,22 @@ int cmd_write(int argc, char** argv)
             }
         }
 
+        /* Validate value against bounds */
+        alltrax_error verr = alltrax_validate_var_value(var, value);
+        if (verr) {
+            double bmin, bmax;
+            alltrax_var_display_bounds(var, &bmin, &bmax);
+            const char* u = var->unit;
+            if (u[0])
+                fprintf(stderr, "Error: %s value %g out of range [%g, %g] %s\n",
+                        name, value, bmin, bmax, u);
+            else
+                fprintf(stderr, "Error: %s value %g out of range [%g, %g]\n",
+                        name, value, bmin, bmax);
+            free(assigns);
+            return 1;
+        }
+
         assigns[i].var = var;
         assigns[i].value = value;
     }

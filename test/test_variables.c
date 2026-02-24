@@ -421,6 +421,72 @@ static int test_decode_out_of_bounds(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 13. Bounds validation                                               */
+/* ------------------------------------------------------------------ */
+
+static int test_validate_speed_limit_in_range(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("N_Speed_Limit");
+    /* 4000 RPM, scale=1.0, raw=4000, bounds [1000, 8000] */
+    ASSERT_EQ(alltrax_validate_var_value(var, 4000.0), ALLTRAX_OK);
+    return 0;
+}
+
+static int test_validate_speed_limit_too_low(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("N_Speed_Limit");
+    /* 500 RPM, raw=500, below min 1000 */
+    ASSERT_EQ(alltrax_validate_var_value(var, 500.0), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
+static int test_validate_speed_limit_too_high(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("N_Speed_Limit");
+    /* 9000 RPM, raw=9000, above max 8000 */
+    ASSERT_EQ(alltrax_validate_var_value(var, 9000.0), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
+static int test_validate_regen_negative_in_range(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("N_Max_Batt_Regen_Amps");
+    /* scale = 20.0/819.0 ≈ 0.02442. -50% → raw = -50/0.02442 ≈ -2048 */
+    /* bounds [-4095, 0] */
+    ASSERT_EQ(alltrax_validate_var_value(var, -50.0), ALLTRAX_OK);
+    return 0;
+}
+
+static int test_validate_unbounded_var(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("LoBat_Vlim");
+    /* UINT16 type range: [0, 65535], no explicit bounds */
+    /* 0.1V → raw=1, 6553.5V → raw=65535, both should pass */
+    ASSERT_EQ(alltrax_validate_var_value(var, 0.1), ALLTRAX_OK);
+    ASSERT_EQ(alltrax_validate_var_value(var, 6553.5), ALLTRAX_OK);
+    return 0;
+}
+
+static int test_validate_bool_skips_bounds(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("HPD");
+    ASSERT_EQ(alltrax_validate_var_value(var, 1.0), ALLTRAX_OK);
+    ASSERT_EQ(alltrax_validate_var_value(var, 0.0), ALLTRAX_OK);
+    return 0;
+}
+
+static int test_display_bounds(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("N_Speed_Limit");
+    /* scale=1.0, offset=0, bounds [1000, 8000] */
+    double bmin, bmax;
+    alltrax_var_display_bounds(var, &bmin, &bmax);
+    ASSERT_NEAR(bmin, 1000.0, 0.001);
+    ASSERT_NEAR(bmax, 8000.0, 0.001);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Test runner                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -476,4 +542,13 @@ void run_variables_tests(void)
 
     /* Edge cases */
     RUN_TEST(test_decode_out_of_bounds);
+
+    /* Bounds validation */
+    RUN_TEST(test_validate_speed_limit_in_range);
+    RUN_TEST(test_validate_speed_limit_too_low);
+    RUN_TEST(test_validate_speed_limit_too_high);
+    RUN_TEST(test_validate_regen_negative_in_range);
+    RUN_TEST(test_validate_unbounded_var);
+    RUN_TEST(test_validate_bool_skips_bounds);
+    RUN_TEST(test_display_bounds);
 }

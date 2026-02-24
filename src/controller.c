@@ -290,6 +290,12 @@ alltrax_error alltrax_write_ram_vars(alltrax_controller* ctrl,
             free(encoded);
             return ALLTRAX_ERR_ADDRESS;
         }
+        alltrax_error vrc = alltrax_validate_var_value(vars[i], values[i]);
+        if (vrc) {
+            set_error_detail(ctrl, "Value out of range for %s", vars[i]->name);
+            free(encoded);
+            return vrc;
+        }
         encoded[i].addr = vars[i]->address;
         encoded[i].len = alltrax_encode_var(vars[i], values[i], encoded[i].data);
         if (encoded[i].len <= 0) {
@@ -409,6 +415,12 @@ alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
                 VARSET_ADDR + VARSET_SIZE);
             free(patches);
             return ALLTRAX_ERR_ADDRESS;
+        }
+        alltrax_error vrc = alltrax_validate_var_value(var, values[i]);
+        if (vrc) {
+            set_error_detail(ctrl, "Value out of range for %s", var->name);
+            free(patches);
+            return vrc;
         }
         patches[i].offset = var->address - VARSET_ADDR;
         patches[i].len = alltrax_encode_var(var, values[i], patches[i].data);

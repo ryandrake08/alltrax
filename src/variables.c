@@ -21,17 +21,19 @@
 /* ------------------------------------------------------------------ */
 
 /* Shorthand macros for defining variables */
-#define VAR_RO(n, d, a, t, sc, off, u) { n, d, a, t, 0, sc, off, u, false, true }
-#define VAR_RW(n, d, a, t, sc, off, u) { n, d, a, t, 0, sc, off, u, true, true }
-#define VAR_BOOL_RO(n, d, a) { n, d, a, ALLTRAX_TYPE_BOOL, 0, 1.0, 0, "", false, true }
-#define VAR_BOOL_RW(n, d, a) { n, d, a, ALLTRAX_TYPE_BOOL, 0, 1.0, 0, "", true, true }
-#define VAR_STR_RO(n, d, a, sz) { n, d, a, ALLTRAX_TYPE_STRING, sz, 1.0, 0, "", false, true }
-#define VAR_STR_RW(n, d, a, sz) { n, d, a, ALLTRAX_TYPE_STRING, sz, 1.0, 0, "", true, true }
+#define VAR_RO(n, d, a, t, sc, off, u) { n, d, a, t, 0, sc, off, u, false, true, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
+#define VAR_RW(n, d, a, t, sc, off, u) { n, d, a, t, 0, sc, off, u, true, true, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
+#define VAR_RW_B(n, d, a, t, sc, off, u, mn, mx) { n, d, a, t, 0, sc, off, u, true, true, mn, mx }
+#define VAR_BOOL_RO(n, d, a) { n, d, a, ALLTRAX_TYPE_BOOL, 0, 1.0, 0, "", false, true, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
+#define VAR_BOOL_RW(n, d, a) { n, d, a, ALLTRAX_TYPE_BOOL, 0, 1.0, 0, "", true, true, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
+#define VAR_STR_RO(n, d, a, sz) { n, d, a, ALLTRAX_TYPE_STRING, sz, 1.0, 0, "", false, true, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
+#define VAR_STR_RW(n, d, a, sz) { n, d, a, ALLTRAX_TYPE_STRING, sz, 1.0, 0, "", true, true, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
 /* RAM variables (not FLASH) */
-#define VAR_RAM_RO(n, d, a, t, sc, off, u) { n, d, a, t, 0, sc, off, u, false, false }
-#define VAR_RAM_BOOL_RO(n, d, a) { n, d, a, ALLTRAX_TYPE_BOOL, 0, 1.0, 0, "", false, false }
-#define VAR_RAM_RW(n, d, a, t, sc, off, u) { n, d, a, t, 0, sc, off, u, true, false }
-#define VAR_RAM_BOOL_RW(n, d, a) { n, d, a, ALLTRAX_TYPE_BOOL, 0, 1.0, 0, "", true, false }
+#define VAR_RAM_RO(n, d, a, t, sc, off, u) { n, d, a, t, 0, sc, off, u, false, false, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
+#define VAR_RAM_BOOL_RO(n, d, a) { n, d, a, ALLTRAX_TYPE_BOOL, 0, 1.0, 0, "", false, false, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
+#define VAR_RAM_RW(n, d, a, t, sc, off, u) { n, d, a, t, 0, sc, off, u, true, false, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
+#define VAR_RAM_RW_B(n, d, a, t, sc, off, u, mn, mx) { n, d, a, t, 0, sc, off, u, true, false, mn, mx }
+#define VAR_RAM_BOOL_RW(n, d, a) { n, d, a, ALLTRAX_TYPE_BOOL, 0, 1.0, 0, "", true, false, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
 
 /* --- VOLTAGE --- */
 static const alltrax_var_def voltage_vars[] = {
@@ -44,61 +46,61 @@ static const alltrax_var_def voltage_vars[] = {
 
 /* --- NORMAL USER PROFILE --- */
 static const alltrax_var_def normal_user_vars[] = {
-    VAR_RW("N_Max_Batt_Motor_Amps", "Max battery amps (motoring)", 0x08002040, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("N_Max_Arm_Motor_Amps", "Max output amps (motoring)", 0x08002042, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("N_Max_Batt_Regen_Amps", "Max battery amps (regen)", 0x08002044, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("N_Max_Arm_Regen_Amps", "Max output amps (regen)", 0x08002046, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("N_RollDetect_BrakingCurrent", "Roll detect braking current", 0x08002048, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("N_Reverse_MotorS", "Max reverse speed", 0x0800204A, ALLTRAX_TYPE_INT16, 1.0, 0, "%"),
-    VAR_RW("N_Speed_Limit", "Speed limit", 0x0800204C, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM"),
+    VAR_RW_B("N_Max_Batt_Motor_Amps", "Max battery amps (motoring)", 0x08002040, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", 0, 4095),
+    VAR_RW_B("N_Max_Arm_Motor_Amps", "Max output amps (motoring)", 0x08002042, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", 0, 4095),
+    VAR_RW_B("N_Max_Batt_Regen_Amps", "Max battery amps (regen)", 0x08002044, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
+    VAR_RW_B("N_Max_Arm_Regen_Amps", "Max output amps (regen)", 0x08002046, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
+    VAR_RW_B("N_RollDetect_BrakingCurrent", "Roll detect braking current", 0x08002048, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
+    VAR_RW_B("N_Reverse_MotorS", "Max reverse speed", 0x0800204A, ALLTRAX_TYPE_INT16, 1.0, 0, "%", 0, 100),
+    VAR_RW_B("N_Speed_Limit", "Speed limit", 0x0800204C, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM", 1000, 8000),
     VAR_BOOL_RW("N_Turbo", "Turbo mode", 0x0800204E),
     VAR_BOOL_RW("N_DriveStyle", "Drive style (true=Street)", 0x0800204F),
-    VAR_RW("N_Max_Arm_Regen_Amps_Max", "Max regen amps (max range)", 0x08002050, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("N_Speed_Limit_Max", "Speed limit max range", 0x08002052, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM"),
-    VAR_RW("N_Forward_Speed", "Max forward speed", 0x08002058, ALLTRAX_TYPE_INT16, 1.0, 0, "%"),
-    VAR_RW("N_Forward_Speed_Max", "Max forward speed max range", 0x0800205A, ALLTRAX_TYPE_INT16, 1.0, 0, "%"),
-    VAR_RW("N_Throttle_Rate", "Throttle accel rate", 0x080020A2, ALLTRAX_TYPE_INT16, SCALE_THROTTLE_RATE, 0, "MU"),
-    VAR_RW("N_Throttle_Rate_Max", "Throttle accel rate max range", 0x08002056, ALLTRAX_TYPE_INT16, SCALE_THROTTLE_RATE, 0, "MU"),
+    VAR_RW_B("N_Max_Arm_Regen_Amps_Max", "Max regen amps (max range)", 0x08002050, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
+    VAR_RW_B("N_Speed_Limit_Max", "Speed limit max range", 0x08002052, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM", -1, 8000),
+    VAR_RW_B("N_Forward_Speed", "Max forward speed", 0x08002058, ALLTRAX_TYPE_INT16, 1.0, 0, "%", 0, 100),
+    VAR_RW_B("N_Forward_Speed_Max", "Max forward speed max range", 0x0800205A, ALLTRAX_TYPE_INT16, 1.0, 0, "%", -1, 100),
+    VAR_RW_B("N_Throttle_Rate", "Throttle accel rate", 0x080020A2, ALLTRAX_TYPE_INT16, SCALE_THROTTLE_RATE, 0, "MU", 1, 32767),
+    VAR_RW_B("N_Throttle_Rate_Max", "Throttle accel rate max range", 0x08002056, ALLTRAX_TYPE_INT16, SCALE_THROTTLE_RATE, 0, "MU", -1, 32767),
 };
 #define NORMAL_USER_COUNT (sizeof(normal_user_vars) / sizeof(normal_user_vars[0]))
 
 /* --- USER 1 PROFILE --- */
 static const alltrax_var_def user1_vars[] = {
-    VAR_RW("U1_Max_Batt_Motor_Amps", "Max battery amps (motoring)", 0x08002060, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("U1_Max_Arm_Motor_Amps", "Max output amps (motoring)", 0x08002062, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("U1_Max_Batt_Regen_Amps", "Max battery amps (regen)", 0x08002064, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("U1_Max_Arm_Regen_Amps", "Max output amps (regen)", 0x08002066, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("U1_RollDetect_BrakingCurrent", "Roll detect braking current", 0x08002068, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("U1_Reverse_MotorS", "Max reverse speed", 0x0800206A, ALLTRAX_TYPE_INT16, 1.0, 0, "%"),
-    VAR_RW("U1_Speed_Limit", "Speed limit", 0x0800206C, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM"),
+    VAR_RW_B("U1_Max_Batt_Motor_Amps", "Max battery amps (motoring)", 0x08002060, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", 0, 4095),
+    VAR_RW_B("U1_Max_Arm_Motor_Amps", "Max output amps (motoring)", 0x08002062, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", 0, 4095),
+    VAR_RW_B("U1_Max_Batt_Regen_Amps", "Max battery amps (regen)", 0x08002064, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
+    VAR_RW_B("U1_Max_Arm_Regen_Amps", "Max output amps (regen)", 0x08002066, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
+    VAR_RW_B("U1_RollDetect_BrakingCurrent", "Roll detect braking current", 0x08002068, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
+    VAR_RW_B("U1_Reverse_MotorS", "Max reverse speed", 0x0800206A, ALLTRAX_TYPE_INT16, 1.0, 0, "%", 0, 100),
+    VAR_RW_B("U1_Speed_Limit", "Speed limit", 0x0800206C, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM", 1000, 8000),
     VAR_BOOL_RW("U1_Turbo", "Turbo mode", 0x0800206E),
     VAR_BOOL_RW("U1_DriveStyle", "Drive style (true=Street)", 0x0800206F),
-    VAR_RW("U1_Max_Arm_Regen_Amps_Max", "Max regen amps (max range)", 0x08002070, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("U1_Speed_Limit_Max", "Speed limit max range", 0x08002072, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM"),
-    VAR_RW("U1_Forward_Speed", "Max forward speed", 0x08002078, ALLTRAX_TYPE_INT16, 1.0, 0, "%"),
-    VAR_RW("U1_Forward_Speed_Max", "Max forward speed max range", 0x0800207A, ALLTRAX_TYPE_INT16, 1.0, 0, "%"),
-    VAR_RW("U1_Throttle_Rate", "Throttle accel rate", 0x08002074, ALLTRAX_TYPE_INT16, SCALE_THROTTLE_RATE, 0, "MU"),
-    VAR_RW("U1_Throttle_Rate_Max", "Throttle accel rate max range", 0x08002076, ALLTRAX_TYPE_INT16, SCALE_THROTTLE_RATE, 0, "MU"),
+    VAR_RW_B("U1_Max_Arm_Regen_Amps_Max", "Max regen amps (max range)", 0x08002070, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
+    VAR_RW_B("U1_Speed_Limit_Max", "Speed limit max range", 0x08002072, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM", -1, 8000),
+    VAR_RW_B("U1_Forward_Speed", "Max forward speed", 0x08002078, ALLTRAX_TYPE_INT16, 1.0, 0, "%", 0, 100),
+    VAR_RW_B("U1_Forward_Speed_Max", "Max forward speed max range", 0x0800207A, ALLTRAX_TYPE_INT16, 1.0, 0, "%", -1, 100),
+    VAR_RW_B("U1_Throttle_Rate", "Throttle accel rate", 0x08002074, ALLTRAX_TYPE_INT16, SCALE_THROTTLE_RATE, 0, "MU", 1, 32767),
+    VAR_RW_B("U1_Throttle_Rate_Max", "Throttle accel rate max range", 0x08002076, ALLTRAX_TYPE_INT16, SCALE_THROTTLE_RATE, 0, "MU", -1, 32767),
 };
 #define USER1_COUNT (sizeof(user1_vars) / sizeof(user1_vars[0]))
 
 /* --- USER 2 PROFILE --- */
 static const alltrax_var_def user2_vars[] = {
-    VAR_RW("U2_Max_Batt_Motor_Amps", "Max battery amps (motoring)", 0x08002080, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("U2_Max_Arm_Motor_Amps", "Max output amps (motoring)", 0x08002082, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("U2_Max_Batt_Regen_Amps", "Max battery amps (regen)", 0x08002084, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("U2_Max_Arm_Regen_Amps", "Max output amps (regen)", 0x08002086, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("U2_RollDetect_BrakingCurrent", "Roll detect braking current", 0x08002088, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("U2_Reverse_MotorS", "Max reverse speed", 0x0800208A, ALLTRAX_TYPE_INT16, 1.0, 0, "%"),
-    VAR_RW("U2_Speed_Limit", "Speed limit", 0x0800208C, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM"),
+    VAR_RW_B("U2_Max_Batt_Motor_Amps", "Max battery amps (motoring)", 0x08002080, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", 0, 4095),
+    VAR_RW_B("U2_Max_Arm_Motor_Amps", "Max output amps (motoring)", 0x08002082, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", 0, 4095),
+    VAR_RW_B("U2_Max_Batt_Regen_Amps", "Max battery amps (regen)", 0x08002084, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
+    VAR_RW_B("U2_Max_Arm_Regen_Amps", "Max output amps (regen)", 0x08002086, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
+    VAR_RW_B("U2_RollDetect_BrakingCurrent", "Roll detect braking current", 0x08002088, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
+    VAR_RW_B("U2_Reverse_MotorS", "Max reverse speed", 0x0800208A, ALLTRAX_TYPE_INT16, 1.0, 0, "%", 0, 100),
+    VAR_RW_B("U2_Speed_Limit", "Speed limit", 0x0800208C, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM", 1000, 8000),
     VAR_BOOL_RW("U2_Turbo", "Turbo mode", 0x0800208E),
     VAR_BOOL_RW("U2_DriveStyle", "Drive style (true=Street)", 0x0800208F),
-    VAR_RW("U2_Max_Arm_Regen_Amps_Max", "Max regen amps (max range)", 0x08002090, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%"),
-    VAR_RW("U2_Speed_Limit_Max", "Speed limit max range", 0x08002092, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM"),
-    VAR_RW("U2_Forward_Speed", "Max forward speed", 0x08002098, ALLTRAX_TYPE_INT16, 1.0, 0, "%"),
-    VAR_RW("U2_Forward_Speed_Max", "Max forward speed max range", 0x0800209A, ALLTRAX_TYPE_INT16, 1.0, 0, "%"),
-    VAR_RW("U2_Throttle_Rate", "Throttle accel rate", 0x08002094, ALLTRAX_TYPE_INT16, SCALE_THROTTLE_RATE, 0, "MU"),
-    VAR_RW("U2_Throttle_Rate_Max", "Throttle accel rate max range", 0x08002096, ALLTRAX_TYPE_INT16, SCALE_THROTTLE_RATE, 0, "MU"),
+    VAR_RW_B("U2_Max_Arm_Regen_Amps_Max", "Max regen amps (max range)", 0x08002090, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
+    VAR_RW_B("U2_Speed_Limit_Max", "Speed limit max range", 0x08002092, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM", -1, 8000),
+    VAR_RW_B("U2_Forward_Speed", "Max forward speed", 0x08002098, ALLTRAX_TYPE_INT16, 1.0, 0, "%", 0, 100),
+    VAR_RW_B("U2_Forward_Speed_Max", "Max forward speed max range", 0x0800209A, ALLTRAX_TYPE_INT16, 1.0, 0, "%", -1, 100),
+    VAR_RW_B("U2_Throttle_Rate", "Throttle accel rate", 0x08002094, ALLTRAX_TYPE_INT16, SCALE_THROTTLE_RATE, 0, "MU", 1, 32767),
+    VAR_RW_B("U2_Throttle_Rate_Max", "Throttle accel rate max range", 0x08002096, ALLTRAX_TYPE_INT16, SCALE_THROTTLE_RATE, 0, "MU", -1, 32767),
 };
 #define USER2_COUNT (sizeof(user2_vars) / sizeof(user2_vars[0]))
 
@@ -109,13 +111,13 @@ static const alltrax_var_def throttle_vars[] = {
     VAR_BOOL_RW("Relay_Off_At_Zero", "Turn off relay at zero throttle", 0x080020A6),
     VAR_BOOL_RW("Speed_Limit_On", "Speed limiting enabled", 0x080020A7),
     VAR_BOOL_RW("Tach_4_8", "false=4-pole, true=8-pole sensor", 0x080020A8),
-    VAR_RW("ABS_Lo_Throt_Min", "ABS throttle low input min", 0x080020AA, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
-    VAR_RW("ABS_Lo_Throt_Max", "ABS throttle low input max", 0x080020AC, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
-    VAR_RW("ABS_Hi_Throt_Min", "ABS throttle high input min", 0x080020AE, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
-    VAR_RW("ABS_Hi_Throt_Max", "ABS throttle high input max", 0x080020B0, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
-    VAR_RW("ABS_Throt_Min", "ABS throttle min", 0x080020B2, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
-    VAR_RW("ABS_Throt_Max", "ABS throttle max", 0x080020B4, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
-    VAR_RW("ABS_HPD_Offset", "ABS throttle HPD offset", 0x080020B6, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RW_B("ABS_Lo_Throt_Min", "ABS throttle low input min", 0x080020AA, ALLTRAX_TYPE_INT16, 1.0, 0, "", 0, 4095),
+    VAR_RW_B("ABS_Lo_Throt_Max", "ABS throttle low input max", 0x080020AC, ALLTRAX_TYPE_INT16, 1.0, 0, "", 0, 4095),
+    VAR_RW_B("ABS_Hi_Throt_Min", "ABS throttle high input min", 0x080020AE, ALLTRAX_TYPE_INT16, 1.0, 0, "", 0, 4095),
+    VAR_RW_B("ABS_Hi_Throt_Max", "ABS throttle high input max", 0x080020B0, ALLTRAX_TYPE_INT16, 1.0, 0, "", 0, 4095),
+    VAR_RW_B("ABS_Throt_Min", "ABS throttle min", 0x080020B2, ALLTRAX_TYPE_INT16, 1.0, 0, "", 0, 4095),
+    VAR_RW_B("ABS_Throt_Max", "ABS throttle max", 0x080020B4, ALLTRAX_TYPE_INT16, 1.0, 0, "", 0, 4095),
+    VAR_RW_B("ABS_HPD_Offset", "ABS throttle HPD offset", 0x080020B6, ALLTRAX_TYPE_INT16, 1.0, 0, "", 0, 4095),
     VAR_BOOL_RW("ABS_Slope", "ABS throttle slope", 0x080020B8),
     VAR_BOOL_RW("ABS_Differential", "false=single, true=differential", 0x080020B9),
 };
@@ -126,7 +128,7 @@ static const alltrax_var_def other_settings_vars[] = {
     VAR_BOOL_RW("High_Side_Output", "Changes output to low side", 0x080020BA),
     VAR_BOOL_RW("User3_Invert", "Charger interlock polarity", 0x080020BB),
     VAR_BOOL_RW("BMS_Expected", "True if BMS should be connected", 0x080020BC),
-    VAR_RW("UserInputs_State", "0=Switches, 1=U1 Analog, 2=Both Analog", 0x080020BE, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RW_B("UserInputs_State", "0=Switches, 1=U1 Analog, 2=Both Analog", 0x080020BE, ALLTRAX_TYPE_INT16, 1.0, 0, "", 0, 2),
     VAR_STR_RW("Throttle_Type_Name", "Name of selected throttle type", 0x080020C0, 16),
 };
 #define OTHER_SETTINGS_COUNT (sizeof(other_settings_vars) / sizeof(other_settings_vars[0]))
@@ -141,12 +143,12 @@ static const alltrax_var_def tach_vars[] = {
 /* --- FIELD (scalars + strings; array curve tables skipped) --- */
 static const alltrax_var_def field_vars[] = {
     VAR_STR_RW("F_Table_Name", "Field table name", 0x08002200, 32),
-    VAR_RW("Reverse_Field_Weaken_Percent", "Reverse field weaken", 0x08002400, ALLTRAX_TYPE_UINT8, 1.0, 0, "%"),
-    VAR_RW("Zero_RPM_Field_Boost_Percent", "Zero RPM field boost", 0x08002401, ALLTRAX_TYPE_UINT8, 1.0, 0, "%"),
-    VAR_RW("RPM_Field_Boost_Stop", "RPM field boost stop", 0x08002402, ALLTRAX_TYPE_UINT16, 1.0, 0, "RPM"),
-    VAR_RW("Max_Field_Weaken_Amps", "Max field weaken current", 0x08002404, ALLTRAX_TYPE_UINT16, 0.01, 0, "A"),
-    VAR_RW("Turbo_Start_RPM", "Turbo start RPM", 0x08002406, ALLTRAX_TYPE_UINT16, 1.0, 0, "RPM"),
-    VAR_RW("Turbo_Weaken_Percent", "Turbo weaken percent", 0x08002408, ALLTRAX_TYPE_UINT8, 1.0, 0, "%"),
+    VAR_RW_B("Reverse_Field_Weaken_Percent", "Reverse field weaken", 0x08002400, ALLTRAX_TYPE_UINT8, 1.0, 0, "%", 80, 100),
+    VAR_RW_B("Zero_RPM_Field_Boost_Percent", "Zero RPM field boost", 0x08002401, ALLTRAX_TYPE_UINT8, 1.0, 0, "%", 1, 100),
+    VAR_RW_B("RPM_Field_Boost_Stop", "RPM field boost stop", 0x08002402, ALLTRAX_TYPE_UINT16, 1.0, 0, "RPM", 50, 1000),
+    VAR_RW_B("Max_Field_Weaken_Amps", "Max field weaken current", 0x08002404, ALLTRAX_TYPE_UINT16, 0.01, 0, "A", 0, 1000),
+    VAR_RW_B("Turbo_Start_RPM", "Turbo start RPM", 0x08002406, ALLTRAX_TYPE_UINT16, 1.0, 0, "RPM", 1000, 8000),
+    VAR_RW_B("Turbo_Weaken_Percent", "Turbo weaken percent", 0x08002408, ALLTRAX_TYPE_UINT8, 1.0, 0, "%", 0, 75),
     VAR_STR_RO("F_F_Table_Name", "Field table name (factory)", 0x08001200, 32),
     VAR_RO("F_Reverse_Field_Weaken_Percent", "Reverse field weaken (factory)", 0x08001400, ALLTRAX_TYPE_UINT8, 1.0, 0, "%"),
     VAR_RO("F_Zero_RPM_Field_Boost_Percent", "Zero RPM field boost (factory)", 0x08001401, ALLTRAX_TYPE_UINT8, 1.0, 0, "%"),
@@ -477,6 +479,67 @@ int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf)
     }
 
     return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* Type range helpers                                                   */
+/* ------------------------------------------------------------------ */
+
+static void type_range(alltrax_var_type type, int64_t* lo, int64_t* hi)
+{
+    switch (type) {
+    case ALLTRAX_TYPE_UINT8:  *lo = 0;      *hi = UINT8_MAX;  return;
+    case ALLTRAX_TYPE_INT8:   *lo = INT8_MIN;  *hi = INT8_MAX;  return;
+    case ALLTRAX_TYPE_UINT16: *lo = 0;      *hi = UINT16_MAX; return;
+    case ALLTRAX_TYPE_INT16:  *lo = INT16_MIN; *hi = INT16_MAX; return;
+    case ALLTRAX_TYPE_UINT32: *lo = 0;      *hi = UINT32_MAX; return;
+    case ALLTRAX_TYPE_INT32:  *lo = INT32_MIN; *hi = INT32_MAX; return;
+    default:                  *lo = INT64_MIN; *hi = INT64_MAX; return;
+    }
+}
+
+/* Compute effective bounds = intersection of explicit bounds and type range */
+static void effective_bounds(const alltrax_var_def* var, int64_t* lo, int64_t* hi)
+{
+    int64_t type_lo, type_hi;
+    type_range(var->type, &type_lo, &type_hi);
+
+    *lo = var->raw_min > type_lo ? var->raw_min : type_lo;
+    *hi = var->raw_max < type_hi ? var->raw_max : type_hi;
+}
+
+alltrax_error alltrax_validate_var_value(const alltrax_var_def* var, double value)
+{
+    /* Bools and strings skip bounds checking */
+    if (var->type == ALLTRAX_TYPE_BOOL || var->type == ALLTRAX_TYPE_STRING)
+        return ALLTRAX_OK;
+
+    /* Convert display value to raw */
+    int64_t raw = (int64_t)round(value / var->scale) + var->offset;
+
+    int64_t lo, hi;
+    effective_bounds(var, &lo, &hi);
+
+    if (raw < lo || raw > hi)
+        return ALLTRAX_ERR_INVALID_ARG;
+
+    return ALLTRAX_OK;
+}
+
+void alltrax_var_display_bounds(const alltrax_var_def* var,
+    double* min_out, double* max_out)
+{
+    if (var->type == ALLTRAX_TYPE_BOOL || var->type == ALLTRAX_TYPE_STRING) {
+        *min_out = NAN;
+        *max_out = NAN;
+        return;
+    }
+
+    int64_t lo, hi;
+    effective_bounds(var, &lo, &hi);
+
+    *min_out = ((double)lo - var->offset) * var->scale;
+    *max_out = ((double)hi - var->offset) * var->scale;
 }
 
 const char* alltrax_error_flag_name(int index)

@@ -24,6 +24,7 @@
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <limits.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -141,6 +142,10 @@ typedef enum {
     ALLTRAX_TYPE_STRING,
 } alltrax_var_type;
 
+/* Sentinel values for unbounded variables */
+#define ALLTRAX_NO_MIN INT64_MIN
+#define ALLTRAX_NO_MAX INT64_MAX
+
 typedef struct {
     const char*      name;
     const char*      description;
@@ -152,6 +157,8 @@ typedef struct {
     const char*      unit;
     bool             writable;
     bool             is_flash;
+    int64_t          raw_min;   /* ALLTRAX_NO_MIN = no minimum */
+    int64_t          raw_max;   /* ALLTRAX_NO_MAX = no maximum */
 } alltrax_var_def;
 
 typedef enum {
@@ -174,6 +181,16 @@ typedef enum {
 
 const alltrax_var_def* alltrax_get_var_defs(alltrax_var_group group, size_t* count);
 const alltrax_var_def* alltrax_find_var(const char* name);
+
+/* Validate a display-unit value against the variable's bounds.
+ * Returns ALLTRAX_OK if in range, ALLTRAX_ERR_INVALID_ARG if out of range.
+ * Bools and strings always pass. */
+alltrax_error alltrax_validate_var_value(const alltrax_var_def* var, double value);
+
+/* Get effective bounds in display units. Sets *min_out / *max_out to NAN
+ * for bools, strings, or unbounded variables. */
+void alltrax_var_display_bounds(const alltrax_var_def* var,
+    double* min_out, double* max_out);
 
 /* ------------------------------------------------------------------ */
 /* Variable values                                                     */
