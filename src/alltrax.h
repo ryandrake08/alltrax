@@ -182,6 +182,9 @@ typedef enum {
 const alltrax_var_def* alltrax_get_var_defs(alltrax_var_group group, size_t* count);
 const alltrax_var_def* alltrax_find_var(const char* name);
 
+/* Get Group name (e.g. "Normal_User"). Returns NULL if group is out of range. */
+const char* alltrax_var_group_name(alltrax_var_group group);
+
 /* Validate a display-unit value against the variable's bounds.
  * Returns ALLTRAX_OK if in range, ALLTRAX_ERR_INVALID_ARG if out of range.
  * Bools and strings always pass. */
@@ -210,6 +213,9 @@ typedef struct {
     } raw;
     double display;
 } alltrax_var_value;
+
+/* Extract raw value from a var_value as int64_t. Strings return 0. */
+int64_t alltrax_var_raw_int64(const alltrax_var_value* val);
 
 /* ------------------------------------------------------------------ */
 /* Read operations                                                     */

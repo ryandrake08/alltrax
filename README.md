@@ -61,6 +61,8 @@ Alltrax Controller Monitor
 | `alltrax reset` | Reboot controller |
 | `alltrax monitor` | Live polling display (Ctrl+C to stop) |
 | `alltrax errors` | Active error flags and error history |
+| `alltrax config save [flags] <file>` | Save all settings to file |
+| `alltrax config load [flags] <file>` | Load settings from file and write to device |
 
 ### Write examples
 
@@ -88,36 +90,83 @@ alltrax write Fan_On=1
 | `--no-fw-version` | Skip firmware version check |
 | `--reset` | Reboot controller after FLASH write |
 
+### Config save/load
+
+Save and restore controller settings to a file. By default, files are 3DES
+encrypted for compatibility with the Windows Alltrax Toolkit. Use `--no-crypt`
+for plain XML.
+
+```sh
+# Save settings (encrypted, Toolkit-compatible)
+alltrax config save settings.txt
+
+# Save settings (plain XML, human-readable)
+alltrax config save --no-crypt settings.xml
+
+# Load settings from file and write to controller
+alltrax config load settings.txt
+
+# Load plain XML and reboot controller after writing
+alltrax config load --no-crypt --reset settings.xml
+```
+
+Config files saved by the Windows Toolkit ("Save All Settings") can be loaded
+with `alltrax config load`. Config files saved by the CLI can be loaded by the
+Toolkit (unless `--no-crypt` was used).
+
+| Flag | Applies to | Effect |
+|------|-----------|--------|
+| `--no-crypt` | save, load | Plain XML instead of 3DES encrypted |
+| `--no-cal` | load | Skip CAL/RUN mode bracket |
+| `--no-verify` | load | Skip read-back verification |
+| `--no-goodset` | load | Skip GoodSet pre-check |
+| `--no-fw-version` | load | Skip firmware version check |
+| `--reset` | load | Reboot controller after write |
+
 ## Building
 
 ### Dependencies
 
+Required:
+
 - C11 compiler (gcc or clang)
 - GNU Make
-- [hidapi](https://github.com/libusb/hidapi)
+- [hidapi](https://github.com/libusb/hidapi) — USB HID communication
+
+Optional (needed for the CLI, not the library):
+
+- [OpenSSL](https://www.openssl.org/) libcrypto — 3DES encryption for config files
+- [libxml2](https://gitlab.gnome.org/GNOME/libxml2) — XML parsing and generation
+
+If OpenSSL or libxml2 are not found, `make` will build the library and tests
+but skip the CLI binary. A note is printed during the build.
 
 **Linux (Debian/Ubuntu):**
 
 ```sh
+# Full build (library + CLI)
+sudo apt install build-essential libhidapi-dev libssl-dev libxml2-dev
+
+# Library only
 sudo apt install build-essential libhidapi-dev
 ```
 
 **macOS (MacPorts):**
 
 ```sh
-sudo port install hidapi
+sudo port install hidapi openssl libxml2
 ```
 
 **macOS (Homebrew):**
 
 ```sh
-brew install hidapi
+brew install hidapi openssl libxml2
 ```
 
 ### Compile
 
 ```sh
-make            # builds build/alltrax, build/liballtrax-usb.a, build/test_alltrax
+make            # builds CLI + library + tests (or library + tests if deps missing)
 make test       # runs tests
 make clean      # removes build/
 ```
@@ -547,7 +596,7 @@ User 2 (`U2_`) have the same variables at different addresses.
 | `N_Reverse_MotorS` | Max reverse speed | % | 0 – 100 |
 | `N_Speed_Limit` | Speed limit (when `Speed_Limit_On` is enabled) | RPM | 1000 – 8000 |
 | `N_Turbo` | Turbo mode (field weakening at high RPM) | bool | |
-| `N_DriveStyle` | Drive style: No = Turf (gentle), Yes = Street (full power) | bool | |
+| `N_Hunting_Buggy` | Hunting Buggy Mode | bool | |
 | `N_Max_Arm_Regen_Amps_Max` | Max regen amps user-adjustable ceiling | % | -100 – 0 |
 | `N_Speed_Limit_Max` | Speed limit user-adjustable ceiling (-1 = disabled) | RPM | -1 – 8000 |
 | `N_Forward_Speed` | Max forward speed (vehicles without speed sensor) | % | 0 – 100 |
