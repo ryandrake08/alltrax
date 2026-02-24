@@ -6,6 +6,7 @@ CFLAGS   := -std=c11 -Wall -Wextra -Wpedantic -Werror
 CPPFLAGS := -Isrc
 
 UNAME := $(shell uname)
+
 ifeq ($(UNAME),Linux)
   HIDAPI_CFLAGS := $(shell pkg-config --cflags hidapi-hidraw)
   HIDAPI_LIBS   := $(shell pkg-config --libs hidapi-hidraw)
@@ -14,12 +15,27 @@ else
   HIDAPI_LIBS   := $(shell pkg-config --libs hidapi)
 endif
 
+# CLI requires libcrypto + libxml2; library and tests do not
+HAS_CRYPTO := $(shell pkg-config --exists libcrypto 2>/dev/null && echo yes)
+HAS_XML    := $(shell pkg-config --exists libxml-2.0 2>/dev/null && echo yes)
+
+ifeq ($(HAS_CRYPTO)$(HAS_XML),yesyes)
+  CRYPTO_CFLAGS := $(shell pkg-config --cflags libcrypto)
+  CRYPTO_LIBS   := $(shell pkg-config --libs libcrypto)
+  XML_CFLAGS    := $(shell pkg-config --cflags libxml-2.0)
+  XML_LIBS      := $(shell pkg-config --libs libxml-2.0)
+  BUILD_CLI     := yes
+else
+  $(info Note: libcrypto or libxml2 not found — building library and tests only (CLI skipped))
+  BUILD_CLI     :=
+endif
+
 BUILD := build
 
 # --- Sources ---
 
 LIB_SRC  := src/protocol.c src/transport.c src/controller.c src/variables.c
-CLI_SRC  := cli/main.c cli/cmd_info.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_monitor.c cli/cmd_errors.c
+CLI_SRC  := cli/main.c cli/cmd_info.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_monitor.c cli/cmd_errors.c cli/cmd_config.c
 TEST_SRC := test/test_main.c test/test_protocol.c test/test_variables.c
 
 LIB_OBJ  := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(LIB_SRC)))
@@ -32,16 +48,21 @@ TEST_BIN := $(BUILD)/test_alltrax
 
 # --- Targets ---
 
-ALL_SRC := $(LIB_SRC) $(CLI_SRC) $(TEST_SRC)
 COMPDB  := $(BUILD)/compile_commands.json
 
-all: $(CLI) $(TEST_BIN) $(COMPDB)
+ifeq ($(BUILD_CLI),yes)
+  ALL_SRC := $(LIB_SRC) $(CLI_SRC) $(TEST_SRC)
+  all: $(CLI) $(TEST_BIN) $(COMPDB)
+else
+  ALL_SRC := $(LIB_SRC) $(TEST_SRC)
+  all: $(LIB) $(TEST_BIN) $(COMPDB)
+endif
 
 $(LIB): $(LIB_OBJ)
 	$(AR) rcs $@ $^
 
 $(CLI): $(CLI_OBJ) $(LIB)
-	$(CC) -o $@ $(CLI_OBJ) $(LIB) $(HIDAPI_LIBS) -lm
+	$(CC) -o $@ $(CLI_OBJ) $(LIB) $(HIDAPI_LIBS) $(CRYPTO_LIBS) $(XML_LIBS) -lm
 
 $(TEST_BIN): $(TEST_OBJ) $(LIB)
 	$(CC) -o $@ $(TEST_OBJ) $(LIB) $(HIDAPI_LIBS) -lm
@@ -57,7 +78,7 @@ clean:
 VPATH := src cli test
 
 $(BUILD)/%.o: %.c | $(BUILD)
-	$(CC) $(CFLAGS) $(CPPFLAGS) $(HIDAPI_CFLAGS) -MMD -MP -c -o $@ $<
+	$(CC) $(CFLAGS) $(CPPFLAGS) $(HIDAPI_CFLAGS) $(CRYPTO_CFLAGS) $(XML_CFLAGS) -MMD -MP -c -o $@ $<
 
 $(BUILD):
 	mkdir -p $@
@@ -72,7 +93,7 @@ $(COMPDB): Makefile | $(BUILD)
 	for src in $(ALL_SRC); do \
 		printf '%s  { "directory": "%s", "file": "%s", "arguments": ["%s"' \
 			"$$sep" "$(CURDIR)" "$$src" "$(CC)" >> $@; \
-		for flag in $(CFLAGS) $(CPPFLAGS) $(HIDAPI_CFLAGS); do \
+		for flag in $(CFLAGS) $(CPPFLAGS) $(HIDAPI_CFLAGS) $(CRYPTO_CFLAGS) $(XML_CFLAGS); do \
 			printf ', "%s"' "$$flag" >> $@; \
 		done; \
 		printf ', "-c", "%s"] }\n' "$$src" >> $@; \

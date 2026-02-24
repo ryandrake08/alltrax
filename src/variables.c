@@ -54,7 +54,7 @@ static const alltrax_var_def normal_user_vars[] = {
     VAR_RW_B("N_Reverse_MotorS", "Max reverse speed", 0x0800204A, ALLTRAX_TYPE_INT16, 1.0, 0, "%", 0, 100),
     VAR_RW_B("N_Speed_Limit", "Speed limit", 0x0800204C, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM", 1000, 8000),
     VAR_BOOL_RW("N_Turbo", "Turbo mode", 0x0800204E),
-    VAR_BOOL_RW("N_DriveStyle", "Drive style (true=Street)", 0x0800204F),
+    VAR_BOOL_RW("N_Hunting_Buggy", "Hunting Buggy Mode", 0x0800204F),
     VAR_RW_B("N_Max_Arm_Regen_Amps_Max", "Max regen amps (max range)", 0x08002050, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
     VAR_RW_B("N_Speed_Limit_Max", "Speed limit max range", 0x08002052, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM", -1, 8000),
     VAR_RW_B("N_Forward_Speed", "Max forward speed", 0x08002058, ALLTRAX_TYPE_INT16, 1.0, 0, "%", 0, 100),
@@ -74,7 +74,7 @@ static const alltrax_var_def user1_vars[] = {
     VAR_RW_B("U1_Reverse_MotorS", "Max reverse speed", 0x0800206A, ALLTRAX_TYPE_INT16, 1.0, 0, "%", 0, 100),
     VAR_RW_B("U1_Speed_Limit", "Speed limit", 0x0800206C, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM", 1000, 8000),
     VAR_BOOL_RW("U1_Turbo", "Turbo mode", 0x0800206E),
-    VAR_BOOL_RW("U1_DriveStyle", "Drive style (true=Street)", 0x0800206F),
+    VAR_BOOL_RW("U1_Hunting_Buggy", "Hunting Buggy Mode", 0x0800206F),
     VAR_RW_B("U1_Max_Arm_Regen_Amps_Max", "Max regen amps (max range)", 0x08002070, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
     VAR_RW_B("U1_Speed_Limit_Max", "Speed limit max range", 0x08002072, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM", -1, 8000),
     VAR_RW_B("U1_Forward_Speed", "Max forward speed", 0x08002078, ALLTRAX_TYPE_INT16, 1.0, 0, "%", 0, 100),
@@ -94,7 +94,7 @@ static const alltrax_var_def user2_vars[] = {
     VAR_RW_B("U2_Reverse_MotorS", "Max reverse speed", 0x0800208A, ALLTRAX_TYPE_INT16, 1.0, 0, "%", 0, 100),
     VAR_RW_B("U2_Speed_Limit", "Speed limit", 0x0800208C, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM", 1000, 8000),
     VAR_BOOL_RW("U2_Turbo", "Turbo mode", 0x0800208E),
-    VAR_BOOL_RW("U2_DriveStyle", "Drive style (true=Street)", 0x0800208F),
+    VAR_BOOL_RW("U2_Hunting_Buggy", "Hunting Buggy Mode", 0x0800208F),
     VAR_RW_B("U2_Max_Arm_Regen_Amps_Max", "Max regen amps (max range)", 0x08002090, ALLTRAX_TYPE_INT16, SCALE_AMPS_PCT, 0, "%", -4095, 0),
     VAR_RW_B("U2_Speed_Limit_Max", "Speed limit max range", 0x08002092, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM", -1, 8000),
     VAR_RW_B("U2_Forward_Speed", "Max forward speed", 0x08002098, ALLTRAX_TYPE_INT16, 1.0, 0, "%", 0, 100),
@@ -302,6 +302,27 @@ static const char* error_flag_names[] = {
 #define ERROR_FLAG_COUNT 17
 
 /* ------------------------------------------------------------------ */
+/* Group name table                                                   */
+/* ------------------------------------------------------------------ */
+
+static const char* group_names[] = {
+    [ALLTRAX_VARS_INFO]           = "Controller_Info",
+    [ALLTRAX_VARS_VOLTAGE]        = "Voltage",
+    [ALLTRAX_VARS_NORMAL_USER]    = "Normal_User",
+    [ALLTRAX_VARS_USER1]          = "User_1",
+    [ALLTRAX_VARS_USER2]          = "User_2",
+    [ALLTRAX_VARS_TACH]           = "Tach",
+    [ALLTRAX_VARS_OTHER_SETTINGS] = "Other_Settings",
+    [ALLTRAX_VARS_THROTTLE]       = "Throttle",
+    [ALLTRAX_VARS_FIELD]          = "Field",
+    [ALLTRAX_VARS_FLAGS]          = "Flags",
+    [ALLTRAX_VARS_RAW_ADC]        = "Raw_ADC",
+    [ALLTRAX_VARS_AVG_ADC]        = "Avg_ADC",
+    [ALLTRAX_VARS_READ_VALUES]    = "Read_Values",
+    [ALLTRAX_VARS_WRITE_VALUES]   = "Write_Values",
+};
+
+/* ------------------------------------------------------------------ */
 /* Group dispatch table                                                */
 /* ------------------------------------------------------------------ */
 
@@ -331,6 +352,28 @@ static const struct var_group_entry group_table[] = {
 /* ------------------------------------------------------------------ */
 /* Public API                                                          */
 /* ------------------------------------------------------------------ */
+
+const char* alltrax_var_group_name(alltrax_var_group group)
+{
+    if ((size_t)group >= GROUP_TABLE_SIZE)
+        return NULL;
+    return group_names[group];
+}
+
+int64_t alltrax_var_raw_int64(const alltrax_var_value* val)
+{
+    switch (val->def->type) {
+    case ALLTRAX_TYPE_BOOL:   return val->raw.b ? 1 : 0;
+    case ALLTRAX_TYPE_UINT8:  return val->raw.u8;
+    case ALLTRAX_TYPE_INT8:   return val->raw.i8;
+    case ALLTRAX_TYPE_UINT16: return val->raw.u16;
+    case ALLTRAX_TYPE_INT16:  return val->raw.i16;
+    case ALLTRAX_TYPE_UINT32: return val->raw.u32;
+    case ALLTRAX_TYPE_INT32:  return val->raw.i32;
+    case ALLTRAX_TYPE_STRING: return 0;
+    }
+    return 0;
+}
 
 const alltrax_var_def* alltrax_get_var_defs(alltrax_var_group group, size_t* count)
 {

@@ -40,6 +40,8 @@ int cli_parse_flags(int argc, char** argv, cli_flags* flags)
             flags->no_goodset = true;
         else if (strcmp(argv[i], "--no-fw-version") == 0)
             flags->no_fw_version = true;
+        else if (strcmp(argv[i], "--no-crypt") == 0)
+            flags->no_crypt = true;
         else if (strcmp(argv[i], "--reset") == 0)
             flags->reset = true;
         else
@@ -60,6 +62,7 @@ static void print_usage(void)
         "  reset     Reboot controller\n"
         "  monitor   Live polling (Ctrl+C to stop)\n"
         "  errors    Error flags and history\n"
+        "  config    Save/load config files\n"
     );
 }
 
@@ -91,6 +94,8 @@ int main(int argc, char** argv)
         rc = cmd_monitor(argc - 1, argv + 1);
     else if (strcmp(cmd, "errors") == 0)
         rc = cmd_errors(argc - 1, argv + 1);
+    else if (strcmp(cmd, "config") == 0)
+        rc = cmd_config(argc - 1, argv + 1);
     else {
         fprintf(stderr, "Unknown command: %s\n", cmd);
         print_usage();

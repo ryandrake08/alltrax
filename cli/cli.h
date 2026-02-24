@@ -14,6 +14,7 @@ typedef struct {
     bool no_verify;
     bool no_goodset;
     bool no_fw_version;
+    bool no_crypt;
     bool reset;
 } cli_flags;
 
@@ -33,5 +34,6 @@ int cmd_write(int argc, char** argv);
 int cmd_reset(int argc, char** argv);
 int cmd_monitor(int argc, char** argv);
 int cmd_errors(int argc, char** argv);
+int cmd_config(int argc, char** argv);
 
 #endif /* ALLTRAX_CLI_H */
