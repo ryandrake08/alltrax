@@ -60,18 +60,33 @@ struct alltrax_controller {
 /* Address constants                                                   */
 /* ------------------------------------------------------------------ */
 
-#define ADDR_CONTROLLER_INFO  0x08000800
-#define ADDR_HARDWARE_CONFIG  0x08000880
-#define ADDR_FACT_GOODSET     0x08001800
-#define ADDR_BOOT_REV         0x080067F0
-#define ADDR_PRGM_REV         0x0801FFF0
+/* FLASH page size (XCT uses 2KB pages on STM32) */
+#define FLASH_BASE      0x08000000
+#define FLASH_PAGE_SIZE 2048
 
-/* VARSET page (user settings in FLASH) */
-#define VARSET_ADDR    0x08002000
-#define VARSET_SIZE    2048
-#define VARSET_PAGE    4
-#define ADDR_V_GOODSET 0x08002000
-#define ADDR_F_GOODSET 0x08001000
+/* Named FLASH pages */
+#define INFOSET_PAGE  1   /* 0x08000800 — controller identity */
+#define FACTSET_PAGE  2   /* 0x08001000 — factory settings */
+#define SWITCH_PAGE   3   /* 0x08001800 — mode switching */
+#define VARSET_PAGE   4   /* 0x08002000 — user settings */
+
+#define INFOSET_ADDR  (FLASH_BASE + INFOSET_PAGE * FLASH_PAGE_SIZE)
+#define FACTSET_ADDR  (FLASH_BASE + FACTSET_PAGE * FLASH_PAGE_SIZE)
+#define SWITCH_ADDR   (FLASH_BASE + SWITCH_PAGE  * FLASH_PAGE_SIZE)
+#define VARSET_ADDR   (FLASH_BASE + VARSET_PAGE  * FLASH_PAGE_SIZE)
+#define VARSET_SIZE   FLASH_PAGE_SIZE
+
+/* GoodSet markers (first 2 bytes of each settings page) */
+#define ADDR_V_GOODSET  VARSET_ADDR
+#define ADDR_F_GOODSET  FACTSET_ADDR
+
+/* Offsets within INFOSET */
+#define ADDR_CONTROLLER_INFO  INFOSET_ADDR            /* 0x08000800 */
+#define ADDR_HARDWARE_CONFIG  (INFOSET_ADDR + 0x80)   /* 0x08000880 */
+
+/* Addresses in other FLASH regions */
+#define ADDR_BOOT_REV         0x080067F0  /* page 13 (DATA) */
+#define ADDR_PRGM_REV         0x0801FFF0  /* last page (PRGM) */
 
 /* RAM addresses */
 #define ADDR_RUN_MODE  0x2000FFFA
@@ -79,6 +94,10 @@ struct alltrax_controller {
 #define RUN_MODE_CAL   0xFF
 #define RAM_BASE       0x20000000
 #define RAM_END        0x20010000
+
+/* ------------------------------------------------------------------ */
+/* IDs and other constants                                            */
+/* ------------------------------------------------------------------ */
 
 /* USB device IDs */
 #define ALLTRAX_VID    0x23D4
