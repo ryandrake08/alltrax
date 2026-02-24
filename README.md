@@ -472,6 +472,296 @@ The controller handle becomes invalid after this call — close it without
 expecting further communication. Used after FLASH writes to make new settings
 take effect without a power cycle.
 
+## Variable Reference
+
+All controller settings and status values are accessed through named variables.
+Variables are organized into groups and stored in either **FLASH** (persistent
+across power cycles) or **RAM** (live state, lost on power cycle).
+
+Factory defaults vary by controller model and electrical ratings — they are
+programmed at the factory. Read your controller's factory defaults via the
+`F_`-prefixed read-only copies (e.g. `F_Reverse_Field_Weaken_Percent`).
+
+### FLASH Variables (Persistent Settings)
+
+FLASH variables are stored in the STM32's FLASH memory and persist across power
+cycles. Writing a FLASH variable requires a full page cycle (read 2KB page,
+patch values, erase, rewrite, verify). Multiple FLASH writes in one
+`alltrax write` command are batched into a single page cycle.
+
+#### Info (read-only)
+
+Controller identity and hardware capabilities. Programmed at the factory.
+
+| Variable | Description | Unit |
+|----------|-------------|------|
+| `Model` | Controller model name (e.g. "XCT48400-DCS") | |
+| `BuildDate` | Manufacturing date | |
+| `SerialNum` | Serial number | |
+| `OriginalBootRev` | Original bootloader revision | |
+| `OriginalPrgmRev` | Original program revision | |
+| `ProgramType` | Program type identifier | |
+| `HardwareRev` | Hardware revision | |
+| `RatedVolts` | Rated voltage | V |
+| `RatedAmps` | Rated output current | A |
+| `BootRev` | Current bootloader revision | |
+| `PrgmRev` | Current program revision | |
+| `PrgmVer` | Program version number | |
+| `Var_GoodSet` | User settings valid marker (0x0000 = valid) | |
+| `Fact_GoodSet` | Factory settings valid marker (0x0000 = valid) | |
+
+#### Voltage
+
+Battery voltage limits and analog input threshold.
+
+| Variable | Description | Unit |
+|----------|-------------|------|
+| `AnalogInputs_Threshold` | Voltage above which analog inputs read as ON | V |
+| `LoBat_Vlim` | Low battery voltage cutoff | V |
+| `HiBat_Vlim` | High battery voltage cutoff | V |
+| `BMS_Missing_HiBat_Vlim` | High battery voltage cutoff when BMS is missing | V |
+
+#### User Profiles (Normal, User 1, User 2)
+
+Three user profiles with identical structure. The **Normal** profile uses the
+`N_` prefix, **User 1** uses `U1_`, and **User 2** uses `U2_`. The active
+profile is selected by the User input switches (requires firmware V1.005+).
+
+Amp values are percentages of the controller's rated current. For a 400A
+controller, 100% = 400A. The `_Max` suffix variables define the upper limit of
+the user-adjustable range in the Toolkit UI; a value of **-1 means disabled**
+(no user-adjustable range).
+
+The table below shows the Normal profile (`N_` prefix). User 1 (`U1_`) and
+User 2 (`U2_`) have the same variables at different addresses.
+
+| Variable | Description | Unit | Bounds |
+|----------|-------------|------|--------|
+| `N_Max_Batt_Motor_Amps` | Max battery current (motoring) | % | 0 – 100 |
+| `N_Max_Arm_Motor_Amps` | Max output current (motoring) | % | 0 – 100 |
+| `N_Max_Batt_Regen_Amps` | Max battery current (regen, negative) | % | -100 – 0 |
+| `N_Max_Arm_Regen_Amps` | Max output current (regen, negative) | % | -100 – 0 |
+| `N_RollDetect_BrakingCurrent` | Roll detect braking current (negative) | % | -100 – 0 |
+| `N_Reverse_MotorS` | Max reverse speed | % | 0 – 100 |
+| `N_Speed_Limit` | Speed limit (when `Speed_Limit_On` is enabled) | RPM | 1000 – 8000 |
+| `N_Turbo` | Turbo mode (field weakening at high RPM) | bool | |
+| `N_DriveStyle` | Drive style: No = Turf (gentle), Yes = Street (full power) | bool | |
+| `N_Max_Arm_Regen_Amps_Max` | Max regen amps user-adjustable ceiling | % | -100 – 0 |
+| `N_Speed_Limit_Max` | Speed limit user-adjustable ceiling (-1 = disabled) | RPM | -1 – 8000 |
+| `N_Forward_Speed` | Max forward speed (vehicles without speed sensor) | % | 0 – 100 |
+| `N_Forward_Speed_Max` | Forward speed user-adjustable ceiling (-1 = disabled) | % | -1 – 100 |
+| `N_Throttle_Rate` | Throttle acceleration rate | MU | 0.5 – 16383.5 |
+| `N_Throttle_Rate_Max` | Throttle rate user-adjustable ceiling (-1 = disabled) | MU | -0.5 – 16383.5 |
+
+#### Throttle
+
+Throttle type selection, calibration values, and related settings.
+
+`Throttle_Type` selects the throttle hardware:
+
+| Value | Type |
+|-------|------|
+| 0 | None |
+| 1 | 0-5k ohm (2-wire) |
+| 2 | 5k-0 ohm (2-wire, reversed) |
+| 3 | 0-5V |
+| 4 | EZGO ITS |
+| 5 | Yamaha (0-1k ohm) |
+| 6 | Taylor-Dunn |
+| 7 | Club Car (5k, 3-wire) |
+| 8 | Digital |
+| 9 | Pump |
+| 10 | USB |
+| 11 | Absolute |
+
+| Variable | Description | Unit | Bounds |
+|----------|-------------|------|--------|
+| `Throttle_Type` | Throttle hardware type (see table above) | | |
+| `HPD` | High Pedal Disable — block drive if throttle is pressed at key-on | bool | |
+| `Relay_Off_At_Zero` | Turn off main contactor at zero throttle input | bool | |
+| `Speed_Limit_On` | Enable speed limiting (uses `N_Speed_Limit` etc.) | bool | |
+| `Tach_4_8` | Speed sensor type: No = 4-pole, Yes = 8-pole | bool | |
+| `ABS_Lo_Throt_Min` | Absolute throttle calibration: low input minimum | | 0 – 4095 |
+| `ABS_Lo_Throt_Max` | Absolute throttle calibration: low input maximum | | 0 – 4095 |
+| `ABS_Hi_Throt_Min` | Absolute throttle calibration: high input minimum | | 0 – 4095 |
+| `ABS_Hi_Throt_Max` | Absolute throttle calibration: high input maximum | | 0 – 4095 |
+| `ABS_Throt_Min` | Absolute throttle calibration: output minimum | | 0 – 4095 |
+| `ABS_Throt_Max` | Absolute throttle calibration: output maximum | | 0 – 4095 |
+| `ABS_HPD_Offset` | Absolute throttle calibration: HPD offset | | 0 – 4095 |
+| `ABS_Slope` | Absolute throttle slope direction | bool | |
+| `ABS_Differential` | Absolute throttle: No = single input, Yes = differential | bool | |
+
+The `ABS_*` calibration values are only used when `Throttle_Type` is set to
+Absolute (11). For other throttle types, the firmware uses built-in calibration
+curves.
+
+#### Other Settings
+
+| Variable | Description | Unit | Bounds |
+|----------|-------------|------|--------|
+| `High_Side_Output` | Output drive mode (controller-specific) | bool | |
+| `User3_Invert` | Charger interlock input polarity | bool | |
+| `BMS_Expected` | Whether a Battery Management System should be connected | bool | |
+| `UserInputs_State` | User input mode: 0 = switches, 1 = U1 analog, 2 = both analog | | 0 – 2 |
+| `Throttle_Type_Name` | Custom display name for the selected throttle (16 chars) | | |
+
+#### Tach (read-only factory defaults)
+
+Factory copies of speed sensor settings, for reference.
+
+| Variable | Description | Unit |
+|----------|-------------|------|
+| `F_Speed_Limit_On` | Speed limiting enabled (factory) | bool |
+| `F_Tach_4_8` | Speed sensor type (factory) | bool |
+
+#### Field
+
+Field weakening and turbo parameters control how the controller drives the motor
+field winding at higher speeds to trade torque for RPM. The writable variables
+are in the user settings page; the `F_`-prefixed versions are read-only factory
+defaults.
+
+| Variable | Description | Unit | Bounds |
+|----------|-------------|------|--------|
+| `F_Table_Name` | Field table name (32 chars) | | |
+| `Reverse_Field_Weaken_Percent` | Field weakening in reverse (100 = full field) | % | 80 – 100 |
+| `Zero_RPM_Field_Boost_Percent` | Extra field current at zero/low RPM | % | 1 – 100 |
+| `RPM_Field_Boost_Stop` | RPM at which field boost slopes down to 1x | RPM | 50 – 1000 |
+| `Max_Field_Weaken_Amps` | Field current threshold for weakening | A | 0 – 10.00 |
+| `Turbo_Start_RPM` | RPM at which field weakening begins | RPM | 1000 – 8000 |
+| `Turbo_Weaken_Percent` | Field current reduction amount at turbo speed | % | 0 – 75 |
+
+Factory defaults (read-only):
+
+| Variable | Description | Unit |
+|----------|-------------|------|
+| `F_F_Table_Name` | Field table name (factory) | |
+| `F_Reverse_Field_Weaken_Percent` | Reverse field weaken (factory) | % |
+| `F_Zero_RPM_Field_Boost_Percent` | Zero RPM field boost (factory) | % |
+| `F_RPM_Field_Boost_Stop` | RPM field boost stop (factory) | RPM |
+| `F_Max_Field_Weaken_Amps` | Max field weaken current (factory) | A |
+| `F_Turbo_Start_RPM` | Turbo start RPM (factory) | RPM |
+| `F_Turbo_Weaken_Percent` | Turbo weaken percent (factory) | % |
+
+### RAM Variables (Live State)
+
+RAM variables reflect the controller's real-time state. They reset when the
+controller loses power. Most are read-only monitoring values used by
+`alltrax monitor`.
+
+#### Error Flags (read-only)
+
+Active error conditions. Each flag is a boolean — `true` means the error is
+currently active. The controller may shut down or derate depending on which
+flags are set.
+
+| Variable | Description |
+|----------|-------------|
+| `Global_Shutdown` | Controller has shut down (any critical error) |
+| `Hardware_Overcurrent` | Hardware overcurrent protection tripped |
+| `OC_Retry_Running` | Overcurrent retry sequence in progress |
+| `LOBAT` | Battery voltage below `LoBat_Vlim` |
+| `HIBAT` | Battery voltage above `HiBat_Vlim` |
+| `Precharge_Fail` | Output capacitor precharge failed |
+| `Overtemp` | Controller temperature too high |
+| `Undertemp` | Controller temperature too low |
+| `Range_Alarm` | Throttle input out of expected range |
+| `Hi_HThrot_Overrange` | High throttle input above maximum |
+| `Lo_HThrot_Overrange` | High throttle input below minimum |
+| `Hi_LThrot_Overrange` | Low throttle input above maximum |
+| `Lo_LThrot_Overrange` | Low throttle input below minimum |
+| `Field_Open_Alarm` | Field winding open circuit detected |
+| `BMS_Missing` | BMS expected but not communicating |
+| `AuxStuck` | Auxiliary output stuck (shorted or failed) |
+| `Bad_Vars` | Settings page corrupt (GoodSet invalid) |
+
+#### Raw ADC (read-only)
+
+Raw analog-to-digital converter readings, before averaging. Useful for
+diagnostics and throttle calibration.
+
+| Variable | Description | Unit |
+|----------|-------------|------|
+| `Raw_Keyswitch` | Key switch voltage | V |
+| `Raw_Reverse` | Reverse input voltage | V |
+| `Raw_BatV` | Battery voltage (raw ADC) | V |
+| `Raw_Temp` | Temperature sensor | C |
+| `Raw_MotorHall` | Motor current hall sensor | |
+| `Raw_F1Hall` | Field 1 current hall sensor | |
+| `Raw_F2Hall` | Field 2 current hall sensor | |
+| `Raw_ThrotHigh` | Throttle high input | |
+| `Raw_ThrotLow` | Throttle low input | |
+| `Raw_Footswitch` | Footswitch voltage | V |
+| `Raw_Forward` | Forward input voltage | V |
+| `Raw_User1` | User input 1 voltage | V |
+| `Raw_User2` | User input 2 voltage | V |
+| `Raw_User3` | User input 3 voltage | V |
+
+#### Averaged ADC (read-only)
+
+Averaged (filtered) analog readings. These are what the controller firmware
+uses for control decisions.
+
+| Variable | Description | Unit |
+|----------|-------------|------|
+| `Avg_Keyswitch` | Key switch voltage (averaged) | V |
+| `Avg_Reverse` | Reverse input voltage (averaged) | V |
+| `Avg_BatV` | Battery voltage (averaged) | V |
+| `Avg_MotorHall` | Motor current hall sensor (averaged) | |
+| `Avg_F1Hall` | Field 1 current hall sensor (averaged) | |
+| `Avg_F2Hall` | Field 2 current hall sensor (averaged) | |
+| `Avg_ThrotHigh` | Throttle high input (averaged) | |
+| `Avg_ThrotLow` | Throttle low input (averaged) | |
+| `Avg_Footswitch` | Footswitch voltage (averaged) | V |
+| `Avg_Forward` | Forward input voltage (averaged) | V |
+| `Avg_User1` | User input 1 voltage (averaged) | V |
+| `Avg_User2` | User input 2 voltage (averaged) | V |
+| `Avg_User3` | User input 3 voltage (averaged) | V |
+
+#### Monitoring (read-only)
+
+Real-time controller status. These are the variables read by `alltrax monitor`.
+
+| Variable | Description | Unit |
+|----------|-------------|------|
+| `Keyswitch_Input` | Key switch on/off | bool |
+| `Reverse_Input` | Reverse switch on/off | bool |
+| `Relay_On` | Main contactor relay state | |
+| `Fan_Status` | Cooling fan running | bool |
+| `HPD_Ran` | High Pedal Disable has triggered | bool |
+| `Bad_Vars_Code` | Settings corruption diagnostic code | |
+| `Footswitch_Input` | Footswitch on/off | bool |
+| `Forward_Input` | Forward switch on/off | bool |
+| `User1_Input` | User input 1 on/off | bool |
+| `User2_Input` | User input 2 on/off | bool |
+| `User3_Input` | User input 3 on/off | bool |
+| `Charger_Plugged_In` | Charger detected | bool |
+| `Blower_Status` | Blower motor running | bool |
+| `Check_Motor_Status` | Motor check warning active | bool |
+| `Horn_Status` | Horn output active | bool |
+| `Avg_Temp` | Controller temperature | C |
+| `BPlus_Volts` | Battery voltage | V |
+| `KSI_Volts` | Key switch input voltage | V |
+| `Throttle_Local` | Throttle input (raw machine units) | MU |
+| `Throttle_Position` | Throttle position after linearization | MU |
+| `Output_Amps` | Motor output current | A |
+| `Field_Amps` | Field winding current | A |
+| `Throttle_Pointer` | Throttle setpoint (what the controller is targeting) | MU |
+| `Overtemp_Cap` | Over-temperature current derating level | |
+| `Speed` | Motor speed (requires speed sensor) | RPM |
+| `State_Of_Charge` | Battery state of charge estimate | % |
+| `Battery_Amps` | Battery current (input side) | A |
+
+#### Controls (writable RAM)
+
+Writable RAM variables for real-time control. These take effect immediately
+but do not persist across power cycles.
+
+| Variable | Description | Unit |
+|----------|-------------|------|
+| `RunMode` | Controller mode: 0 = RUN (normal), 255 = CAL (settings mode). Used internally by the write bracket — you normally don't need to write this directly. | |
+| `Fan_On` | Fan test trigger. Writing `1` starts a timed fan test (~10–30 seconds); the firmware stops it automatically. This is a momentary command, not a toggle — reading it always returns 0. | bool |
+
 ## Supported hardware
 
 Tested on:
