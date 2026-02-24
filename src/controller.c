@@ -305,20 +305,25 @@ alltrax_error alltrax_reset_device(alltrax_controller* ctrl)
     return transport_write(ctrl, request);
 }
 
+/* Pre-encoded write payloads */
+typedef struct { size_t offset; uint8_t data[MAX_PAYLOAD]; int len; } flash_patch_t;
+typedef struct { uint8_t data[MAX_PAYLOAD]; int len; uint32_t addr; } ram_encoded_t;
+
+#define MAX_RAM_WRITE_VARS    16
+#define MAX_FLASH_WRITE_VARS  96
+
 /* FLASH page cycle: read page → patch → erase → write → verify → clear GoodSet.
  * Called from within the CAL/RUN bracket in alltrax_write_vars(). */
-typedef struct { size_t offset; uint8_t data[MAX_PAYLOAD]; int len; } flash_patch_t;
 
 static alltrax_error write_flash_page(alltrax_controller* ctrl,
     const flash_patch_t* patches, size_t count, bool skip_verify)
 {
-    uint8_t* page_data = malloc(VARSET_SIZE);
-    if (!page_data) return ALLTRAX_ERR_NO_MEMORY;
+    uint8_t page_data[VARSET_SIZE];
 
     /* Read full VARSET page (2048 bytes) */
     alltrax_error rc = read_memory_range(ctrl, VARSET_ADDR, VARSET_SIZE,
                                          page_data);
-    if (rc) goto done;
+    if (rc) return rc;
 
     /* Patch all FLASH variables into page buffer */
     for (size_t i = 0; i < count; i++) {
@@ -332,19 +337,20 @@ static alltrax_error write_flash_page(alltrax_controller* ctrl,
 
     /* Erase page */
     rc = page_erase(ctrl, VARSET_PAGE);
-    if (rc) goto done;
+    if (rc) return rc;
 
     /* Write full page back */
     rc = write_memory_range(ctrl, VARSET_ADDR, page_data, VARSET_SIZE);
-    if (rc) goto done;
+    if (rc) return rc;
 
     /* Read-back verification */
     if (!skip_verify) {
-        uint8_t* readback = malloc(VARSET_SIZE);
-        if (!readback) { rc = ALLTRAX_ERR_NO_MEMORY; goto done; }
+        uint8_t readback[VARSET_SIZE];
 
         rc = read_memory_range(ctrl, VARSET_ADDR, VARSET_SIZE, readback);
-        if (!rc && memcmp(readback, page_data, VARSET_SIZE) != 0) {
+        if (rc) return rc;
+
+        if (memcmp(readback, page_data, VARSET_SIZE) != 0) {
             for (size_t i = 0; i < VARSET_SIZE; i++) {
                 if (readback[i] != page_data[i]) {
                     set_error_detail(ctrl,
@@ -354,21 +360,13 @@ static alltrax_error write_flash_page(alltrax_controller* ctrl,
                     break;
                 }
             }
-            rc = ALLTRAX_ERR_FLASH;
+            return ALLTRAX_ERR_FLASH;
         }
-        free(readback);
-        if (rc) goto done;
     }
 
     /* Clear GoodSet (mark settings as valid) */
-    {
-        uint8_t zeros[2] = { 0x00, 0x00 };
-        rc = write_memory(ctrl, VARSET_ADDR, zeros, 2);
-    }
-
-done:
-    free(page_data);
-    return rc;
+    uint8_t zeros[2] = { 0x00, 0x00 };
+    return write_memory(ctrl, VARSET_ADDR, zeros, 2);
 }
 
 alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
@@ -384,15 +382,8 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
 
     /* ---- 1. Validate and encode all variables (before any USB I/O) ---- */
 
-    typedef struct { uint8_t data[MAX_PAYLOAD]; int len; uint32_t addr; } ram_encoded_t;
-    ram_encoded_t* ram_encoded = calloc(count, sizeof(ram_encoded_t));
-    flash_patch_t* flash_patches = calloc(count, sizeof(flash_patch_t));
-    if (!ram_encoded || !flash_patches) {
-        free(ram_encoded);
-        free(flash_patches);
-        return ALLTRAX_ERR_NO_MEMORY;
-    }
-
+    ram_encoded_t ram_encoded[MAX_RAM_WRITE_VARS];
+    flash_patch_t flash_patches[MAX_FLASH_WRITE_VARS];
     size_t ram_count = 0;
     size_t flash_count = 0;
 
@@ -402,12 +393,15 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
         alltrax_error vrc = alltrax_validate_var_value(var, values[i]);
         if (vrc) {
             set_error_detail(ctrl, "Value out of range for %s", var->name);
-            free(ram_encoded);
-            free(flash_patches);
             return vrc;
         }
 
         if (var->is_flash) {
+            if (flash_count >= MAX_FLASH_WRITE_VARS) {
+                set_error_detail(ctrl, "Too many FLASH variables (max %d)",
+                                 MAX_FLASH_WRITE_VARS);
+                return ALLTRAX_ERR_INVALID_ARG;
+            }
             if (var->address < VARSET_ADDR ||
                 var->address >= VARSET_ADDR + VARSET_SIZE) {
                 set_error_detail(ctrl,
@@ -415,8 +409,6 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
                     "(0x%08X-0x%08X)",
                     var->name, var->address, VARSET_ADDR,
                     VARSET_ADDR + VARSET_SIZE);
-                free(ram_encoded);
-                free(flash_patches);
                 return ALLTRAX_ERR_ADDRESS;
             }
             flash_patch_t* p = &flash_patches[flash_count];
@@ -424,25 +416,24 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
             p->len = alltrax_encode_var(var, values[i], p->data);
             if (p->len <= 0) {
                 set_error_detail(ctrl, "Cannot encode variable %s", var->name);
-                free(ram_encoded);
-                free(flash_patches);
                 return ALLTRAX_ERR_INVALID_ARG;
             }
             if (p->offset + (size_t)p->len > VARSET_SIZE) {
                 set_error_detail(ctrl,
                     "Variable %s extends beyond VARSET page", var->name);
-                free(ram_encoded);
-                free(flash_patches);
                 return ALLTRAX_ERR_ADDRESS;
             }
             flash_count++;
         } else {
+            if (ram_count >= MAX_RAM_WRITE_VARS) {
+                set_error_detail(ctrl, "Too many RAM variables (max %d)",
+                                 MAX_RAM_WRITE_VARS);
+                return ALLTRAX_ERR_INVALID_ARG;
+            }
             if (var->address < RAM_BASE || var->address >= RAM_END) {
                 set_error_detail(ctrl,
                     "Address 0x%08X is outside RAM range (0x%08X-0x%08X)",
                     var->address, RAM_BASE, RAM_END);
-                free(ram_encoded);
-                free(flash_patches);
                 return ALLTRAX_ERR_ADDRESS;
             }
             ram_encoded_t* r = &ram_encoded[ram_count];
@@ -450,8 +441,6 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
             r->len = alltrax_encode_var(var, values[i], r->data);
             if (r->len <= 0) {
                 set_error_detail(ctrl, "Cannot encode variable %s", var->name);
-                free(ram_encoded);
-                free(flash_patches);
                 return ALLTRAX_ERR_INVALID_ARG;
             }
             ram_count++;
@@ -460,14 +449,13 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
 
     /* ---- 2. FLASH pre-checks (before entering CAL) ---- */
 
-    alltrax_error rc = ALLTRAX_OK;
-    bool in_cal = false;
+    alltrax_error rc;
 
     if (flash_count > 0) {
         if (!opts->skip_fw_check) {
             uint8_t prgm_buf[6];
             rc = read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf, NULL);
-            if (rc) goto out;
+            if (rc) return rc;
 
             uint32_t prgm_rev = get_le32(prgm_buf);
             if (prgm_rev != VALIDATED_FIRMWARE) {
@@ -476,8 +464,7 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
                 set_error_detail(ctrl,
                     "Firmware %s is not validated. Only V5.005 is supported",
                     buf);
-                rc = ALLTRAX_ERR_FIRMWARE;
-                goto out;
+                return ALLTRAX_ERR_FIRMWARE;
             }
         }
 
@@ -485,48 +472,47 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
             uint8_t gs_buf[2];
 
             rc = read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf, NULL);
-            if (rc) goto out;
+            if (rc) return rc;
             uint16_t v_gs = get_le16(gs_buf);
 
             rc = read_memory(ctrl, ADDR_F_GOODSET, 2, gs_buf, NULL);
-            if (rc) goto out;
+            if (rc) return rc;
             uint16_t f_gs = get_le16(gs_buf);
 
             if (f_gs != 0x0000) {
                 set_error_detail(ctrl,
                     "Factory defaults corrupted "
                     "(F_GoodSet=0x%04X, expected 0x0000)", f_gs);
-                rc = ALLTRAX_ERR_FLASH;
-                goto out;
+                return ALLTRAX_ERR_FLASH;
             }
             if (v_gs != 0x0000) {
                 set_error_detail(ctrl,
                     "User settings invalid "
                     "(V_GoodSet=0x%04X, expected 0x0000). "
                     "Previous write may have been interrupted", v_gs);
-                rc = ALLTRAX_ERR_FLASH;
-                goto out;
+                return ALLTRAX_ERR_FLASH;
             }
         }
     }
 
     /* ---- 3. Enter CAL mode (single bracket for all writes) ---- */
 
+    bool in_cal = false;
+
     if (!opts->skip_cal) {
         uint8_t mode_buf[1];
         rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf, NULL);
-        if (rc) goto out;
+        if (rc) return rc;
 
         if (mode_buf[0] != RUN_MODE_RUN) {
             set_error_detail(ctrl,
                 "Controller not in RUN mode (RunMode=0x%02X)", mode_buf[0]);
-            rc = ALLTRAX_ERR_NOT_RUN;
-            goto out;
+            return ALLTRAX_ERR_NOT_RUN;
         }
 
         uint8_t cal = RUN_MODE_CAL;
         rc = write_memory(ctrl, ADDR_RUN_MODE, &cal, 1);
-        if (rc) goto out;
+        if (rc) return rc;
         in_cal = true;
     }
 
@@ -535,7 +521,7 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     for (size_t i = 0; i < ram_count; i++) {
         rc = write_memory(ctrl, ram_encoded[i].addr,
                           ram_encoded[i].data, (size_t)ram_encoded[i].len);
-        if (rc) goto out;
+        if (rc) goto restore_run;
     }
 
     /* ---- 5. FLASH page cycle ---- */
@@ -543,16 +529,17 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     if (flash_count > 0) {
         rc = write_flash_page(ctrl, flash_patches, flash_count,
                               opts->skip_verify);
+        if (rc) goto restore_run;
     }
 
-out:
+    rc = ALLTRAX_OK;
+
+restore_run:
     if (in_cal) {
         uint8_t run = RUN_MODE_RUN;
         alltrax_error rc2 = write_memory(ctrl, ADDR_RUN_MODE, &run, 1);
         if (!rc) rc = rc2;
     }
-    free(ram_encoded);
-    free(flash_patches);
     return rc;
 }
 
