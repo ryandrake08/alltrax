@@ -372,36 +372,30 @@ static alltrax_error write_flash_page(alltrax_controller* ctrl,
 alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, const double* values, size_t count,
     const alltrax_write_opts* opts)
-{
-    alltrax_write_opts defaults = {0};
-    if (!opts) opts = &defaults;
+{    
     if (count == 0) {
         set_error_detail(ctrl, "No variables to write");
         return ALLTRAX_ERR_INVALID_ARG;
     }
 
-    /* ---- 1. Validate and encode all variables (before any USB I/O) ---- */
+    /* Ensure we have opts, use defaults if not passed */
+    alltrax_write_opts defaults = {0};
+    if (!opts) opts = &defaults;
 
-    ram_encoded_t ram_encoded[MAX_RAM_WRITE_VARS];
-    flash_patch_t flash_patches[MAX_FLASH_WRITE_VARS];
-    size_t ram_count = 0;
-    size_t flash_count = 0;
+    /* ---- 1. Validate and count all variables ---- */
+
+    size_t ram_total = 0;
+    size_t flash_total = 0;
 
     for (size_t i = 0; i < count; i++) {
         const alltrax_var_def* var = vars[i];
 
-        alltrax_error vrc = alltrax_validate_var_value(var, values[i]);
-        if (vrc) {
+        if (alltrax_validate_var_value(var, values[i])) {
             set_error_detail(ctrl, "Value out of range for %s", var->name);
-            return vrc;
+            return ALLTRAX_ERR_INVALID_ARG;
         }
 
         if (var->is_flash) {
-            if (flash_count >= MAX_FLASH_WRITE_VARS) {
-                set_error_detail(ctrl, "Too many FLASH variables (max %d)",
-                                 MAX_FLASH_WRITE_VARS);
-                return ALLTRAX_ERR_INVALID_ARG;
-            }
             if (var->address < VARSET_ADDR ||
                 var->address >= VARSET_ADDR + VARSET_SIZE) {
                 set_error_detail(ctrl,
@@ -411,6 +405,40 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
                     VARSET_ADDR + VARSET_SIZE);
                 return ALLTRAX_ERR_ADDRESS;
             }
+            flash_total++;
+        } else {
+            if (var->address < RAM_BASE || var->address >= RAM_END) {
+                set_error_detail(ctrl,
+                    "Address 0x%08X is outside RAM range (0x%08X-0x%08X)",
+                    var->address, RAM_BASE, RAM_END);
+                return ALLTRAX_ERR_ADDRESS;
+            }
+            ram_total++;
+        }
+    }
+
+    if (ram_total > MAX_RAM_WRITE_VARS) {
+        set_error_detail(ctrl, "Too many RAM variables (max %d)",
+                         MAX_RAM_WRITE_VARS);
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+    if (flash_total > MAX_FLASH_WRITE_VARS) {
+        set_error_detail(ctrl, "Too many FLASH variables (max %d)",
+                         MAX_FLASH_WRITE_VARS);
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+
+    /* ---- 2. Encode all variables ---- */
+
+    ram_encoded_t ram_encoded[MAX_RAM_WRITE_VARS];
+    flash_patch_t flash_patches[MAX_FLASH_WRITE_VARS];
+    size_t ram_count = 0;
+    size_t flash_count = 0;
+
+    for (size_t i = 0; i < count; i++) {
+        const alltrax_var_def* var = vars[i];
+
+        if (var->is_flash) {
             flash_patch_t* p = &flash_patches[flash_count];
             p->offset = var->address - VARSET_ADDR;
             p->len = alltrax_encode_var(var, values[i], p->data);
@@ -425,17 +453,6 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
             }
             flash_count++;
         } else {
-            if (ram_count >= MAX_RAM_WRITE_VARS) {
-                set_error_detail(ctrl, "Too many RAM variables (max %d)",
-                                 MAX_RAM_WRITE_VARS);
-                return ALLTRAX_ERR_INVALID_ARG;
-            }
-            if (var->address < RAM_BASE || var->address >= RAM_END) {
-                set_error_detail(ctrl,
-                    "Address 0x%08X is outside RAM range (0x%08X-0x%08X)",
-                    var->address, RAM_BASE, RAM_END);
-                return ALLTRAX_ERR_ADDRESS;
-            }
             ram_encoded_t* r = &ram_encoded[ram_count];
             r->addr = var->address;
             r->len = alltrax_encode_var(var, values[i], r->data);
@@ -447,7 +464,7 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
         }
     }
 
-    /* ---- 2. FLASH pre-checks (before entering CAL) ---- */
+    /* ---- 3. FLASH pre-checks (before entering CAL) ---- */
 
     alltrax_error rc;
 
@@ -484,7 +501,7 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
         }
     }
 
-    /* ---- 3. Enter CAL mode (single bracket for all writes) ---- */
+    /* ---- 4. Enter CAL mode (single bracket for all writes) ---- */
 
     bool in_cal = false;
 
@@ -505,7 +522,7 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
         in_cal = true;
     }
 
-    /* ---- 4. Write RAM variables ---- */
+    /* ---- 5. Write RAM variables ---- */
 
     for (size_t i = 0; i < ram_count; i++) {
         rc = write_memory(ctrl, ram_encoded[i].addr,
@@ -513,7 +530,7 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
         if (rc) goto restore_run;
     }
 
-    /* ---- 5. FLASH page cycle ---- */
+    /* ---- 6. FLASH page cycle ---- */
 
     if (flash_count > 0) {
         rc = write_flash_page(ctrl, flash_patches, flash_count,
