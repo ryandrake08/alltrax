@@ -230,34 +230,85 @@ bool alltrax_has_feature(const alltrax_info* info, alltrax_feature feat)
 }
 
 /* ------------------------------------------------------------------ */
-/* Variable read                                                      */
+/* Variable read (with block coalescing)                              */
 /* ------------------------------------------------------------------ */
 
-static alltrax_error read_var(alltrax_controller* ctrl,
-    const alltrax_var_def* var, alltrax_var_value* out)
-{
-    size_t var_size = alltrax_var_byte_size(var);
-    if (var_size == 0 || var_size > MAX_PAYLOAD) {
-        set_error_detail(ctrl, "Invalid variable size: %zu", var_size);
-        return ALLTRAX_ERR_INVALID_ARG;
-    }
+/* Gap threshold: merge consecutive variables whose addresses are within
+ * this many bytes of each other. */
+#define COALESCE_GAP 20
 
-    uint8_t buf[MAX_PAYLOAD];
-    size_t got;
-    alltrax_error rc = read_memory(ctrl, var->address, var_size,
-                                            buf, &got);
-    if (rc) return rc;
-
-    return alltrax_decode_var(buf, got, var, var->address, out);
-}
+/* Maximum variables in a single alltrax_read_vars() call */
+#define MAX_READ_VARS 256
 
 alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, size_t count, alltrax_var_value* out)
 {
-    for (size_t i = 0; i < count; i++) {
-        alltrax_error rc = read_var(ctrl, vars[i], &out[i]);
-        if (rc) return rc;
+    if (count == 0)
+        return ALLTRAX_OK;
+
+    if (count > MAX_READ_VARS) {
+        set_error_detail(ctrl, "Too many variables to read (%zu, max %d)",
+                         count, MAX_READ_VARS);
+        return ALLTRAX_ERR_INVALID_ARG;
     }
+
+    /* Build sorted index array (indices into vars[]/out[]) */
+    size_t idx[MAX_READ_VARS];
+    for (size_t i = 0; i < count; i++)
+        idx[i] = i;
+
+    /* Insertion sort by address (small N, no stdlib dependency) */
+    for (size_t i = 1; i < count; i++) {
+        size_t key = idx[i];
+        uint32_t key_addr = vars[key]->address;
+        size_t j = i;
+        while (j > 0 && vars[idx[j - 1]]->address > key_addr) {
+            idx[j] = idx[j - 1];
+            j--;
+        }
+        idx[j] = key;
+    }
+
+    /* Scan sorted variables, forming coalesced blocks */
+    size_t pos = 0;
+    while (pos < count) {
+        size_t block_start = pos;
+        uint32_t base_addr = vars[idx[pos]]->address;
+        uint32_t block_end = base_addr + (uint32_t)alltrax_var_byte_size(vars[idx[pos]]);
+
+        /* Extend block with consecutive variables */
+        while (pos + 1 < count) {
+            size_t next = idx[pos + 1];
+            uint32_t next_addr = vars[next]->address;
+            uint32_t next_end = next_addr + (uint32_t)alltrax_var_byte_size(vars[next]);
+
+            /* Gap too large or block would exceed MAX_PAYLOAD? */
+            if (next_addr > block_end + COALESCE_GAP)
+                break;
+            if (next_end - base_addr > MAX_PAYLOAD)
+                break;
+
+            block_end = next_end > block_end ? next_end : block_end;
+            pos++;
+        }
+        pos++; /* advance past last variable in this block */
+
+        /* Read the coalesced block */
+        size_t span = block_end - base_addr;
+        uint8_t buf[MAX_PAYLOAD];
+        size_t got;
+        alltrax_error rc = read_memory(ctrl, base_addr, span, buf, &got);
+        if (rc) return rc;
+
+        /* Decode each variable from the block buffer */
+        for (size_t k = block_start; k < pos; k++) {
+            size_t orig = idx[k];
+            rc = alltrax_decode_var(buf, got, vars[orig], base_addr,
+                                    &out[orig]);
+            if (rc) return rc;
+        }
+    }
+
     return ALLTRAX_OK;
 }
 
