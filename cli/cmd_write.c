@@ -122,35 +122,20 @@ int cmd_write(int argc, char** argv)
         return 1;
     }
 
-    /* Separate RAM and FLASH variables into batches */
-    const alltrax_var_def** ram_vars = NULL;
-    double* ram_values = NULL;
-    size_t ram_count = 0;
-    const alltrax_var_def** flash_vars = NULL;
-    double* flash_values = NULL;
-    size_t flash_count = 0;
+    /* Build var/value arrays for the library */
+    const alltrax_var_def** var_ptrs = calloc((size_t)n_assignments,
+                                              sizeof(alltrax_var_def*));
+    double* var_values = calloc((size_t)n_assignments, sizeof(double));
     int ret = 0;
-
-    ram_vars = calloc((size_t)n_assignments, sizeof(alltrax_var_def*));
-    ram_values = calloc((size_t)n_assignments, sizeof(double));
-    flash_vars = calloc((size_t)n_assignments, sizeof(alltrax_var_def*));
-    flash_values = calloc((size_t)n_assignments, sizeof(double));
-    if (!ram_vars || !ram_values || !flash_vars || !flash_values) {
+    if (!var_ptrs || !var_values) {
         fprintf(stderr, "Error: out of memory\n");
         ret = 1;
         goto done;
     }
 
     for (int i = 0; i < n_assignments; i++) {
-        if (assigns[i].var->is_flash) {
-            flash_vars[flash_count] = assigns[i].var;
-            flash_values[flash_count] = assigns[i].value;
-            flash_count++;
-        } else {
-            ram_vars[ram_count] = assigns[i].var;
-            ram_values[ram_count] = assigns[i].value;
-            ram_count++;
-        }
+        var_ptrs[i] = assigns[i].var;
+        var_values[i] = assigns[i].value;
     }
 
     alltrax_write_opts write_opts = {
@@ -160,47 +145,31 @@ int cmd_write(int argc, char** argv)
         .skip_fw_check = flags.no_fw_version,
     };
 
-    /* Batch write RAM variables in one CAL/RUN bracket */
-    if (ram_count > 0) {
-        err = alltrax_write_ram_vars(ctrl, ram_vars, ram_values, ram_count,
-                                     &write_opts);
-        if (err) {
-            cli_error(ctrl, err, "writing RAM variables");
-            ret = 1;
-            goto done;
-        }
-        for (size_t i = 0; i < ram_count; i++)
-            printf("Wrote %s (RAM)\n", ram_vars[i]->name);
+    err = alltrax_write_vars(ctrl, var_ptrs, var_values,
+                             (size_t)n_assignments, &write_opts);
+    if (err) {
+        cli_error(ctrl, err, "writing variables");
+        ret = 1;
+        goto done;
     }
 
-    /* Batch write FLASH variables in one page cycle */
-    if (flash_count > 0) {
-        err = alltrax_write_flash_vars(ctrl, flash_vars, flash_values,
-                                       flash_count, &write_opts);
+    for (int i = 0; i < n_assignments; i++)
+        printf("Wrote %s (%s)\n", assigns[i].var->name,
+               assigns[i].var->is_flash ? "FLASH" : "RAM");
+
+    if (flags.reset) {
+        err = alltrax_reset_device(ctrl);
         if (err) {
-            cli_error(ctrl, err, "writing FLASH settings");
+            cli_error(ctrl, err, "resetting device");
             ret = 1;
             goto done;
         }
-        for (size_t i = 0; i < flash_count; i++)
-            printf("Wrote %s (FLASH)\n", flash_vars[i]->name);
-
-        if (flags.reset) {
-            err = alltrax_reset_device(ctrl);
-            if (err) {
-                cli_error(ctrl, err, "resetting device");
-                ret = 1;
-                goto done;
-            }
-            printf("Device reset sent (controller will reboot)\n");
-        }
+        printf("Device reset sent (controller will reboot)\n");
     }
 
 done:
-    free(ram_vars);
-    free(ram_values);
-    free(flash_vars);
-    free(flash_values);
+    free(var_ptrs);
+    free(var_values);
     free(assigns);
     alltrax_close(ctrl);
     return ret;

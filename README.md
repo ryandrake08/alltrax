@@ -367,16 +367,16 @@ alltrax_read_vars(ctrl, ptrs, count, vals);
 ### Writing variables
 
 ```c
-alltrax_error alltrax_write_ram_vars(alltrax_controller* ctrl,
-    const alltrax_var_def** vars, const double* values, size_t count,
-    const alltrax_write_opts* opts);
-alltrax_error alltrax_write_flash_vars(alltrax_controller* ctrl,
+alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, const double* values, size_t count,
     const alltrax_write_opts* opts);
 ```
 
-Both functions take arrays of variable definitions and display-scale values.
-Values are automatically converted from display units to raw device format.
+Takes arrays of variable definitions and display-scale values. RAM and FLASH
+variables can be mixed freely — the library separates them internally and uses
+a single CAL/RUN bracket wrapping all writes. Values are automatically
+converted from display units to raw device format.
+
 Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
 `alltrax_write_opts` struct to control individual safety checks:
 
@@ -387,25 +387,27 @@ Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
 | `skip_goodset` | Skip GoodSet corruption pre-check (FLASH only) |
 | `skip_fw_check` | Skip firmware version check (FLASH only) |
 
-**RAM writes** take effect immediately but are not persistent across power
-cycles. The library enters CAL mode, writes all variables, then restores RUN
-mode. Honors `skip_cal`.
+**RAM variables** (`is_flash=false`) take effect immediately but are not
+persistent across power cycles.
 
-**FLASH writes** are persistent. The library performs a full page cycle: read
-the 2KB settings page, patch in the new values, erase the page, write it back,
-and verify. Multiple variables are batched into a single page cycle. The
-controller requires `allow_writes=true` and firmware V5.005. Only variables
-with `is_flash=true` can be written with this function. Honors all four flags.
+**FLASH variables** (`is_flash=true`) are persistent. The library performs a
+full page cycle: read the 2KB settings page, patch in the new values, erase
+the page, write it back, and verify. Multiple FLASH variables are batched into
+a single page cycle. Requires `allow_writes=true` and firmware V5.005.
+
+When both RAM and FLASH variables are written together, all writes share a
+single CAL/RUN bracket — saving 4 USB packets compared to separate calls.
 
 Example:
 
 ```c
 const alltrax_var_def* vars[] = {
-    alltrax_find_var("LoBat_Vlim"),
-    alltrax_find_var("HiBat_Vlim"),
+    alltrax_find_var("LoBat_Vlim"),   /* FLASH */
+    alltrax_find_var("HiBat_Vlim"),   /* FLASH */
+    alltrax_find_var("Fan_On"),       /* RAM */
 };
-double values[] = { 28.1, 61.0 };
-alltrax_write_flash_vars(ctrl, vars, values, 2, NULL);
+double values[] = { 28.1, 61.0, 1.0 };
+alltrax_write_vars(ctrl, vars, values, 3, NULL);
 ```
 
 ### Monitoring
