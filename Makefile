@@ -1,9 +1,26 @@
 # Makefile — alltrax CLI + library
+#
+# Usage:
+#   make              — release build (build/release/)
+#   make DEBUG=1      — debug build with ASan (build/debug/)
+#   make test         — build and run tests
+#   make clean        — remove build directory
 
 CC       ?= gcc
 AR       ?= ar
 CFLAGS   := -std=c11 -Wall -Wextra -Wpedantic -Werror
 CPPFLAGS := -Isrc
+
+# --- Debug / Release flags ---
+
+ifdef DEBUG
+  CFLAGS  += -O0 -ggdb -DDEBUG=1 -fsanitize=address
+  LDFLAGS += -fsanitize=address
+  VARIANT := debug
+else
+  CFLAGS  += -O2 -DNDEBUG
+  VARIANT := release
+endif
 
 UNAME := $(shell uname)
 
@@ -30,7 +47,7 @@ else
   BUILD_CLI     :=
 endif
 
-BUILD := build
+BUILD := build/$(VARIANT)
 
 # --- Sources ---
 
@@ -62,16 +79,16 @@ $(LIB): $(LIB_OBJ)
 	$(AR) rcs $@ $^
 
 $(CLI): $(CLI_OBJ) $(LIB)
-	$(CC) -o $@ $(CLI_OBJ) $(LIB) $(HIDAPI_LIBS) $(CRYPTO_LIBS) $(XML_LIBS) -lm
+	$(CC) $(LDFLAGS) -o $@ $(CLI_OBJ) $(LIB) $(HIDAPI_LIBS) $(CRYPTO_LIBS) $(XML_LIBS) -lm
 
 $(TEST_BIN): $(TEST_OBJ) $(LIB)
-	$(CC) -o $@ $(TEST_OBJ) $(LIB) $(HIDAPI_LIBS) -lm
+	$(CC) $(LDFLAGS) -o $@ $(TEST_OBJ) $(LIB) $(HIDAPI_LIBS) -lm
 
 test: $(TEST_BIN)
 	./$(TEST_BIN)
 
 clean:
-	rm -rf $(BUILD)
+	rm -rf build
 
 # --- Compile rules ---
 
