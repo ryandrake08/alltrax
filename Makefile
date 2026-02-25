@@ -52,8 +52,8 @@ BUILD := build/$(VARIANT)
 # --- Sources ---
 
 LIB_SRC  := src/protocol.c src/transport.c src/controller.c src/variables.c
-CLI_SRC  := cli/main.c cli/cmd_info.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_monitor.c cli/cmd_errors.c cli/cmd_config.c
-TEST_SRC := test/test_main.c test/test_protocol.c test/test_variables.c
+CLI_SRC  := cli/main.c cli/cmd_info.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_monitor.c cli/cmd_errors.c cli/cmd_config.c cli/cmd_curve.c
+TEST_SRC := test/test_main.c test/test_protocol.c test/test_variables.c test/test_curves.c
 
 LIB_OBJ  := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(LIB_SRC)))
 CLI_OBJ  := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(CLI_SRC)))

@@ -240,6 +240,45 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     const alltrax_write_opts* opts);
 
 /* ------------------------------------------------------------------ */
+/* Curve tables                                                        */
+/* ------------------------------------------------------------------ */
+
+#define ALLTRAX_CURVE_POINTS 16
+
+typedef struct {
+    const char* name;           /* "linearization", "speed", etc. */
+    const char* description;
+    uint32_t    x_address;      /* user X array FLASH address */
+    uint32_t    y_address;      /* user Y array FLASH address */
+    uint32_t    factory_x_address;
+    uint32_t    factory_y_address;
+    double      x_scale;
+    double      y_scale;
+    const char* x_unit;
+    const char* y_unit;
+    int16_t     x_raw_max;      /* 4095 for throttle curves, 7500 for field */
+    int16_t     y_raw_max;      /* 4095 for throttle curves, 5000 for field */
+} alltrax_curve_def;
+
+typedef struct {
+    const alltrax_curve_def* def;
+    double x[ALLTRAX_CURVE_POINTS];   /* display units */
+    double y[ALLTRAX_CURVE_POINTS];   /* display units */
+} alltrax_curve_data;
+
+const alltrax_curve_def* alltrax_find_curve(const char* name);
+size_t alltrax_curve_count(void);
+const alltrax_curve_def* alltrax_curve_by_index(size_t index);
+
+alltrax_error alltrax_read_curve(alltrax_controller* ctrl,
+    const alltrax_curve_def* def, alltrax_curve_data* out);
+alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
+    const alltrax_curve_def* def, alltrax_curve_data* out);
+alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
+    const alltrax_curve_def* def, const alltrax_curve_data* data,
+    const alltrax_write_opts* opts);
+
+/* ------------------------------------------------------------------ */
 /* Monitoring                                                          */
 /* ------------------------------------------------------------------ */
 

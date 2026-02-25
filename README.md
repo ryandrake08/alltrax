@@ -63,6 +63,11 @@ Alltrax Controller Monitor
 | `alltrax errors` | Active error flags and error history |
 | `alltrax config save [flags] <file>` | Save all settings to file |
 | `alltrax config load [flags] <file>` | Load settings from file and write to device |
+| `alltrax curve list` | List available curve types |
+| `alltrax curve get <type>` | Read curve table from device |
+| `alltrax curve set <type>` | Write curve table to device |
+| `alltrax curve diff <type>` | Compare user vs factory curve |
+| `alltrax curve reset <type>` | Restore factory curve |
 
 ### Write examples
 
@@ -122,6 +127,89 @@ Toolkit (unless `--no-crypt` was used).
 | `--no-goodset` | load | Skip GoodSet pre-check |
 | `--no-fw-version` | load | Skip firmware version check |
 | `--reset` | load | Reboot controller after write |
+
+### Curve tables
+
+The controller uses 16-point curve tables to control throttle linearization,
+speed/torque limits, and field weakening. Each curve is a pair of X/Y arrays
+(16 int16 values each) stored in FLASH. The `curve` command reads and writes
+these tables independently from the scalar variable system.
+
+**Curve types:**
+
+| Type | Description | X/Y Unit |
+|------|-------------|----------|
+| `linearization` | Throttle linearization (input → output mapping) | % / % |
+| `speed` | Speed limit curve | % / % |
+| `torque` | Torque limit curve | % / % |
+| `field` | Field weakening curve | A / A |
+| `genfield` | Generator field curve | A / A |
+| `all` | All 5 curves (get and diff only) | |
+
+```sh
+# List available curve types
+alltrax curve list
+
+# Read a curve and print as table
+alltrax curve get linearization
+
+# Read all curves
+alltrax curve get all
+
+# Read a curve with ASCII plot
+alltrax curve get linearization --plot
+
+# Export curve to CSV file
+alltrax curve get linearization --file lin.csv
+
+# Export all curves to one CSV file
+alltrax curve get all --file curves.csv
+
+# Write curve from x,y pairs (1-16 points, remaining padded with 0,0)
+alltrax curve set linearization 0,0 0.2,0 2.4,7.8 10,20 50,50 100,100
+
+# Write curve from CSV file
+alltrax curve set linearization --file lin.csv
+
+# Write with device reboot
+alltrax curve set linearization --reset --file lin.csv
+
+# Compare user curve to factory defaults (differences marked with *)
+alltrax curve diff linearization
+
+# Compare all curves
+alltrax curve diff all
+
+# Reset curve to factory defaults
+alltrax curve reset linearization
+
+# Reset all curves to factory defaults
+alltrax curve reset all --reset
+```
+
+**CSV format:** One `x, y` pair per line. Lines starting with `#` are comments.
+Blank lines are ignored. Up to 16 points; if fewer are provided, the remaining
+points are set to 0,0.
+
+```csv
+# Linearization curve
+# X (%), Y (%)
+0.0000, 0.0000
+0.2441, 0.0000
+2.4410, 7.8144
+10.0000, 20.0000
+50.0000, 50.0000
+100.0000, 100.0000
+```
+
+| Flag | Applies to | Effect |
+|------|-----------|--------|
+| `--file <path>` | get, set | CSV file for import/export |
+| `--plot` | get | ASCII chart instead of table |
+| `--no-cal` | set, reset | Skip CAL/RUN mode bracket |
+| `--no-verify` | set, reset | Skip read-back verification |
+| `--no-fw-version` | set, reset | Skip firmware version check |
+| `--reset` | set, reset | Reboot controller after write |
 
 ## Building
 
@@ -457,6 +545,98 @@ const alltrax_var_def* vars[] = {
 };
 double values[] = { 28.1, 61.0, 1.0 };
 alltrax_write_vars(ctrl, vars, values, 3, NULL);
+```
+
+### Curve tables
+
+Curve tables are 16-point X/Y arrays stored in FLASH, used for throttle
+linearization, speed/torque limits, and field weakening. They have a separate
+API from the scalar variable system because each curve is a pair of 16-element
+arrays rather than a single value.
+
+**Curve definitions:**
+
+```c
+const alltrax_curve_def* alltrax_find_curve(const char* name);
+size_t                   alltrax_curve_count(void);
+const alltrax_curve_def* alltrax_curve_by_index(size_t index);
+```
+
+`alltrax_find_curve()` looks up a curve by name (e.g. `"linearization"`),
+returning `NULL` if not found. `alltrax_curve_count()` returns the total number
+of defined curves (5). `alltrax_curve_by_index()` returns a curve by its index
+(0-4), or `NULL` if out of range.
+
+**`alltrax_curve_def` fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `name` | `const char*` | Curve name (e.g. `"linearization"`) |
+| `description` | `const char*` | Human-readable description |
+| `x_address` | `uint32_t` | User X array FLASH address |
+| `y_address` | `uint32_t` | User Y array FLASH address |
+| `factory_x_address` | `uint32_t` | Factory X array FLASH address |
+| `factory_y_address` | `uint32_t` | Factory Y array FLASH address |
+| `x_scale` | `double` | X display scaling: `display = raw * x_scale` |
+| `y_scale` | `double` | Y display scaling: `display = raw * y_scale` |
+| `x_unit` | `const char*` | X axis unit (e.g. `"%"`, `"A"`) |
+| `y_unit` | `const char*` | Y axis unit |
+| `x_raw_max` | `int16_t` | Maximum raw X value (4095 for throttle, 7500 for field) |
+| `y_raw_max` | `int16_t` | Maximum raw Y value (4095 for throttle, 5000 for field) |
+
+**Reading curves:**
+
+```c
+alltrax_error alltrax_read_curve(alltrax_controller* ctrl,
+    const alltrax_curve_def* def, alltrax_curve_data* out);
+alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
+    const alltrax_curve_def* def, alltrax_curve_data* out);
+```
+
+`alltrax_read_curve()` reads the user (writable) copy of a curve from the
+device. `alltrax_read_curve_factory()` reads the factory (read-only) copy.
+Both populate an `alltrax_curve_data` struct with scaled display values.
+
+**`alltrax_curve_data` fields:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `def` | `const alltrax_curve_def*` | Pointer to the curve definition |
+| `x[16]` | `double` | X values in display units |
+| `y[16]` | `double` | Y values in display units |
+
+Example — read and print a curve:
+
+```c
+const alltrax_curve_def* def = alltrax_find_curve("linearization");
+alltrax_curve_data curve;
+alltrax_read_curve(ctrl, def, &curve);
+
+for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++)
+    printf("  %6.2f %s -> %6.2f %s\n",
+           curve.x[i], def->x_unit, curve.y[i], def->y_unit);
+```
+
+**Writing curves:**
+
+```c
+alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
+    const alltrax_curve_def* def, const alltrax_curve_data* data,
+    const alltrax_write_opts* opts);
+```
+
+Writes both X and Y arrays in a single FLASH page cycle (read page, patch both
+arrays, erase, write, verify). Uses the same `alltrax_write_opts` as
+`alltrax_write_vars()` — pass `NULL` for safe defaults. Requires
+`allow_writes=true`.
+
+Example — copy factory curve to user:
+
+```c
+const alltrax_curve_def* def = alltrax_find_curve("linearization");
+alltrax_curve_data factory;
+alltrax_read_curve_factory(ctrl, def, &factory);
+alltrax_write_curve(ctrl, def, &factory, NULL);
 ```
 
 ### Monitoring

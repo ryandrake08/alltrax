@@ -35,5 +35,6 @@ int cmd_reset(int argc, char** argv);
 int cmd_monitor(int argc, char** argv);
 int cmd_errors(int argc, char** argv);
 int cmd_config(int argc, char** argv);
+int cmd_curve(int argc, char** argv);
 
 #endif /* ALLTRAX_CLI_H */

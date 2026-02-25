@@ -140,7 +140,7 @@ static const alltrax_var_def tach_vars[] = {
 };
 #define TACH_COUNT (sizeof(tach_vars) / sizeof(tach_vars[0]))
 
-/* --- FIELD (scalars + strings; array curve tables skipped) --- */
+/* --- FIELD (scalars + strings) --- */
 static const alltrax_var_def field_vars[] = {
     VAR_STR_RW("F_Table_Name", "Field table name", 0x08002200, 32),
     VAR_RW_B("Reverse_Field_Weaken_Percent", "Reverse field weaken", 0x08002400, ALLTRAX_TYPE_UINT8, 1.0, 0, "%", 80, 100),
@@ -590,4 +590,68 @@ const char* alltrax_error_flag_name(int index)
     if (index < 0 || index >= ERROR_FLAG_COUNT)
         return NULL;
     return error_flag_names[index];
+}
+
+/* ------------------------------------------------------------------ */
+/* Curve table definitions                                             */
+/* ------------------------------------------------------------------ */
+
+static const alltrax_curve_def curve_defs[] = {
+    {
+        "linearization", "Throttle linearization curve",
+        0x08002100, 0x08002120,     /* user X, Y */
+        0x08001100, 0x08001120,     /* factory X, Y */
+        SCALE_AMPS_PCT, SCALE_AMPS_PCT, "%", "%",
+        4095, 4095,
+    },
+    {
+        "speed", "Speed limit curve",
+        0x08002140, 0x08002160,
+        0x08001140, 0x08001160,
+        SCALE_AMPS_PCT, SCALE_AMPS_PCT, "%", "%",
+        4095, 4095,
+    },
+    {
+        "torque", "Torque limit curve",
+        0x08002180, 0x080021A0,
+        0x08001180, 0x080011A0,
+        SCALE_AMPS_PCT, SCALE_AMPS_PCT, "%", "%",
+        4095, 4095,
+    },
+    {
+        "field", "Field weakening curve",
+        0x080021C0, 0x080021E0,
+        0x080011C0, 0x080011E0,
+        SCALE_FIELD_X, SCALE_FIELD_Y, "A", "A",
+        7500, 5000,
+    },
+    {
+        "genfield", "Generator field curve",
+        0x08002220, 0x08002240,
+        0x08001220, 0x08001240,
+        SCALE_FIELD_X, SCALE_FIELD_Y, "A", "A",
+        7500, 5000,
+    },
+};
+#define CURVE_DEF_COUNT (sizeof(curve_defs) / sizeof(curve_defs[0]))
+
+const alltrax_curve_def* alltrax_find_curve(const char* name)
+{
+    for (size_t i = 0; i < CURVE_DEF_COUNT; i++) {
+        if (strcmp(curve_defs[i].name, name) == 0)
+            return &curve_defs[i];
+    }
+    return NULL;
+}
+
+size_t alltrax_curve_count(void)
+{
+    return CURVE_DEF_COUNT;
+}
+
+const alltrax_curve_def* alltrax_curve_by_index(size_t index)
+{
+    if (index >= CURVE_DEF_COUNT)
+        return NULL;
+    return &curve_defs[index];
 }

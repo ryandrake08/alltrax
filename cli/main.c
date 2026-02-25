@@ -63,6 +63,7 @@ static void print_usage(void)
         "  monitor   Live polling (Ctrl+C to stop)\n"
         "  errors    Error flags and history\n"
         "  config    Save/load config files\n"
+        "  curve     Read/write curve tables\n"
     );
 }
 
@@ -96,6 +97,8 @@ int main(int argc, char** argv)
         rc = cmd_errors(argc - 1, argv + 1);
     else if (strcmp(cmd, "config") == 0)
         rc = cmd_config(argc - 1, argv + 1);
+    else if (strcmp(cmd, "curve") == 0)
+        rc = cmd_curve(argc - 1, argv + 1);
     else {
         fprintf(stderr, "Unknown command: %s\n", cmd);
         print_usage();
