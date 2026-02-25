@@ -3,6 +3,7 @@
  */
 
 #include "internal.h"
+#include <math.h>
 #include <stdlib.h>
 
 /* ------------------------------------------------------------------ */
@@ -420,10 +421,78 @@ static alltrax_error write_flash_page(alltrax_controller* ctrl,
     return write_memory(ctrl, VARSET_ADDR, zeros, 2);
 }
 
+/* ------------------------------------------------------------------ */
+/* Shared FLASH write helpers                                          */
+/* ------------------------------------------------------------------ */
+
+static alltrax_error flash_prechecks(alltrax_controller* ctrl,
+    const alltrax_write_opts* opts)
+{
+    alltrax_error rc;
+
+    if (!opts->skip_fw_check) {
+        uint8_t prgm_buf[6];
+        rc = read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf, NULL);
+        if (rc) return rc;
+
+        uint32_t prgm_rev = get_le32(prgm_buf);
+        if (prgm_rev != VALIDATED_FIRMWARE) {
+            char buf[16];
+            format_rev(prgm_rev, buf, sizeof(buf));
+            set_error_detail(ctrl,
+                "Firmware %s is not validated. Only V5.005 is supported",
+                buf);
+            return ALLTRAX_ERR_FIRMWARE;
+        }
+    }
+
+    if (!opts->skip_goodset) {
+        uint8_t gs_buf[2];
+        rc = read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf, NULL);
+        if (rc) return rc;
+        uint16_t v_gs = get_le16(gs_buf);
+
+        if (v_gs != 0x0000) {
+            set_error_detail(ctrl,
+                "User settings invalid "
+                "(V_GoodSet=0x%04X, expected 0x0000). "
+                "Previous write may have been interrupted", v_gs);
+            return ALLTRAX_ERR_FLASH;
+        }
+    }
+
+    return ALLTRAX_OK;
+}
+
+static alltrax_error enter_cal(alltrax_controller* ctrl, bool* in_cal)
+{
+    uint8_t mode_buf[1];
+    alltrax_error rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf, NULL);
+    if (rc) return rc;
+
+    if (mode_buf[0] != RUN_MODE_RUN) {
+        set_error_detail(ctrl,
+            "Controller not in RUN mode (RunMode=0x%02X)", mode_buf[0]);
+        return ALLTRAX_ERR_NOT_RUN;
+    }
+
+    uint8_t cal = RUN_MODE_CAL;
+    rc = write_memory(ctrl, ADDR_RUN_MODE, &cal, 1);
+    if (rc) return rc;
+    *in_cal = true;
+    return ALLTRAX_OK;
+}
+
+static alltrax_error exit_cal(alltrax_controller* ctrl)
+{
+    uint8_t run = RUN_MODE_RUN;
+    return write_memory(ctrl, ADDR_RUN_MODE, &run, 1);
+}
+
 alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, const double* values, size_t count,
     const alltrax_write_opts* opts)
-{    
+{
     if (count == 0) {
         set_error_detail(ctrl, "No variables to write");
         return ALLTRAX_ERR_INVALID_ARG;
@@ -520,36 +589,8 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     alltrax_error rc;
 
     if (flash_count > 0) {
-        if (!opts->skip_fw_check) {
-            uint8_t prgm_buf[6];
-            rc = read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf, NULL);
-            if (rc) return rc;
-
-            uint32_t prgm_rev = get_le32(prgm_buf);
-            if (prgm_rev != VALIDATED_FIRMWARE) {
-                char buf[16];
-                format_rev(prgm_rev, buf, sizeof(buf));
-                set_error_detail(ctrl,
-                    "Firmware %s is not validated. Only V5.005 is supported",
-                    buf);
-                return ALLTRAX_ERR_FIRMWARE;
-            }
-        }
-
-        if (!opts->skip_goodset) {
-            uint8_t gs_buf[2];
-            rc = read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf, NULL);
-            if (rc) return rc;
-            uint16_t v_gs = get_le16(gs_buf);
-
-            if (v_gs != 0x0000) {
-                set_error_detail(ctrl,
-                    "User settings invalid "
-                    "(V_GoodSet=0x%04X, expected 0x0000). "
-                    "Previous write may have been interrupted", v_gs);
-                return ALLTRAX_ERR_FLASH;
-            }
-        }
+        rc = flash_prechecks(ctrl, opts);
+        if (rc) return rc;
     }
 
     /* ---- 4. Enter CAL mode (single bracket for all writes) ---- */
@@ -557,20 +598,8 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     bool in_cal = false;
 
     if (!opts->skip_cal) {
-        uint8_t mode_buf[1];
-        rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf, NULL);
+        rc = enter_cal(ctrl, &in_cal);
         if (rc) return rc;
-
-        if (mode_buf[0] != RUN_MODE_RUN) {
-            set_error_detail(ctrl,
-                "Controller not in RUN mode (RunMode=0x%02X)", mode_buf[0]);
-            return ALLTRAX_ERR_NOT_RUN;
-        }
-
-        uint8_t cal = RUN_MODE_CAL;
-        rc = write_memory(ctrl, ADDR_RUN_MODE, &cal, 1);
-        if (rc) return rc;
-        in_cal = true;
     }
 
     /* ---- 5. Write RAM variables ---- */
@@ -593,8 +622,119 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
 
 restore_run:
     if (in_cal) {
-        uint8_t run = RUN_MODE_RUN;
-        alltrax_error rc2 = write_memory(ctrl, ADDR_RUN_MODE, &run, 1);
+        alltrax_error rc2 = exit_cal(ctrl);
+        if (!rc) rc = rc2;
+    }
+    return rc;
+}
+
+/* ------------------------------------------------------------------ */
+/* Curve table read/write                                              */
+/* ------------------------------------------------------------------ */
+
+/* Read a 16-point int16 array from FLASH, scale to display units */
+static alltrax_error read_curve_array(alltrax_controller* ctrl,
+    uint32_t addr, double scale, double* out)
+{
+    uint8_t buf[ALLTRAX_CURVE_POINTS * 2];
+    alltrax_error rc = read_memory(ctrl, addr,
+        ALLTRAX_CURVE_POINTS * 2, buf, NULL);
+    if (rc) return rc;
+
+    for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++)
+        out[i] = (double)(int16_t)get_le16(buf + i * 2) * scale;
+
+    return ALLTRAX_OK;
+}
+
+alltrax_error alltrax_read_curve(alltrax_controller* ctrl,
+    const alltrax_curve_def* def, alltrax_curve_data* out)
+{
+    if (!def || !out)
+        return ALLTRAX_ERR_INVALID_ARG;
+
+    out->def = def;
+
+    alltrax_error rc = read_curve_array(ctrl, def->x_address,
+                                        def->x_scale, out->x);
+    if (rc) return rc;
+
+    return read_curve_array(ctrl, def->y_address, def->y_scale, out->y);
+}
+
+alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
+    const alltrax_curve_def* def, alltrax_curve_data* out)
+{
+    if (!def || !out)
+        return ALLTRAX_ERR_INVALID_ARG;
+
+    out->def = def;
+
+    alltrax_error rc = read_curve_array(ctrl, def->factory_x_address,
+                                        def->x_scale, out->x);
+    if (rc) return rc;
+
+    return read_curve_array(ctrl, def->factory_y_address,
+                            def->y_scale, out->y);
+}
+
+/* Encode display values back to raw int16 LE bytes */
+static void encode_curve_array(const double* values, double scale,
+    uint8_t* buf)
+{
+    for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++) {
+        int16_t raw = (int16_t)round(values[i] / scale);
+        buf[i * 2]     = (uint8_t)(raw & 0xFF);
+        buf[i * 2 + 1] = (uint8_t)((raw >> 8) & 0xFF);
+    }
+}
+
+alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
+    const alltrax_curve_def* def, const alltrax_curve_data* data,
+    const alltrax_write_opts* opts)
+{
+    if (!def || !data)
+        return ALLTRAX_ERR_INVALID_ARG;
+
+    alltrax_write_opts defaults = {0};
+    if (!opts) opts = &defaults;
+
+    /* Verify addresses are in VARSET page */
+    if (def->x_address < VARSET_ADDR ||
+        def->x_address + ALLTRAX_CURVE_POINTS * 2 > VARSET_ADDR + VARSET_SIZE ||
+        def->y_address < VARSET_ADDR ||
+        def->y_address + ALLTRAX_CURVE_POINTS * 2 > VARSET_ADDR + VARSET_SIZE) {
+        set_error_detail(ctrl, "Curve %s addresses outside VARSET page",
+                         def->name);
+        return ALLTRAX_ERR_ADDRESS;
+    }
+
+    /* FLASH pre-checks */
+    alltrax_error rc = flash_prechecks(ctrl, opts);
+    if (rc) return rc;
+
+    /* Enter CAL */
+    bool in_cal = false;
+    if (!opts->skip_cal) {
+        rc = enter_cal(ctrl, &in_cal);
+        if (rc) return rc;
+    }
+
+    /* Build patches for X and Y arrays */
+    flash_patch_t patches[2];
+
+    patches[0].offset = def->x_address - VARSET_ADDR;
+    patches[0].len = ALLTRAX_CURVE_POINTS * 2;
+    encode_curve_array(data->x, def->x_scale, patches[0].data);
+
+    patches[1].offset = def->y_address - VARSET_ADDR;
+    patches[1].len = ALLTRAX_CURVE_POINTS * 2;
+    encode_curve_array(data->y, def->y_scale, patches[1].data);
+
+    rc = write_flash_page(ctrl, patches, 2, opts->skip_verify);
+
+    if (in_cal) {
+        alltrax_error rc2 = exit_cal(ctrl);
         if (!rc) rc = rc2;
     }
     return rc;
