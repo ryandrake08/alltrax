@@ -201,6 +201,48 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     format_rev(out->original_program_rev, out->original_program_rev_str,
                sizeof(out->original_program_rev_str));
 
+    /* Apply version gates to hardware config fields.
+     *
+     * Old firmware may not have reliable hardware config bytes, so default
+     * to "all capabilities present" for backward compatibility. */
+
+    /* Gate: HasBMSCan, HasThrotCan, HasUser2, HasUser3, HasAuxOut1, HasAuxOut2
+     * If both OriginalBootRev and OriginalPrgmRev are 1 (V0.001), the
+     * hardware config bytes aren't programmed — assume all present. */
+    if (out->original_boot_rev == 1 && out->original_program_rev == 1) {
+        out->has_bms_can   = true;
+        out->has_throt_can = true;
+        out->has_user2     = true;
+        out->has_user3     = true;
+        out->has_aux_out1  = true;
+        out->has_aux_out2  = true;
+    }
+
+    /* Gate: HasForward
+     * Read from hardware config only if OriginalPrgmRev >= 68 or
+     * PrgmVer == 200 (custom firmware). Otherwise assume present. */
+    if (out->original_program_rev < 68 && out->program_ver != 200)
+        out->has_forward = true;
+
+    /* Gate: HasUser1
+     * Same pattern as HasForward but with threshold 70. */
+    if (out->original_program_rev < 70 && out->program_ver != 200)
+        out->has_user1 = true;
+
+    /* Gate: CanHighSide, IsStockMode
+     * Read from hardware config only if OriginalPrgmRev >= 1008.
+     * Otherwise default to capable (not stock mode). */
+    if (out->original_program_rev < 1008) {
+        out->can_high_side = true;
+        out->is_stock_mode = false;
+    }
+
+    /* Gate: ThrottlesAllowed
+     * Read bitmask only if either OriginalBootRev > 2 or
+     * OriginalPrgmRev > 2. Otherwise all throttles are allowed. */
+    if (out->original_boot_rev <= 2 && out->original_program_rev <= 2)
+        out->throttles_allowed = 0x7FF;
+
     /* Reject firmware versions outside the Toolkit's known range */
     if (out->program_rev < 1 || out->program_rev >= 6000) {
         char rev_str[16];
@@ -215,17 +257,20 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
 
 bool alltrax_has_feature(const alltrax_info* info, alltrax_feature feat)
 {
+    uint32_t orig_boot = info->original_boot_rev;
     uint32_t orig = info->original_program_rev;
     uint32_t prgm = info->program_rev;
+    uint16_t ver = info->program_ver;
 
     switch (feat) {
-    case ALLTRAX_FEAT_THROTTLE_CAPS:  return orig > 2;
-    case ALLTRAX_FEAT_FORWARD_INPUT:  return orig >= 68;
-    case ALLTRAX_FEAT_USER1_INPUT:    return orig >= 70;
-    case ALLTRAX_FEAT_USER_PROFILES:  return prgm >= 1005;
-    case ALLTRAX_FEAT_USER_DEFAULTS:  return orig >= 1007;
-    case ALLTRAX_FEAT_CAN_HIGHSIDE:   return orig >= 1008;
-    case ALLTRAX_FEAT_BAD_VARS_CODE:  return prgm >= 1107;
+    case ALLTRAX_FEAT_HW_CAPS:       return orig_boot != 1 || orig != 1;
+    case ALLTRAX_FEAT_THROTTLE_CAPS: return orig_boot > 2 || orig > 2;
+    case ALLTRAX_FEAT_FORWARD_INPUT: return orig >= 68 || ver == 200;
+    case ALLTRAX_FEAT_USER1_INPUT:   return orig >= 70 || ver == 200;
+    case ALLTRAX_FEAT_USER_PROFILES: return prgm >= 1005;
+    case ALLTRAX_FEAT_USER_DEFAULTS: return orig >= 1007;
+    case ALLTRAX_FEAT_CAN_HIGHSIDE:  return orig >= 1008;
+    case ALLTRAX_FEAT_BAD_VARS_CODE: return prgm >= 1107;
     }
     return false;
 }
