@@ -20,6 +20,7 @@ typedef struct hid_device_ hid_device;
 
 struct alltrax_controller {
     hid_device*  hid;
+    uint16_t     pid;
     bool         allow_writes;
     char         error_detail[256];
 };
@@ -100,8 +101,9 @@ struct alltrax_controller {
 /* ------------------------------------------------------------------ */
 
 /* USB device IDs */
-#define ALLTRAX_VID    0x23D4
-#define ALLTRAX_PID    0x0002
+#define ALLTRAX_VID     0x23D4
+#define ALLTRAX_PID_XCT 0x0002   /* XCT, SRX, NCT */
+#define ALLTRAX_PID_SPM 0x0001   /* SPM, SPB, SR, BMS, BMS2 */
 
 /* Validated firmware version */
 #define VALIDATED_FIRMWARE 5005
@@ -127,6 +129,9 @@ size_t alltrax_var_byte_size(const alltrax_var_def* var);
 alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
     const alltrax_var_def* var, uint32_t base_address, alltrax_var_value* out);
 int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf);
+
+/* controller.c */
+alltrax_controller_type detect_controller_type(const char* model);
 
 /* transport.c */
 alltrax_error transport_write(alltrax_controller* ctrl,

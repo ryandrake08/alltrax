@@ -54,6 +54,21 @@ typedef enum {
 const char* alltrax_strerror(alltrax_error err);
 
 /* ------------------------------------------------------------------ */
+/* Controller types                                                    */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    ALLTRAX_CONTROLLER_UNKNOWN,
+    ALLTRAX_CONTROLLER_XCT,
+    ALLTRAX_CONTROLLER_SPM,
+    ALLTRAX_CONTROLLER_SR,
+    ALLTRAX_CONTROLLER_BMS,
+    ALLTRAX_CONTROLLER_BMS2,
+} alltrax_controller_type;
+
+const char* alltrax_controller_type_name(alltrax_controller_type type);
+
+/* ------------------------------------------------------------------ */
 /* Opaque controller handle                                            */
 /* ------------------------------------------------------------------ */
 
@@ -73,7 +88,16 @@ void alltrax_close(alltrax_controller* ctrl);
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-    /* Controller identity (0x08000800, 52 bytes) */
+    /* Controller type (detected from model prefix) */
+    alltrax_controller_type controller_type;
+
+    /* True if this controller type is tested and supported.
+     * Currently only XCT with firmware V0.001-V5.999 is supported.
+     * Non-supported devices can still be queried via alltrax_get_info()
+     * but other operations (read/write variables, etc.) are not validated. */
+    bool     supported;
+
+    /* Controller identity (52 bytes from INFOSET) */
     char     model[16];
     char     build_date[16];
     uint32_t serial_number;
@@ -95,7 +119,7 @@ typedef struct {
     char     program_rev_str[16];
     char     original_program_rev_str[16];
 
-    /* Hardware config (0x08000880, 24 bytes) */
+    /* Hardware config (24 bytes from INFOSET + 0x80) */
     uint16_t rated_voltage;
     uint16_t rated_amps;
     uint16_t rated_field_amps;

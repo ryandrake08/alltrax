@@ -23,6 +23,8 @@ int cmd_info(int argc, char** argv)
         return 1;
     }
 
+    printf("Controller Type:  %s\n",
+           alltrax_controller_type_name(info.controller_type));
     printf("Model:            %s\n", info.model);
     printf("Build Date:       %s\n", info.build_date);
     printf("Serial Number:    %u\n", info.serial_number);
@@ -52,6 +54,14 @@ int cmd_info(int argc, char** argv)
     printf("  High Side:      %s\n", yn(info.can_high_side));
     printf("  Stock Mode:     %s\n", yn(info.is_stock_mode));
     printf("  Throttles:      0x%04X\n", info.throttles_allowed);
+
+    if (!info.supported) {
+        printf("\nWarning: %s controllers are not supported.\n",
+               alltrax_controller_type_name(info.controller_type));
+        printf("Only XCT controllers with firmware V0.001-V5.999 are "
+               "tested and validated.\n");
+        printf("Read/write operations may produce incorrect results.\n");
+    }
 
     alltrax_close(ctrl);
     return 0;

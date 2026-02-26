@@ -6,6 +6,7 @@ via USB HID.
 
 ```
 $ alltrax info
+Controller Type:  XCT
 Model:            XCT48400-DCS
 Build Date:       04/04/2012
 Serial Number:    123456
@@ -377,15 +378,21 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out);
 ```
 
 Reads controller identity, firmware versions, ratings, and hardware
-capabilities. Returns `ALLTRAX_ERR_FIRMWARE` if the firmware version is outside
-the known supported range (V0.001-V5.999). The `alltrax_info` struct is still
-fully populated even on firmware error, so callers can inspect it for
-diagnostics.
+capabilities. Always returns `ALLTRAX_OK` if communication succeeds — check
+`out->supported` to determine whether the controller type and firmware are
+validated.
+
+The library auto-detects the controller type from the USB PID and model
+string. Non-XCT controllers (SPM, SR, BMS, BMS2) can be identified via
+`alltrax_get_info()` but other operations (read/write variables, etc.) are
+not validated for those types.
 
 **`alltrax_info` fields:**
 
 | Field | Type | Description |
 |-------|------|-------------|
+| `controller_type` | `alltrax_controller_type` | Detected type (XCT, SPM, SR, BMS, BMS2, or Unknown) |
+| `supported` | `bool` | `true` for XCT with firmware V0.001-V5.999 |
 | `model` | `char[16]` | Model string (e.g. `"XCT48400-DCS"`) |
 | `build_date` | `char[16]` | Factory build date |
 | `serial_number` | `uint32_t` | Serial number |
@@ -1020,7 +1027,23 @@ Tested on:
 - **Alltrax XCT48400-DCS** (USB PID `0x0002`, firmware V5.005)
 
 Should work with other XCT-series controllers sharing the same USB Product ID.
-SPM and SR series use different memory maps and are not yet supported.
+
+### Device detection
+
+The library auto-detects the controller family from the USB Product ID and
+model string prefix:
+
+| USB PID | Model Prefix | Type | Supported |
+|---------|-------------|------|-----------|
+| `0x0002` | XCT, SRX, NCT | XCT | Yes |
+| `0x0001` | SPM, SPB | SPM | Detected only |
+| `0x0001` | SR* (not SRX) | SR | Detected only |
+| `0x0001` | BMS | BMS | Detected only |
+| `0x0001` | BMS2 | BMS2 | Detected only |
+
+Non-XCT controllers can be identified via `alltrax info` but other operations
+(read/write variables, curves, monitoring) are not validated. The CLI warns
+when a non-supported controller is connected.
 
 ## How it works
 

@@ -124,6 +124,62 @@ static alltrax_error write_memory_range(alltrax_controller* ctrl,
 }
 
 /* ------------------------------------------------------------------ */
+/* Controller type detection                                           */
+/* ------------------------------------------------------------------ */
+
+/*
+ * Determine controller type from the model string prefix.
+ *   BMS2  → BMS2  (4-char prefix, checked first)
+ *   SPB   → SPM   (SPB is an SPM variant)
+ *   SRX   → XCT   (SRX uses XCT protocol)
+ *   NCT   → XCT   (NCT uses XCT protocol)
+ *   SR*   → SR    (2-char prefix, SPM variant with different fw bounds)
+ *   SPM   → SPM
+ *   XCT   → XCT
+ *   BMS   → BMS
+ */
+alltrax_controller_type detect_controller_type(const char* model)
+{
+    size_t len = strlen(model);
+
+    /* BMS2 checked first (4-char prefix) */
+    if (len >= 4 && strncmp(model, "BMS2", 4) == 0)
+        return ALLTRAX_CONTROLLER_BMS2;
+
+    if (len < 3)
+        return ALLTRAX_CONTROLLER_UNKNOWN;
+
+    /* 3-char prefix checks */
+    if (strncmp(model, "XCT", 3) == 0)
+        return ALLTRAX_CONTROLLER_XCT;
+    if (strncmp(model, "SRX", 3) == 0 || strncmp(model, "NCT", 3) == 0)
+        return ALLTRAX_CONTROLLER_XCT;
+    if (strncmp(model, "SPM", 3) == 0 || strncmp(model, "SPB", 3) == 0)
+        return ALLTRAX_CONTROLLER_SPM;
+    if (strncmp(model, "BMS", 3) == 0)
+        return ALLTRAX_CONTROLLER_BMS;
+
+    /* SR* (2-char prefix) → SR variant */
+    if (len >= 2 && model[0] == 'S' && model[1] == 'R')
+        return ALLTRAX_CONTROLLER_SR;
+
+    return ALLTRAX_CONTROLLER_UNKNOWN;
+}
+
+const char* alltrax_controller_type_name(alltrax_controller_type type)
+{
+    switch (type) {
+    case ALLTRAX_CONTROLLER_XCT:     return "XCT";
+    case ALLTRAX_CONTROLLER_SPM:     return "SPM";
+    case ALLTRAX_CONTROLLER_SR:      return "SR";
+    case ALLTRAX_CONTROLLER_BMS:     return "BMS";
+    case ALLTRAX_CONTROLLER_BMS2:    return "BMS2";
+    case ALLTRAX_CONTROLLER_UNKNOWN: return "Unknown";
+    }
+    return "Unknown";
+}
+
+/* ------------------------------------------------------------------ */
 /* Controller info                                                     */
 /* ------------------------------------------------------------------ */
 
@@ -135,6 +191,38 @@ static char* format_rev(uint32_t rev, char* buf, size_t buflen)
     return buf;
 }
 
+/*
+ * Check firmware version bounds for the given controller type.
+ * Returns true if the firmware is within a good range.
+ *
+ * Bounds from Controller.cs:
+ *   XCT: boot 0-5999, program 0-5999
+ *   SPM: boot 1050-2999, program 1050-2999
+ *   SR:  boot <1000, program <2000
+ *   BMS: boot <1000, program <4000
+ *   BMS2: (same as BMS)
+ */
+static bool firmware_in_bounds(alltrax_controller_type type,
+    uint32_t boot_rev, uint32_t program_rev)
+{
+    switch (type) {
+    case ALLTRAX_CONTROLLER_XCT:
+        return program_rev >= 1 && program_rev < 6000 &&
+               boot_rev < 6000;
+    case ALLTRAX_CONTROLLER_SPM:
+        return boot_rev >= 1050 && boot_rev < 3000 &&
+               program_rev >= 1050 && program_rev < 3000;
+    case ALLTRAX_CONTROLLER_SR:
+        return boot_rev < 1000 && program_rev < 2000;
+    case ALLTRAX_CONTROLLER_BMS:
+    case ALLTRAX_CONTROLLER_BMS2:
+        return boot_rev < 1000 && program_rev < 4000;
+    case ALLTRAX_CONTROLLER_UNKNOWN:
+        return false;
+    }
+    return false;
+}
+
 alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
 {
     if (!out)
@@ -144,8 +232,19 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     alltrax_error rc;
     uint8_t buf[56];
 
-    /* Controller identity (52 bytes from 0x08000800) */
-    rc = read_memory(ctrl, ADDR_CONTROLLER_INFO, 52, buf, NULL);
+    /* PID-dependent identity address.
+     * ALL_Variables adds +0x400 for PID 2 (XCT) to the common identity
+     * block, so PID 1 (SPM/SR/BMS) reads from 0x08000400 and PID 2 (XCT)
+     * reads from 0x08000800. Hardware config follows at +0x80. */
+    uint32_t info_addr = ADDR_CONTROLLER_INFO;
+    uint32_t hw_config_addr = ADDR_HARDWARE_CONFIG;
+    if (ctrl->pid == ALLTRAX_PID_SPM) {
+        info_addr -= 0x0400;
+        hw_config_addr -= 0x0400;
+    }
+
+    /* Controller identity (52 bytes) */
+    rc = read_memory(ctrl, info_addr, 52, buf, NULL);
     if (rc) return rc;
 
     get_string(buf, 15, out->model, sizeof(out->model));
@@ -156,8 +255,8 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     out->program_type         = get_le32(buf + 0x2C);
     out->hardware_rev         = get_le32(buf + 0x30);
 
-    /* Hardware config (24 bytes from 0x08000880) */
-    rc = read_memory(ctrl, ADDR_HARDWARE_CONFIG, 24, buf, NULL);
+    /* Hardware config (24 bytes) */
+    rc = read_memory(ctrl, hw_config_addr, 24, buf, NULL);
     if (rc) return rc;
 
     out->rated_voltage     = get_le16(buf);
@@ -201,56 +300,55 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     format_rev(out->original_program_rev, out->original_program_rev_str,
                sizeof(out->original_program_rev_str));
 
-    /* Apply version gates to hardware config fields.
+    /* Determine controller type from model string */
+    out->controller_type = detect_controller_type(out->model);
+
+    /* Apply version gates to hardware config fields (XCT only).
      *
-     * Old firmware may not have reliable hardware config bytes, so default
-     * to "all capabilities present" for backward compatibility. */
+     * Old XCT firmware may not have reliable hardware config bytes,
+     * so default to "all capabilities present" for backward compat. */
+    if (out->controller_type == ALLTRAX_CONTROLLER_XCT) {
+        /* Gate: HasBMSCan, HasThrotCan, HasUser2, HasUser3, HasAuxOut1,
+         * HasAuxOut2.  If both OriginalBootRev and OriginalPrgmRev are 1
+         * (V0.001), the hardware config bytes aren't programmed. */
+        if (out->original_boot_rev == 1 &&
+            out->original_program_rev == 1) {
+            out->has_bms_can   = true;
+            out->has_throt_can = true;
+            out->has_user2     = true;
+            out->has_user3     = true;
+            out->has_aux_out1  = true;
+            out->has_aux_out2  = true;
+        }
 
-    /* Gate: HasBMSCan, HasThrotCan, HasUser2, HasUser3, HasAuxOut1, HasAuxOut2
-     * If both OriginalBootRev and OriginalPrgmRev are 1 (V0.001), the
-     * hardware config bytes aren't programmed — assume all present. */
-    if (out->original_boot_rev == 1 && out->original_program_rev == 1) {
-        out->has_bms_can   = true;
-        out->has_throt_can = true;
-        out->has_user2     = true;
-        out->has_user3     = true;
-        out->has_aux_out1  = true;
-        out->has_aux_out2  = true;
+        /* Gate: HasForward — trust hw config only if
+         * OriginalPrgmRev >= 68 or PrgmVer == 200 */
+        if (out->original_program_rev < 68 && out->program_ver != 200)
+            out->has_forward = true;
+
+        /* Gate: HasUser1 — threshold 70 */
+        if (out->original_program_rev < 70 && out->program_ver != 200)
+            out->has_user1 = true;
+
+        /* Gate: CanHighSide, IsStockMode — OriginalPrgmRev >= 1008 */
+        if (out->original_program_rev < 1008) {
+            out->can_high_side = true;
+            out->is_stock_mode = false;
+        }
+
+        /* Gate: ThrottlesAllowed — OriginalBootRev > 2 or
+         * OriginalPrgmRev > 2 */
+        if (out->original_boot_rev <= 2 &&
+            out->original_program_rev <= 2)
+            out->throttles_allowed = 0x7FF;
     }
 
-    /* Gate: HasForward
-     * Read from hardware config only if OriginalPrgmRev >= 68 or
-     * PrgmVer == 200 (custom firmware). Otherwise assume present. */
-    if (out->original_program_rev < 68 && out->program_ver != 200)
-        out->has_forward = true;
-
-    /* Gate: HasUser1
-     * Same pattern as HasForward but with threshold 70. */
-    if (out->original_program_rev < 70 && out->program_ver != 200)
-        out->has_user1 = true;
-
-    /* Gate: CanHighSide, IsStockMode
-     * Read from hardware config only if OriginalPrgmRev >= 1008.
-     * Otherwise default to capable (not stock mode). */
-    if (out->original_program_rev < 1008) {
-        out->can_high_side = true;
-        out->is_stock_mode = false;
-    }
-
-    /* Gate: ThrottlesAllowed
-     * Read bitmask only if either OriginalBootRev > 2 or
-     * OriginalPrgmRev > 2. Otherwise all throttles are allowed. */
-    if (out->original_boot_rev <= 2 && out->original_program_rev <= 2)
-        out->throttles_allowed = 0x7FF;
-
-    /* Reject firmware versions outside the Toolkit's known range */
-    if (out->program_rev < 1 || out->program_rev >= 6000) {
-        char rev_str[16];
-        format_rev(out->program_rev, rev_str, sizeof(rev_str));
-        set_error_detail(ctrl,
-            "Unsupported firmware %s (expected V0.001-V5.999)", rev_str);
-        return ALLTRAX_ERR_FIRMWARE;
-    }
+    /* Set supported flag: true only for XCT with firmware in bounds.
+     * Non-XCT devices can still be queried via alltrax_get_info() but
+     * other operations (read/write variables, etc.) are not validated. */
+    out->supported = (out->controller_type == ALLTRAX_CONTROLLER_XCT &&
+                      firmware_in_bounds(out->controller_type,
+                                         out->boot_rev, out->program_rev));
 
     return ALLTRAX_OK;
 }
