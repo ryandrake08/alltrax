@@ -291,12 +291,13 @@ static int do_set(int argc, char** argv)
 {
     if (argc < 2) {
         fprintf(stderr,
-            "Usage: alltrax curve set <type> [--file f.csv] [x,y ...]\n"
+            "Usage: alltrax curve set <type> [--file f.csv] [--preset name] [x,y ...]\n"
             "\n"
             "Types: linearization, speed, torque, field, genfield\n"
             "\n"
             "Flags:\n"
             "  --file <f.csv>   Read points from CSV file\n"
+            "  --preset <name>  Use a built-in preset curve\n"
             "  --no-cal         Skip CAL/RUN mode bracket\n"
             "  --no-verify      Skip read-back verification\n"
             "  --no-fw-version  Skip firmware version check\n"
@@ -307,14 +308,17 @@ static int do_set(int argc, char** argv)
     cli_flags flags;
     int first_arg = cli_parse_flags(argc, argv, &flags);
 
-    /* Find type and --file */
+    /* Find type, --file, and --preset */
     const char* type = NULL;
     const char* filepath = NULL;
+    const char* preset_name = NULL;
     int xy_start = -1;
 
     for (int i = first_arg; i < argc; i++) {
         if (strcmp(argv[i], "--file") == 0 && i + 1 < argc) {
             filepath = argv[++i];
+        } else if (strcmp(argv[i], "--preset") == 0 && i + 1 < argc) {
+            preset_name = argv[++i];
         } else if (argv[i][0] != '-') {
             if (!type) {
                 type = argv[i];
@@ -337,7 +341,25 @@ static int do_set(int argc, char** argv)
     alltrax_curve_data curve;
     curve.def = def;
 
-    if (filepath) {
+    if (preset_name) {
+        const alltrax_curve_preset* preset =
+            alltrax_find_curve_preset(type, preset_name);
+        if (!preset) {
+            fprintf(stderr, "Unknown preset '%s' for curve type '%s'\n",
+                    preset_name, type);
+            fprintf(stderr, "Available presets:\n");
+            for (size_t i = 0; i < alltrax_curve_preset_count(); i++) {
+                const alltrax_curve_preset* p =
+                    alltrax_curve_preset_by_index(i);
+                if (strcmp(p->curve_type, type) == 0)
+                    fprintf(stderr, "  %-16s  %s\n", p->name,
+                            p->description);
+            }
+            return 1;
+        }
+        memcpy(curve.x, preset->x, sizeof(curve.x));
+        memcpy(curve.y, preset->y, sizeof(curve.y));
+    } else if (filepath) {
         if (parse_csv_file(filepath, &curve))
             return 1;
     } else if (xy_start >= 0 && xy_start < argc) {
@@ -349,7 +371,7 @@ static int do_set(int argc, char** argv)
             return 1;
         }
     } else {
-        fprintf(stderr, "Error: provide x,y pairs or --file\n");
+        fprintf(stderr, "Error: provide x,y pairs, --file, or --preset\n");
         return 1;
     }
 
@@ -577,6 +599,30 @@ static int do_list(void)
         printf("%-16s  %-34s  %s / %s\n",
                def->name, def->description, def->x_unit, def->y_unit);
     }
+
+    /* Show available presets grouped by curve type */
+    printf("\nPresets (use with: alltrax curve set <type> --preset <name>):\n");
+    for (size_t c = 0; c < ncurves; c++) {
+        const alltrax_curve_def* def = alltrax_curve_by_index(c);
+        bool has_presets = false;
+
+        for (size_t p = 0; p < alltrax_curve_preset_count(); p++) {
+            const alltrax_curve_preset* preset =
+                alltrax_curve_preset_by_index(p);
+            if (strcmp(preset->curve_type, def->name) != 0)
+                continue;
+            if (!has_presets) {
+                printf("  %-16s", def->name);
+                has_presets = true;
+            } else {
+                printf(", ");
+            }
+            printf("%s", preset->name);
+        }
+        if (has_presets)
+            printf("\n");
+    }
+
     return 0;
 }
 
