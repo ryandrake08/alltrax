@@ -27,7 +27,13 @@ alltrax_error alltrax_open(alltrax_controller** out, bool allow_writes)
     if (!out || *out)
         return ALLTRAX_ERR_INVALID_ARG;
 
-    hid_device* hid = hid_open(ALLTRAX_VID, ALLTRAX_PID, NULL);
+    /* Try XCT (PID 0x0002) first, then SPM/SR/BMS (PID 0x0001) */
+    uint16_t pid = ALLTRAX_PID_XCT;
+    hid_device* hid = hid_open(ALLTRAX_VID, ALLTRAX_PID_XCT, NULL);
+    if (!hid) {
+        pid = ALLTRAX_PID_SPM;
+        hid = hid_open(ALLTRAX_VID, ALLTRAX_PID_SPM, NULL);
+    }
     if (!hid)
         return ALLTRAX_ERR_NO_DEVICE;
 
@@ -38,6 +44,7 @@ alltrax_error alltrax_open(alltrax_controller** out, bool allow_writes)
     }
 
     ctrl->hid = hid;
+    ctrl->pid = pid;
     ctrl->allow_writes = allow_writes;
     *out = ctrl;
     return ALLTRAX_OK;
