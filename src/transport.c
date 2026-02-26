@@ -37,10 +37,17 @@ alltrax_error alltrax_open(alltrax_controller** out,
         if (!hid)
             return ALLTRAX_ERR_NO_DEVICE;
 
-        /* Determine PID by querying the device info */
-        struct hid_device_info* info = hid_get_device_info(hid);
-        if (info)
-            pid = info->product_id;
+        /* Determine PID by enumerating Alltrax devices and matching path.
+         * hid_get_device_info() requires hidapi >= 0.12; enumerate works
+         * with all versions. */
+        struct hid_device_info* devs = hid_enumerate(ALLTRAX_VID, 0);
+        for (struct hid_device_info* d = devs; d; d = d->next) {
+            if (strcmp(d->path, device_path) == 0) {
+                pid = d->product_id;
+                break;
+            }
+        }
+        hid_free_enumeration(devs);
     } else {
         /* Auto-detect: try XCT (PID 0x0002) first, then SPM (PID 0x0001) */
         pid = ALLTRAX_PID_XCT;
