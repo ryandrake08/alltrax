@@ -1045,6 +1045,39 @@ static int test_effective_bounds_negative(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 22. Throttle type names                                             */
+/* ------------------------------------------------------------------ */
+
+static int test_throttle_type_name_none(void)
+{
+    ASSERT_STR_EQ(alltrax_throttle_type_name(0), "None");
+    return 0;
+}
+
+static int test_throttle_type_name_all(void)
+{
+    ASSERT_STR_EQ(alltrax_throttle_type_name(1), "0-5K 2-Wire");
+    ASSERT_STR_EQ(alltrax_throttle_type_name(2), "5K-0 2-Wire");
+    ASSERT_STR_EQ(alltrax_throttle_type_name(3), "0-5V");
+    ASSERT_STR_EQ(alltrax_throttle_type_name(4), "EZGO ITS");
+    ASSERT_STR_EQ(alltrax_throttle_type_name(5), "0-5K 3-Wire");
+    ASSERT_STR_EQ(alltrax_throttle_type_name(6), "Taylor-Dunn");
+    ASSERT_STR_EQ(alltrax_throttle_type_name(7), "Club Car");
+    ASSERT_STR_EQ(alltrax_throttle_type_name(8), "Digital/CAN");
+    ASSERT_STR_EQ(alltrax_throttle_type_name(9), "Pump");
+    ASSERT_STR_EQ(alltrax_throttle_type_name(10), "USB");
+    ASSERT_STR_EQ(alltrax_throttle_type_name(11), "Absolute");
+    return 0;
+}
+
+static int test_throttle_type_name_out_of_range(void)
+{
+    ASSERT_NULL(alltrax_throttle_type_name(12));
+    ASSERT_NULL(alltrax_throttle_type_name(255));
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Test runner                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -1171,4 +1204,9 @@ void run_variables_tests(void)
     RUN_TEST(test_effective_bounds_unbounded);
     RUN_TEST(test_effective_bounds_explicit);
     RUN_TEST(test_effective_bounds_negative);
+
+    /* Throttle type names */
+    RUN_TEST(test_throttle_type_name_none);
+    RUN_TEST(test_throttle_type_name_all);
+    RUN_TEST(test_throttle_type_name_out_of_range);
 }

@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <math.h>
 #include <inttypes.h>
 #include <openssl/evp.h>
 #include <libxml/parser.h>
@@ -112,10 +113,43 @@ static const alltrax_var_group save_groups[] = {
 #define NUM_SAVE_GROUPS (sizeof(save_groups) / sizeof(save_groups[0]))
 
 /* ------------------------------------------------------------------ */
+/* Curve-to-XML mapping                                               */
+/* ------------------------------------------------------------------ */
+
+static const struct {
+    const char*       pointer_name;  /* XML element name for X */
+    const char*       data_name;     /* XML element name for Y */
+    const char*       curve_type;    /* alltrax_find_curve() key */
+    alltrax_var_group group;         /* which Node-* to nest under */
+} curve_xml_map[] = {
+    { "Lin_Table_Pointer", "Lin_Table_Data", "linearization", ALLTRAX_VARS_THROTTLE },
+    { "V_Table_Pointer",   "V_Table_Data",   "speed",         ALLTRAX_VARS_THROTTLE },
+    { "I_Table_Pointer",   "I_Table_Data",   "torque",        ALLTRAX_VARS_THROTTLE },
+    { "F_Table_Pointer",   "F_Table_Data",   "field",         ALLTRAX_VARS_FIELD    },
+    { "Gen_Field_Pointer", "Gen_Field_Data", "genfield",      ALLTRAX_VARS_FIELD    },
+};
+#define NUM_CURVE_XML (sizeof(curve_xml_map) / sizeof(curve_xml_map[0]))
+
+/* ------------------------------------------------------------------ */
 /* XML generation (save)                                              */
 /* ------------------------------------------------------------------ */
 
-static char* build_xml(alltrax_controller* ctrl, size_t* total_vars)
+/* Format 16 raw int16 values as comma-separated string into buf.
+ * buf must be at least 16*7 = 112 bytes. */
+static void format_curve_csv(const double* display, double scale, char* buf,
+    size_t bufsize)
+{
+    size_t pos = 0;
+    for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++) {
+        int16_t raw = (int16_t)round(display[i] / scale);
+        int n = snprintf(buf + pos, bufsize - pos, "%s%d",
+                         i > 0 ? "," : "", raw);
+        if (n > 0) pos += (size_t)n;
+    }
+}
+
+static char* build_xml(alltrax_controller* ctrl, size_t* total_vars,
+    size_t* total_curves)
 {
     xmlDocPtr doc = xmlNewDoc(BAD_CAST "1.0");
     if (!doc) return NULL;
@@ -124,6 +158,10 @@ static char* build_xml(alltrax_controller* ctrl, size_t* total_vars)
     xmlDocSetRootElement(doc, root);
 
     size_t count = 0;
+
+    /* Track group nodes so we can append curves to them */
+    xmlNodePtr group_nodes[ALLTRAX_VARS_GROUP_COUNT];
+    memset(group_nodes, 0, sizeof(group_nodes));
 
     for (size_t g = 0; g < NUM_SAVE_GROUPS; g++) {
         size_t var_count;
@@ -158,6 +196,7 @@ static char* build_xml(alltrax_controller* ctrl, size_t* total_vars)
         char node_name[80];
         snprintf(node_name, sizeof(node_name), "Node-%s", gname);
         xmlNodePtr group = xmlNewChild(root, NULL, BAD_CAST node_name, NULL);
+        group_nodes[save_groups[g]] = group;
 
         for (size_t i = 0; i < var_count; i++) {
             char vbuf[32];
@@ -174,6 +213,37 @@ static char* build_xml(alltrax_controller* ctrl, size_t* total_vars)
         }
 
         free(vals);
+    }
+
+    /* Append curve data to existing group nodes */
+    size_t curves = 0;
+    for (size_t c = 0; c < NUM_CURVE_XML; c++) {
+        xmlNodePtr gnode = group_nodes[curve_xml_map[c].group];
+        if (!gnode) continue;
+
+        const alltrax_curve_def* def =
+            alltrax_find_curve(curve_xml_map[c].curve_type);
+        if (!def) continue;
+
+        alltrax_curve_data data;
+        alltrax_error err = alltrax_read_curve(ctrl, def, &data);
+        if (err) {
+            fprintf(stderr, "Warning: failed to read curve %s: %s\n",
+                    curve_xml_map[c].curve_type, alltrax_strerror(err));
+            continue;
+        }
+
+        char csv[128];
+
+        format_curve_csv(data.x, def->x_scale, csv, sizeof(csv));
+        xmlNewTextChild(gnode, NULL,
+            BAD_CAST curve_xml_map[c].pointer_name, BAD_CAST csv);
+
+        format_curve_csv(data.y, def->y_scale, csv, sizeof(csv));
+        xmlNewTextChild(gnode, NULL,
+            BAD_CAST curve_xml_map[c].data_name, BAD_CAST csv);
+
+        curves++;
     }
 
     /* Serialize to string without XML declaration */
@@ -193,6 +263,7 @@ static char* build_xml(alltrax_controller* ctrl, size_t* total_vars)
     xmlFreeDoc(doc);
 
     *total_vars = count;
+    *total_curves = curves;
     return result;
 }
 
@@ -205,8 +276,39 @@ typedef struct {
     double display_value;
 } config_entry;
 
+typedef struct {
+    const alltrax_curve_def* def;
+    double x[ALLTRAX_CURVE_POINTS];
+    double y[ALLTRAX_CURVE_POINTS];
+    bool has_x;
+    bool has_y;
+} config_curve_entry;
+
+/* Parse comma-separated int16 values into display-unit doubles.
+ * Returns true on success (exactly 16 values parsed). */
+static bool parse_curve_csv(const char* csv, double scale, double* out)
+{
+    const char* p = csv;
+    for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++) {
+        char* endptr;
+        long val = strtol(p, &endptr, 10);
+        if (endptr == p) return false;
+        if (val < INT16_MIN || val > INT16_MAX) return false;
+        out[i] = (double)(int16_t)val * scale;
+        p = endptr;
+        if (i < ALLTRAX_CURVE_POINTS - 1) {
+            if (*p != ',') return false;
+            p++;
+        }
+    }
+    /* Allow trailing whitespace/NUL but not extra values */
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    return *p == '\0';
+}
+
 static config_entry* parse_xml(const char* xml, size_t xml_len,
-    size_t* out_count, size_t* out_skipped)
+    size_t* out_count, size_t* out_skipped,
+    config_curve_entry* curves_out, size_t* curve_count)
 {
     xmlDocPtr doc = xmlReadMemory(xml, (int)xml_len, NULL, NULL, 0);
     if (!doc) {
@@ -229,6 +331,14 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
 
     size_t count = 0;
     *out_skipped = 0;
+    *curve_count = 0;
+
+    /* Initialize curve accumulation slots */
+    for (size_t i = 0; i < NUM_CURVE_XML; i++) {
+        curves_out[i].def = alltrax_find_curve(curve_xml_map[i].curve_type);
+        curves_out[i].has_x = false;
+        curves_out[i].has_y = false;
+    }
 
     for (xmlNodePtr group = xmlFirstElementChild(root);
          group; group = xmlNextElementSibling(group)) {
@@ -239,6 +349,43 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
             xmlChar* xval = xmlNodeGetContent(elem);
             if (!xval) continue;
             const char* value = (const char*)xval;
+
+            /* Check if this is a curve element */
+            bool is_curve = false;
+            for (size_t c = 0; c < NUM_CURVE_XML; c++) {
+                if (!curves_out[c].def) continue;
+                const alltrax_curve_def* cdef = curves_out[c].def;
+
+                if (strcmp(name, curve_xml_map[c].pointer_name) == 0) {
+                    if (parse_curve_csv(value, cdef->x_scale,
+                                        curves_out[c].x)) {
+                        curves_out[c].has_x = true;
+                    } else {
+                        fprintf(stderr,
+                            "  Skipping %s: bad curve data\n", name);
+                        (*out_skipped)++;
+                    }
+                    is_curve = true;
+                    break;
+                }
+                if (strcmp(name, curve_xml_map[c].data_name) == 0) {
+                    if (parse_curve_csv(value, cdef->y_scale,
+                                        curves_out[c].y)) {
+                        curves_out[c].has_y = true;
+                    } else {
+                        fprintf(stderr,
+                            "  Skipping %s: bad curve data\n", name);
+                        (*out_skipped)++;
+                    }
+                    is_curve = true;
+                    break;
+                }
+            }
+
+            if (is_curve) {
+                xmlFree(xval);
+                continue;
+            }
 
             const alltrax_var_def* var = alltrax_find_var(name);
             if (!var) {
@@ -279,6 +426,12 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
         }
     }
 
+    /* Count complete curves (both X and Y present) */
+    for (size_t c = 0; c < NUM_CURVE_XML; c++) {
+        if (curves_out[c].has_x && curves_out[c].has_y)
+            (*curve_count)++;
+    }
+
     xmlFreeDoc(doc);
     *out_count = count;
     return entries;
@@ -307,8 +460,8 @@ static int do_save(int argc, char** argv)
     alltrax_error err = cli_open(&ctrl, false);
     if (err) return 1;
 
-    size_t total_vars = 0;
-    char* xml = build_xml(ctrl, &total_vars);
+    size_t total_vars = 0, total_curves = 0;
+    char* xml = build_xml(ctrl, &total_vars, &total_curves);
     alltrax_close(ctrl);
 
     if (!xml) {
@@ -351,7 +504,8 @@ static int do_save(int argc, char** argv)
         }
     }
 
-    printf("Saved %zu variables to %s\n", total_vars, filepath);
+    printf("Saved %zu variables + %zu curves to %s\n",
+           total_vars, total_curves, filepath);
     return 0;
 }
 
@@ -429,21 +583,24 @@ static int do_load(int argc, char** argv)
         }
     }
 
-    /* Parse XML into writable variable list */
-    size_t count, skipped;
-    config_entry* entries = parse_xml(xml, xml_len, &count, &skipped);
+    /* Parse XML into writable variable list + curves */
+    size_t count, skipped, n_curves;
+    config_curve_entry curves[NUM_CURVE_XML];
+    config_entry* entries = parse_xml(xml, xml_len, &count, &skipped,
+                                      curves, &n_curves);
     free(xml);
 
     if (!entries)
         return 1;
 
-    if (count == 0) {
+    if (count == 0 && n_curves == 0) {
         fprintf(stderr, "No writable variables found in config file\n");
         free(entries);
         return 1;
     }
 
-    printf("Loaded %zu writable variables from %s", count, filepath);
+    printf("Loaded %zu writable variables + %zu curves from %s",
+           count, n_curves, filepath);
     if (skipped > 0)
         printf(" (%zu skipped)", skipped);
     printf("\n");
@@ -457,19 +614,22 @@ static int do_load(int argc, char** argv)
     }
 
     /* Build arrays for alltrax_write_vars */
-    const alltrax_var_def** var_ptrs = calloc(count, sizeof(alltrax_var_def*));
-    double* values = calloc(count, sizeof(double));
+    const alltrax_var_def** var_ptrs = NULL;
+    double* values = NULL;
     int ret = 0;
 
-    if (!var_ptrs || !values) {
-        fprintf(stderr, "Error: out of memory\n");
-        ret = 1;
-        goto done;
-    }
-
-    for (size_t i = 0; i < count; i++) {
-        var_ptrs[i] = entries[i].var;
-        values[i] = entries[i].display_value;
+    if (count > 0) {
+        var_ptrs = calloc(count, sizeof(alltrax_var_def*));
+        values = calloc(count, sizeof(double));
+        if (!var_ptrs || !values) {
+            fprintf(stderr, "Error: out of memory\n");
+            ret = 1;
+            goto done;
+        }
+        for (size_t i = 0; i < count; i++) {
+            var_ptrs[i] = entries[i].var;
+            values[i] = entries[i].display_value;
+        }
     }
 
     alltrax_write_opts write_opts = {
@@ -479,15 +639,37 @@ static int do_load(int argc, char** argv)
         .skip_fw_check = flags.no_fw_version,
     };
 
-    err = alltrax_write_vars(ctrl, var_ptrs, values, count, &write_opts);
-    if (err) {
-        cli_error(ctrl, err, "writing variables");
-        ret = 1;
-        goto done;
+    if (count > 0) {
+        err = alltrax_write_vars(ctrl, var_ptrs, values, count, &write_opts);
+        if (err) {
+            cli_error(ctrl, err, "writing variables");
+            ret = 1;
+            goto done;
+        }
+
+        for (size_t i = 0; i < count; i++)
+            printf("  Wrote %s\n", entries[i].var->name);
     }
 
-    for (size_t i = 0; i < count; i++)
-        printf("  Wrote %s\n", entries[i].var->name);
+    /* Write curves */
+    for (size_t c = 0; c < NUM_CURVE_XML; c++) {
+        if (!curves[c].has_x || !curves[c].has_y || !curves[c].def)
+            continue;
+
+        alltrax_curve_data cdata;
+        cdata.def = curves[c].def;
+        memcpy(cdata.x, curves[c].x, sizeof(cdata.x));
+        memcpy(cdata.y, curves[c].y, sizeof(cdata.y));
+
+        err = alltrax_write_curve(ctrl, curves[c].def, &cdata, &write_opts);
+        if (err) {
+            cli_error(ctrl, err, "writing curve");
+            ret = 1;
+            goto done;
+        }
+        printf("  Wrote curve: %s (%d points)\n",
+               curves[c].def->name, ALLTRAX_CURVE_POINTS);
+    }
 
     if (flags.reset) {
         err = alltrax_reset_device(ctrl);

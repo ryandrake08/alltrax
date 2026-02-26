@@ -593,6 +593,33 @@ const char* alltrax_error_flag_name(int index)
 }
 
 /* ------------------------------------------------------------------ */
+/* Throttle type names                                                 */
+/* ------------------------------------------------------------------ */
+
+static const char* throttle_type_names[] = {
+    "None",
+    "0-5K 2-Wire",
+    "5K-0 2-Wire",
+    "0-5V",
+    "EZGO ITS",
+    "0-5K 3-Wire",
+    "Taylor-Dunn",
+    "Club Car",
+    "Digital/CAN",
+    "Pump",
+    "USB",
+    "Absolute",
+};
+#define THROTTLE_TYPE_COUNT 12
+
+const char* alltrax_throttle_type_name(uint8_t type)
+{
+    if (type >= THROTTLE_TYPE_COUNT)
+        return NULL;
+    return throttle_type_names[type];
+}
+
+/* ------------------------------------------------------------------ */
 /* Curve table definitions                                             */
 /* ------------------------------------------------------------------ */
 
