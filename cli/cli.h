@@ -8,6 +8,9 @@
 #include "alltrax.h"
 #include <stdbool.h>
 
+/* Global --device path (NULL = auto-detect) */
+extern const char* cli_device_path;
+
 /* Write flags parsed from argv */
 typedef struct {
     bool no_cal;

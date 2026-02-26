@@ -6,9 +6,11 @@
 #include <string.h>
 #include "cli.h"
 
+const char* cli_device_path = NULL;
+
 alltrax_error cli_open(alltrax_controller** ctrl, bool writes)
 {
-    alltrax_error err = alltrax_open(ctrl, writes);
+    alltrax_error err = alltrax_open(ctrl, cli_device_path, writes);
     if (err) {
         fprintf(stderr, "Error: %s\n", alltrax_strerror(err));
         if (*ctrl)
@@ -53,7 +55,10 @@ int cli_parse_flags(int argc, char** argv, cli_flags* flags)
 static void print_usage(void)
 {
     fprintf(stderr,
-        "Usage: alltrax <command> [options]\n"
+        "Usage: alltrax [--device <path>] <command> [options]\n"
+        "\n"
+        "Global options:\n"
+        "  --device <path>  HID device path (e.g. /dev/hidraw0)\n"
         "\n"
         "Commands:\n"
         "  info      Controller identity and firmware\n"
@@ -74,31 +79,53 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    /* Parse global flags before the command */
+    int argi = 1;
+    while (argi < argc && argv[argi][0] == '-') {
+        if (strcmp(argv[argi], "--device") == 0) {
+            if (argi + 1 >= argc) {
+                fprintf(stderr, "Error: --device requires a path argument\n");
+                return 1;
+            }
+            cli_device_path = argv[argi + 1];
+            argi += 2;
+        } else {
+            break;  /* Not a global flag — let subcommand handle it */
+        }
+    }
+
+    if (argi >= argc) {
+        print_usage();
+        return 1;
+    }
+
     alltrax_error err = alltrax_init();
     if (err) {
         fprintf(stderr, "Error: %s\n", alltrax_strerror(err));
         return 1;
     }
 
-    const char* cmd = argv[1];
+    const char* cmd = argv[argi];
+    int sub_argc = argc - argi;
+    char** sub_argv = argv + argi;
     int rc;
 
     if (strcmp(cmd, "info") == 0)
-        rc = cmd_info(argc - 1, argv + 1);
+        rc = cmd_info(sub_argc, sub_argv);
     else if (strcmp(cmd, "get") == 0)
-        rc = cmd_get(argc - 1, argv + 1);
+        rc = cmd_get(sub_argc, sub_argv);
     else if (strcmp(cmd, "write") == 0)
-        rc = cmd_write(argc - 1, argv + 1);
+        rc = cmd_write(sub_argc, sub_argv);
     else if (strcmp(cmd, "reset") == 0)
-        rc = cmd_reset(argc - 1, argv + 1);
+        rc = cmd_reset(sub_argc, sub_argv);
     else if (strcmp(cmd, "monitor") == 0)
-        rc = cmd_monitor(argc - 1, argv + 1);
+        rc = cmd_monitor(sub_argc, sub_argv);
     else if (strcmp(cmd, "errors") == 0)
-        rc = cmd_errors(argc - 1, argv + 1);
+        rc = cmd_errors(sub_argc, sub_argv);
     else if (strcmp(cmd, "config") == 0)
-        rc = cmd_config(argc - 1, argv + 1);
+        rc = cmd_config(sub_argc, sub_argv);
     else if (strcmp(cmd, "curve") == 0)
-        rc = cmd_curve(argc - 1, argv + 1);
+        rc = cmd_curve(sub_argc, sub_argv);
     else {
         fprintf(stderr, "Unknown command: %s\n", cmd);
         print_usage();

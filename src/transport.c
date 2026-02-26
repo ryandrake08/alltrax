@@ -22,18 +22,35 @@ void alltrax_exit(void)
     hid_exit();
 }
 
-alltrax_error alltrax_open(alltrax_controller** out, bool allow_writes)
+alltrax_error alltrax_open(alltrax_controller** out,
+    const char* device_path, bool allow_writes)
 {
     if (!out || *out)
         return ALLTRAX_ERR_INVALID_ARG;
 
-    /* Try XCT (PID 0x0002) first, then SPM/SR/BMS (PID 0x0001) */
-    uint16_t pid = ALLTRAX_PID_XCT;
-    hid_device* hid = hid_open(ALLTRAX_VID, ALLTRAX_PID_XCT, NULL);
-    if (!hid) {
-        pid = ALLTRAX_PID_SPM;
-        hid = hid_open(ALLTRAX_VID, ALLTRAX_PID_SPM, NULL);
+    hid_device* hid = NULL;
+    uint16_t pid = 0;
+
+    if (device_path) {
+        /* Open specific device by OS path */
+        hid = hid_open_path(device_path);
+        if (!hid)
+            return ALLTRAX_ERR_NO_DEVICE;
+
+        /* Determine PID by querying the device info */
+        struct hid_device_info* info = hid_get_device_info(hid);
+        if (info)
+            pid = info->product_id;
+    } else {
+        /* Auto-detect: try XCT (PID 0x0002) first, then SPM (PID 0x0001) */
+        pid = ALLTRAX_PID_XCT;
+        hid = hid_open(ALLTRAX_VID, ALLTRAX_PID_XCT, NULL);
+        if (!hid) {
+            pid = ALLTRAX_PID_SPM;
+            hid = hid_open(ALLTRAX_VID, ALLTRAX_PID_SPM, NULL);
+        }
     }
+
     if (!hid)
         return ALLTRAX_ERR_NO_DEVICE;
 
