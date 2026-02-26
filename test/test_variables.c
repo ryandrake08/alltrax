@@ -744,6 +744,101 @@ static int test_firmware_bounds(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 17. Voltage link validation                                         */
+/* ------------------------------------------------------------------ */
+
+static int test_voltage_link_valid(void)
+{
+    /* KSI=20, UnderVolt=25, OverVolt=30, BMSMissing=28 */
+    char msg[256];
+    ASSERT_EQ(validate_voltage_link(20.0, 25.0, 30.0, 28.0,
+              msg, sizeof(msg)), ALLTRAX_OK);
+    return 0;
+}
+
+static int test_voltage_link_exact_gaps(void)
+{
+    /* Exactly 1V gaps: KSI=20, UnderVolt=21, OverVolt=22, BMSMissing=22 */
+    char msg[256];
+    ASSERT_EQ(validate_voltage_link(20.0, 21.0, 22.0, 22.0,
+              msg, sizeof(msg)), ALLTRAX_OK);
+    return 0;
+}
+
+static int test_voltage_link_ksi_too_close(void)
+{
+    /* KSI=25, UnderVolt=25.5 — gap < 1V */
+    char msg[256];
+    ASSERT_EQ(validate_voltage_link(25.0, 25.5, 30.0, 28.0,
+              msg, sizeof(msg)), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
+static int test_voltage_link_ksi_equals_under(void)
+{
+    /* KSI=25, UnderVolt=25 — gap = 0V */
+    char msg[256];
+    ASSERT_EQ(validate_voltage_link(25.0, 25.0, 30.0, 28.0,
+              msg, sizeof(msg)), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
+static int test_voltage_link_under_too_close_to_over(void)
+{
+    /* UnderVolt=29.5, OverVolt=30 — gap < 1V */
+    char msg[256];
+    ASSERT_EQ(validate_voltage_link(20.0, 29.5, 30.0, 30.0,
+              msg, sizeof(msg)), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
+static int test_voltage_link_under_equals_over(void)
+{
+    /* UnderVolt=30, OverVolt=30 — gap = 0V */
+    char msg[256];
+    ASSERT_EQ(validate_voltage_link(20.0, 30.0, 30.0, 30.0,
+              msg, sizeof(msg)), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
+static int test_voltage_link_bms_below_under(void)
+{
+    /* BMSMissing=24, UnderVolt=25 — BMSMissing < UnderVolt + 1 */
+    char msg[256];
+    ASSERT_EQ(validate_voltage_link(20.0, 25.0, 30.0, 24.0,
+              msg, sizeof(msg)), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
+static int test_voltage_link_bms_above_over(void)
+{
+    /* BMSMissing=31, OverVolt=30 — BMSMissing > OverVolt */
+    char msg[256];
+    ASSERT_EQ(validate_voltage_link(20.0, 25.0, 30.0, 31.0,
+              msg, sizeof(msg)), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
+static int test_voltage_link_skip_bms(void)
+{
+    /* bms_missing < 0 skips BMS constraints */
+    char msg[256];
+    ASSERT_EQ(validate_voltage_link(20.0, 25.0, 30.0, -1.0,
+              msg, sizeof(msg)), ALLTRAX_OK);
+    return 0;
+}
+
+static int test_voltage_link_null_msg(void)
+{
+    /* NULL msg buffer should not crash */
+    ASSERT_EQ(validate_voltage_link(20.0, 25.0, 30.0, 28.0,
+              NULL, 0), ALLTRAX_OK);
+    ASSERT_EQ(validate_voltage_link(25.0, 25.0, 30.0, 28.0,
+              NULL, 0), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Test runner                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -826,4 +921,16 @@ void run_variables_tests(void)
     RUN_TEST(test_detect_type_unknown);
     RUN_TEST(test_controller_type_name);
     RUN_TEST(test_firmware_bounds);
+
+    /* Voltage link validation */
+    RUN_TEST(test_voltage_link_valid);
+    RUN_TEST(test_voltage_link_exact_gaps);
+    RUN_TEST(test_voltage_link_ksi_too_close);
+    RUN_TEST(test_voltage_link_ksi_equals_under);
+    RUN_TEST(test_voltage_link_under_too_close_to_over);
+    RUN_TEST(test_voltage_link_under_equals_over);
+    RUN_TEST(test_voltage_link_bms_below_under);
+    RUN_TEST(test_voltage_link_bms_above_over);
+    RUN_TEST(test_voltage_link_skip_bms);
+    RUN_TEST(test_voltage_link_null_msg);
 }

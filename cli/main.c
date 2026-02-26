@@ -44,6 +44,8 @@ int cli_parse_flags(int argc, char** argv, cli_flags* flags)
             flags->no_fw_version = true;
         else if (strcmp(argv[i], "--no-crypt") == 0)
             flags->no_crypt = true;
+        else if (strcmp(argv[i], "--no-voltage-link") == 0)
+            flags->no_voltage_link = true;
         else if (strcmp(argv[i], "--reset") == 0)
             flags->reset = true;
         else

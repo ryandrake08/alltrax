@@ -257,10 +257,11 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
 /* ------------------------------------------------------------------ */
 
 typedef struct {
-    bool skip_cal;        /* Skip CAL/RUN bracket */
-    bool skip_verify;     /* Skip read-back verification (FLASH only) */
-    bool skip_goodset;    /* Skip GoodSet pre-check (FLASH only) */
-    bool skip_fw_check;   /* Skip firmware version check */
+    bool skip_cal;           /* Skip CAL/RUN bracket */
+    bool skip_verify;        /* Skip read-back verification (FLASH only) */
+    bool skip_goodset;       /* Skip GoodSet pre-check (FLASH only) */
+    bool skip_fw_check;      /* Skip firmware version check */
+    bool skip_voltage_link;  /* Skip voltage link validation */
 } alltrax_write_opts;
 
 alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
