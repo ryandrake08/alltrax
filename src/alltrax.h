@@ -364,6 +364,7 @@ alltrax_error alltrax_read_monitor(alltrax_controller* ctrl,
     alltrax_monitor_data* out);
 
 const char* alltrax_error_flag_name(int index);
+const char* alltrax_throttle_type_name(uint8_t type);
 
 /* ------------------------------------------------------------------ */
 /* Special functions                                                   */

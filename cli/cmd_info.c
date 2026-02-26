@@ -53,7 +53,22 @@ int cmd_info(int argc, char** argv)
     printf("  Aux Out 2:      %s\n", yn(info.has_aux_out2));
     printf("  High Side:      %s\n", yn(info.can_high_side));
     printf("  Stock Mode:     %s\n", yn(info.is_stock_mode));
-    printf("  Throttles:      0x%04X\n", info.throttles_allowed);
+
+    /* Throttle types: bits 0-10 map to types 1-11 */
+    printf("  Throttles:      ");
+    bool first = true;
+    for (int i = 0; i < 11; i++) {
+        if (info.throttles_allowed & (1u << i)) {
+            const char* name = alltrax_throttle_type_name((uint8_t)(i + 1));
+            if (name) {
+                printf("%s%s", first ? "" : ", ", name);
+                first = false;
+            }
+        }
+    }
+    if (first)
+        printf("None");
+    printf("\n");
 
     if (!info.supported) {
         printf("\nWarning: %s controllers are not supported.\n",

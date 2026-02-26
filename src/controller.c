@@ -805,6 +805,41 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
         }
     }
 
+    /* ---- 1c. Throttle type validation ---- */
+    /* If Throttle_Type is being written, check that the value is allowed
+     * by the hardware's throttles_allowed bitmask. */
+
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(vars[i]->name, "Throttle_Type") == 0) {
+            uint8_t ttype = (uint8_t)values[i];
+
+            /* Type 0 (None) is always allowed */
+            if (ttype > 0) {
+                /* Read throttles_allowed from hardware config */
+                uint32_t hw_addr = ADDR_HARDWARE_CONFIG + 16;
+                if (ctrl->pid == ALLTRAX_PID_SPM)
+                    hw_addr -= 0x0400;
+
+                uint8_t ta_buf[4];
+                rc = read_memory(ctrl, hw_addr, 4, ta_buf, NULL);
+                if (rc) return rc;
+
+                uint32_t throttles_allowed = get_le32(ta_buf);
+                uint32_t bit = (uint32_t)1 << (ttype - 1);
+
+                if (!(throttles_allowed & bit)) {
+                    const char* name = alltrax_throttle_type_name(ttype);
+                    set_error_detail(ctrl,
+                        "Throttle type %u (%s) is not allowed by hardware "
+                        "(allowed: 0x%04X)",
+                        ttype, name ? name : "unknown", throttles_allowed);
+                    return ALLTRAX_ERR_INVALID_ARG;
+                }
+            }
+            break;
+        }
+    }
+
     /* ---- 2. Encode all variables ---- */
 
     ram_encoded_t ram_encoded[MAX_RAM_WRITE_VARS];
