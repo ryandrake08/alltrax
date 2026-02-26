@@ -6,6 +6,8 @@
 #include <string.h>
 #include "helpers.h"
 #include "alltrax.h"
+#include "internal.h"
+#include "test_internal.h"
 
 /* ------------------------------------------------------------------ */
 /* Lookup tests                                                        */
@@ -287,6 +289,81 @@ static int test_preset_data_xct_torque(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* encode_curve_array                                                  */
+/* ------------------------------------------------------------------ */
+
+static int test_encode_curve_identity_scale(void)
+{
+    /* scale=1.0: raw = round(value / 1.0) */
+    double values[ALLTRAX_CURVE_POINTS] = {0, 1, 100, -1, 0,0,0,0, 0,0,0,0, 0,0,0,0};
+    uint8_t buf[ALLTRAX_CURVE_POINTS * 2];
+    encode_curve_array(values, 1.0, buf);
+
+    /* 0 → 0x0000 */
+    ASSERT_EQ(buf[0], 0x00);
+    ASSERT_EQ(buf[1], 0x00);
+    /* 1 → 0x0001 */
+    ASSERT_EQ(buf[2], 0x01);
+    ASSERT_EQ(buf[3], 0x00);
+    /* 100 → 0x0064 */
+    ASSERT_EQ(buf[4], 0x64);
+    ASSERT_EQ(buf[5], 0x00);
+    /* -1 → 0xFFFF (int16 LE) */
+    ASSERT_EQ(buf[6], 0xFF);
+    ASSERT_EQ(buf[7], 0xFF);
+    return 0;
+}
+
+static int test_encode_curve_pct_scale(void)
+{
+    /* scale = 20.0/819.0 ≈ 0.02442
+     * 100% display → raw = round(100 / (20/819)) = round(4095) = 4095
+     * 50% display → raw = round(50 / (20/819)) = round(2047.5) = 2048 */
+    double scale = 20.0 / 819.0;
+    double values[ALLTRAX_CURVE_POINTS] = {0};
+    values[0] = 0.0;
+    values[1] = 50.0;
+    values[2] = 100.0;
+
+    uint8_t buf[ALLTRAX_CURVE_POINTS * 2];
+    encode_curve_array(values, scale, buf);
+
+    /* 0 → raw 0 → 0x0000 */
+    ASSERT_EQ(buf[0], 0x00);
+    ASSERT_EQ(buf[1], 0x00);
+    /* 50% → raw 2048 = 0x0800 */
+    ASSERT_EQ(buf[2], 0x00);
+    ASSERT_EQ(buf[3], 0x08);
+    /* 100% → raw 4095 = 0x0FFF */
+    ASSERT_EQ(buf[4], 0xFF);
+    ASSERT_EQ(buf[5], 0x0F);
+    return 0;
+}
+
+static int test_encode_curve_field_scale(void)
+{
+    /* Field X scale = 0.1: 750.0A → raw = round(750/0.1) = 7500 = 0x1D4C
+     * Field Y scale = 0.01: 50.0A → raw = round(50/0.01) = 5000 = 0x1388 */
+    double x_vals[ALLTRAX_CURVE_POINTS] = {0};
+    double y_vals[ALLTRAX_CURVE_POINTS] = {0};
+    x_vals[0] = 750.0;
+    y_vals[0] = 50.0;
+
+    uint8_t x_buf[ALLTRAX_CURVE_POINTS * 2];
+    uint8_t y_buf[ALLTRAX_CURVE_POINTS * 2];
+    encode_curve_array(x_vals, 0.1, x_buf);
+    encode_curve_array(y_vals, 0.01, y_buf);
+
+    /* 7500 = 0x1D4C LE */
+    ASSERT_EQ(x_buf[0], 0x4C);
+    ASSERT_EQ(x_buf[1], 0x1D);
+    /* 5000 = 0x1388 LE */
+    ASSERT_EQ(y_buf[0], 0x88);
+    ASSERT_EQ(y_buf[1], 0x13);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Runner                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -309,4 +386,9 @@ void run_curves_tests(void)
     RUN_TEST(test_preset_find);
     RUN_TEST(test_preset_data_s_curve);
     RUN_TEST(test_preset_data_xct_torque);
+
+    /* encode_curve_array */
+    RUN_TEST(test_encode_curve_identity_scale);
+    RUN_TEST(test_encode_curve_pct_scale);
+    RUN_TEST(test_encode_curve_field_scale);
 }

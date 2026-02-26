@@ -5,6 +5,7 @@
 #include "helpers.h"
 #include "alltrax.h"
 #include "internal.h"
+#include "test_internal.h"
 
 /* ------------------------------------------------------------------ */
 /* 1. Variable lookup                                                  */
@@ -839,6 +840,211 @@ static int test_voltage_link_null_msg(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 18. format_rev                                                      */
+/* ------------------------------------------------------------------ */
+
+static int test_format_rev_5005(void)
+{
+    char buf[16];
+    format_rev(5005, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "V5.005");
+    return 0;
+}
+
+static int test_format_rev_zero(void)
+{
+    char buf[16];
+    format_rev(0, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "V0.000");
+    return 0;
+}
+
+static int test_format_rev_999(void)
+{
+    char buf[16];
+    format_rev(999, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "V0.999");
+    return 0;
+}
+
+static int test_format_rev_1000(void)
+{
+    char buf[16];
+    format_rev(1000, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "V1.000");
+    return 0;
+}
+
+static int test_format_rev_large(void)
+{
+    char buf[16];
+    format_rev(12345, buf, sizeof(buf));
+    ASSERT_STR_EQ(buf, "V12.345");
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* 19. firmware_in_bounds                                              */
+/* ------------------------------------------------------------------ */
+
+static int test_fw_bounds_xct_valid(void)
+{
+    ASSERT_TRUE(firmware_in_bounds(ALLTRAX_CONTROLLER_XCT, 5002, 5005));
+    return 0;
+}
+
+static int test_fw_bounds_xct_zero_prgm(void)
+{
+    /* prgm_rev must be >= 1 */
+    ASSERT_FALSE(firmware_in_bounds(ALLTRAX_CONTROLLER_XCT, 5002, 0));
+    return 0;
+}
+
+static int test_fw_bounds_xct_at_limit(void)
+{
+    ASSERT_TRUE(firmware_in_bounds(ALLTRAX_CONTROLLER_XCT, 5999, 5999));
+    return 0;
+}
+
+static int test_fw_bounds_xct_over(void)
+{
+    ASSERT_FALSE(firmware_in_bounds(ALLTRAX_CONTROLLER_XCT, 0, 6000));
+    return 0;
+}
+
+static int test_fw_bounds_spm_valid(void)
+{
+    ASSERT_TRUE(firmware_in_bounds(ALLTRAX_CONTROLLER_SPM, 1050, 2000));
+    return 0;
+}
+
+static int test_fw_bounds_spm_below(void)
+{
+    ASSERT_FALSE(firmware_in_bounds(ALLTRAX_CONTROLLER_SPM, 1049, 2000));
+    return 0;
+}
+
+static int test_fw_bounds_sr_valid(void)
+{
+    ASSERT_TRUE(firmware_in_bounds(ALLTRAX_CONTROLLER_SR, 500, 1000));
+    return 0;
+}
+
+static int test_fw_bounds_sr_over(void)
+{
+    ASSERT_FALSE(firmware_in_bounds(ALLTRAX_CONTROLLER_SR, 1000, 1000));
+    return 0;
+}
+
+static int test_fw_bounds_bms_valid(void)
+{
+    ASSERT_TRUE(firmware_in_bounds(ALLTRAX_CONTROLLER_BMS, 500, 3000));
+    ASSERT_TRUE(firmware_in_bounds(ALLTRAX_CONTROLLER_BMS2, 500, 3000));
+    return 0;
+}
+
+static int test_fw_bounds_unknown(void)
+{
+    ASSERT_FALSE(firmware_in_bounds(ALLTRAX_CONTROLLER_UNKNOWN, 5002, 5005));
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* 20. type_range                                                      */
+/* ------------------------------------------------------------------ */
+
+static int test_type_range_uint8(void)
+{
+    int64_t lo, hi;
+    type_range(ALLTRAX_TYPE_UINT8, &lo, &hi);
+    ASSERT_EQ(lo, 0);
+    ASSERT_EQ(hi, 255);
+    return 0;
+}
+
+static int test_type_range_int8(void)
+{
+    int64_t lo, hi;
+    type_range(ALLTRAX_TYPE_INT8, &lo, &hi);
+    ASSERT_EQ(lo, -128);
+    ASSERT_EQ(hi, 127);
+    return 0;
+}
+
+static int test_type_range_uint16(void)
+{
+    int64_t lo, hi;
+    type_range(ALLTRAX_TYPE_UINT16, &lo, &hi);
+    ASSERT_EQ(lo, 0);
+    ASSERT_EQ(hi, 65535);
+    return 0;
+}
+
+static int test_type_range_int16(void)
+{
+    int64_t lo, hi;
+    type_range(ALLTRAX_TYPE_INT16, &lo, &hi);
+    ASSERT_EQ(lo, -32768);
+    ASSERT_EQ(hi, 32767);
+    return 0;
+}
+
+static int test_type_range_uint32(void)
+{
+    int64_t lo, hi;
+    type_range(ALLTRAX_TYPE_UINT32, &lo, &hi);
+    ASSERT_EQ(lo, 0);
+    ASSERT_TRUE(hi == (int64_t)UINT32_MAX);
+    return 0;
+}
+
+static int test_type_range_int32(void)
+{
+    int64_t lo, hi;
+    type_range(ALLTRAX_TYPE_INT32, &lo, &hi);
+    ASSERT_TRUE(lo == (int64_t)INT32_MIN);
+    ASSERT_TRUE(hi == (int64_t)INT32_MAX);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
+/* 21. effective_bounds                                                 */
+/* ------------------------------------------------------------------ */
+
+static int test_effective_bounds_unbounded(void)
+{
+    /* LoBat_Vlim: UINT16, no explicit bounds → type range [0, 65535] */
+    const alltrax_var_def* var = alltrax_find_var("LoBat_Vlim");
+    int64_t lo, hi;
+    effective_bounds(var, &lo, &hi);
+    ASSERT_EQ(lo, 0);
+    ASSERT_EQ(hi, 65535);
+    return 0;
+}
+
+static int test_effective_bounds_explicit(void)
+{
+    /* N_Speed_Limit: INT16 type [-32768,32767], explicit [1000, 8000] */
+    const alltrax_var_def* var = alltrax_find_var("N_Speed_Limit");
+    int64_t lo, hi;
+    effective_bounds(var, &lo, &hi);
+    ASSERT_EQ(lo, 1000);
+    ASSERT_EQ(hi, 8000);
+    return 0;
+}
+
+static int test_effective_bounds_negative(void)
+{
+    /* N_Max_Batt_Regen_Amps: INT16, explicit [-4095, 0] */
+    const alltrax_var_def* var = alltrax_find_var("N_Max_Batt_Regen_Amps");
+    int64_t lo, hi;
+    effective_bounds(var, &lo, &hi);
+    ASSERT_EQ(lo, -4095);
+    ASSERT_EQ(hi, 0);
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Test runner                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -933,4 +1139,36 @@ void run_variables_tests(void)
     RUN_TEST(test_voltage_link_bms_above_over);
     RUN_TEST(test_voltage_link_skip_bms);
     RUN_TEST(test_voltage_link_null_msg);
+
+    /* format_rev */
+    RUN_TEST(test_format_rev_5005);
+    RUN_TEST(test_format_rev_zero);
+    RUN_TEST(test_format_rev_999);
+    RUN_TEST(test_format_rev_1000);
+    RUN_TEST(test_format_rev_large);
+
+    /* firmware_in_bounds */
+    RUN_TEST(test_fw_bounds_xct_valid);
+    RUN_TEST(test_fw_bounds_xct_zero_prgm);
+    RUN_TEST(test_fw_bounds_xct_at_limit);
+    RUN_TEST(test_fw_bounds_xct_over);
+    RUN_TEST(test_fw_bounds_spm_valid);
+    RUN_TEST(test_fw_bounds_spm_below);
+    RUN_TEST(test_fw_bounds_sr_valid);
+    RUN_TEST(test_fw_bounds_sr_over);
+    RUN_TEST(test_fw_bounds_bms_valid);
+    RUN_TEST(test_fw_bounds_unknown);
+
+    /* type_range */
+    RUN_TEST(test_type_range_uint8);
+    RUN_TEST(test_type_range_int8);
+    RUN_TEST(test_type_range_uint16);
+    RUN_TEST(test_type_range_int16);
+    RUN_TEST(test_type_range_uint32);
+    RUN_TEST(test_type_range_int32);
+
+    /* effective_bounds */
+    RUN_TEST(test_effective_bounds_unbounded);
+    RUN_TEST(test_effective_bounds_explicit);
+    RUN_TEST(test_effective_bounds_negative);
 }

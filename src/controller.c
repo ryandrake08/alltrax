@@ -183,7 +183,7 @@ const char* alltrax_controller_type_name(alltrax_controller_type type)
 /* Controller info                                                     */
 /* ------------------------------------------------------------------ */
 
-static char* format_rev(uint32_t rev, char* buf, size_t buflen)
+char* format_rev(uint32_t rev, char* buf, size_t buflen)
 {
     uint32_t major = rev / 1000;
     uint32_t minor = rev % 1000;
@@ -202,7 +202,7 @@ static char* format_rev(uint32_t rev, char* buf, size_t buflen)
  *   BMS: boot <1000, program <4000
  *   BMS2: (same as BMS)
  */
-static bool firmware_in_bounds(alltrax_controller_type type,
+bool firmware_in_bounds(alltrax_controller_type type,
     uint32_t boot_rev, uint32_t program_rev)
 {
     switch (type) {
@@ -934,7 +934,7 @@ alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
 }
 
 /* Encode display values back to raw int16 LE bytes */
-static void encode_curve_array(const double* values, double scale,
+void encode_curve_array(const double* values, double scale,
     uint8_t* buf)
 {
     for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++) {

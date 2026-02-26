@@ -118,8 +118,6 @@ void build_write_request(uint32_t addr, const uint8_t* data, uint8_t data_len,
     uint8_t buf[PACKET_SIZE]);
 void build_page_erase_request(uint8_t page, uint8_t buf[PACKET_SIZE]);
 void build_reset_request(uint8_t buf[PACKET_SIZE]);
-void build_flash_get_flag_request(uint8_t flag, uint8_t buf[PACKET_SIZE]);
-void build_flash_clear_flags_request(uint8_t flags, uint8_t buf[PACKET_SIZE]);
 alltrax_error parse_response(const uint8_t data[PACKET_SIZE],
     uint8_t expected_type, uint8_t* result, uint8_t* num_bytes,
     uint8_t payload[MAX_PAYLOAD]);
@@ -129,14 +127,6 @@ size_t alltrax_var_byte_size(const alltrax_var_def* var);
 alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
     const alltrax_var_def* var, uint32_t base_address, alltrax_var_value* out);
 int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf);
-
-/* controller.c */
-alltrax_error validate_voltage_link(
-    double ksi, double under_volt, double over_volt,
-    double bms_missing, char* err_msg, size_t err_msg_size);
-
-/* controller.c */
-alltrax_controller_type detect_controller_type(const char* model);
 
 /* transport.c */
 alltrax_error transport_write(alltrax_controller* ctrl,
