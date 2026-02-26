@@ -242,6 +242,8 @@ static const alltrax_var_def read_values_vars[] = {
     VAR_RAM_RO("Throttle_Position", "Throttle position", 0x2000F118, ALLTRAX_TYPE_INT16, 1.0, 0, "MU"),
     VAR_RAM_RO("Output_Amps", "Output current", 0x2000F11A, ALLTRAX_TYPE_INT32, 0.1, 0, "A"),
     VAR_RAM_RO("Field_Amps", "Field current", 0x2000F11E, ALLTRAX_TYPE_INT32, 0.01, 0, "A"),
+    VAR_RAM_RO("Throttle_Volts", "Target voltage from throttle", 0x2000F124, ALLTRAX_TYPE_INT16, 1.0, 0, "MU"),
+    VAR_RAM_RO("Throttle_Amps", "Target amps from throttle", 0x2000F126, ALLTRAX_TYPE_INT16, 1.0, 0, "MU"),
     VAR_RAM_RO("Throttle_Pointer", "Throttle setpoint", 0x2000F128, ALLTRAX_TYPE_INT16, 1.0, 0, "MU"),
     VAR_RAM_RO("Overtemp_Cap", "Overtemp derating", 0x2000F138, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
     VAR_RAM_RO("Speed", "Motor speed", 0x2000F13A, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM"),
