@@ -8,7 +8,7 @@
  *   alltrax_init();
  *
  *   alltrax_controller* ctrl;
- *   alltrax_error err = alltrax_open(&ctrl, false);
+ *   alltrax_error err = alltrax_open(&ctrl, NULL, false);
  *   if (err) { fprintf(stderr, "%s\n", alltrax_strerror(err)); return 1; }
  *
  *   alltrax_info info;
@@ -79,8 +79,11 @@ typedef struct alltrax_controller alltrax_controller;
 
 const char* alltrax_last_error_detail(const alltrax_controller* ctrl);
 
-/* *out must be NULL on entry; returns ALLTRAX_ERR_INVALID_ARG otherwise. */
-alltrax_error alltrax_open(alltrax_controller** out, bool allow_writes);
+/* *out must be NULL on entry; returns ALLTRAX_ERR_INVALID_ARG otherwise.
+ * device_path: OS-level HID path (e.g. "/dev/hidraw0"), or NULL to
+ * auto-detect (tries XCT PID first, then SPM PID). */
+alltrax_error alltrax_open(alltrax_controller** out,
+    const char* device_path, bool allow_writes);
 void alltrax_close(alltrax_controller* ctrl);
 
 /* ------------------------------------------------------------------ */
