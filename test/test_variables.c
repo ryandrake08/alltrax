@@ -487,6 +487,154 @@ static int test_display_bounds(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* 15. Feature gates                                                   */
+/* ------------------------------------------------------------------ */
+
+/* Helper: build a minimal alltrax_info with the given version fields */
+static alltrax_info make_info(uint32_t orig_boot, uint32_t orig_prgm,
+    uint32_t prgm, uint16_t ver)
+{
+    alltrax_info info;
+    memset(&info, 0, sizeof(info));
+    info.original_boot_rev = orig_boot;
+    info.original_program_rev = orig_prgm;
+    info.program_rev = prgm;
+    info.program_ver = ver;
+    return info;
+}
+
+static int test_feat_hw_caps(void)
+{
+    /* Gate: orig_boot != 1 || orig_prgm != 1 */
+    alltrax_info info;
+
+    /* Both == 1: no hw caps (very old V0.001 firmware) */
+    info = make_info(1, 1, 5005, 0);
+    ASSERT_TRUE(!alltrax_has_feature(&info, ALLTRAX_FEAT_HW_CAPS));
+
+    /* Boot != 1: has hw caps */
+    info = make_info(2, 1, 5005, 0);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_HW_CAPS));
+
+    /* Prgm != 1: has hw caps */
+    info = make_info(1, 2, 5005, 0);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_HW_CAPS));
+
+    /* Both != 1: has hw caps */
+    info = make_info(5002, 5005, 5005, 0);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_HW_CAPS));
+
+    return 0;
+}
+
+static int test_feat_throttle_caps(void)
+{
+    /* Gate: orig_boot > 2 || orig_prgm > 2 */
+    alltrax_info info;
+
+    /* Both <= 2: no throttle caps */
+    info = make_info(1, 2, 5005, 0);
+    ASSERT_TRUE(!alltrax_has_feature(&info, ALLTRAX_FEAT_THROTTLE_CAPS));
+
+    info = make_info(2, 2, 5005, 0);
+    ASSERT_TRUE(!alltrax_has_feature(&info, ALLTRAX_FEAT_THROTTLE_CAPS));
+
+    /* Boot > 2: has throttle caps */
+    info = make_info(3, 1, 5005, 0);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_THROTTLE_CAPS));
+
+    /* Prgm > 2: has throttle caps */
+    info = make_info(1, 3, 5005, 0);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_THROTTLE_CAPS));
+
+    return 0;
+}
+
+static int test_feat_forward_input(void)
+{
+    /* Gate: orig_prgm >= 68 || prgm_ver == 200 */
+    alltrax_info info;
+
+    /* Old firmware, no PrgmVer fallback: no feature */
+    info = make_info(5002, 67, 5005, 0);
+    ASSERT_TRUE(!alltrax_has_feature(&info, ALLTRAX_FEAT_FORWARD_INPUT));
+
+    /* Exactly 68: has feature */
+    info = make_info(5002, 68, 5005, 0);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_FORWARD_INPUT));
+
+    /* PrgmVer == 200 fallback: has feature even with old orig */
+    info = make_info(5002, 10, 5005, 200);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_FORWARD_INPUT));
+
+    /* Modern firmware */
+    info = make_info(5002, 5005, 5005, 0);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_FORWARD_INPUT));
+
+    return 0;
+}
+
+static int test_feat_user1_input(void)
+{
+    /* Gate: orig_prgm >= 70 || prgm_ver == 200 */
+    alltrax_info info;
+
+    info = make_info(5002, 69, 5005, 0);
+    ASSERT_TRUE(!alltrax_has_feature(&info, ALLTRAX_FEAT_USER1_INPUT));
+
+    info = make_info(5002, 70, 5005, 0);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_USER1_INPUT));
+
+    /* PrgmVer == 200 fallback */
+    info = make_info(5002, 10, 5005, 200);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_USER1_INPUT));
+
+    return 0;
+}
+
+static int test_feat_can_highside(void)
+{
+    /* Gate: orig_prgm >= 1008 */
+    alltrax_info info;
+
+    info = make_info(5002, 1007, 5005, 0);
+    ASSERT_TRUE(!alltrax_has_feature(&info, ALLTRAX_FEAT_CAN_HIGHSIDE));
+
+    info = make_info(5002, 1008, 5005, 0);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_CAN_HIGHSIDE));
+
+    return 0;
+}
+
+static int test_feat_software_gates(void)
+{
+    alltrax_info info;
+
+    /* User profiles: prgm >= 1005 */
+    info = make_info(5002, 5005, 1004, 0);
+    ASSERT_TRUE(!alltrax_has_feature(&info, ALLTRAX_FEAT_USER_PROFILES));
+
+    info = make_info(5002, 5005, 1005, 0);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_USER_PROFILES));
+
+    /* User defaults: orig_prgm >= 1007 */
+    info = make_info(5002, 1006, 5005, 0);
+    ASSERT_TRUE(!alltrax_has_feature(&info, ALLTRAX_FEAT_USER_DEFAULTS));
+
+    info = make_info(5002, 1007, 5005, 0);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_USER_DEFAULTS));
+
+    /* Bad vars code: prgm >= 1107 */
+    info = make_info(5002, 5005, 1106, 0);
+    ASSERT_TRUE(!alltrax_has_feature(&info, ALLTRAX_FEAT_BAD_VARS_CODE));
+
+    info = make_info(5002, 5005, 1107, 0);
+    ASSERT_TRUE(alltrax_has_feature(&info, ALLTRAX_FEAT_BAD_VARS_CODE));
+
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Test runner                                                         */
 /* ------------------------------------------------------------------ */
 
@@ -551,4 +699,12 @@ void run_variables_tests(void)
     RUN_TEST(test_validate_unbounded_var);
     RUN_TEST(test_validate_bool_skips_bounds);
     RUN_TEST(test_display_bounds);
+
+    /* Feature gates */
+    RUN_TEST(test_feat_hw_caps);
+    RUN_TEST(test_feat_throttle_caps);
+    RUN_TEST(test_feat_forward_input);
+    RUN_TEST(test_feat_user1_input);
+    RUN_TEST(test_feat_can_highside);
+    RUN_TEST(test_feat_software_gates);
 }

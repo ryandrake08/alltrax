@@ -116,13 +116,14 @@ typedef struct {
 alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out);
 
 typedef enum {
-    ALLTRAX_FEAT_THROTTLE_CAPS,   /* V0.003+ (original_program_rev) */
-    ALLTRAX_FEAT_FORWARD_INPUT,   /* V0.068+ (original_program_rev) */
-    ALLTRAX_FEAT_USER1_INPUT,     /* V0.070+ (original_program_rev) */
-    ALLTRAX_FEAT_USER_PROFILES,   /* V1.005+ (program_rev) */
-    ALLTRAX_FEAT_USER_DEFAULTS,   /* V1.007+ (original_program_rev) */
-    ALLTRAX_FEAT_CAN_HIGHSIDE,    /* V1.008+ (original_program_rev) */
-    ALLTRAX_FEAT_BAD_VARS_CODE,   /* V1.107+ (program_rev) */
+    ALLTRAX_FEAT_HW_CAPS,        /* orig_boot != 1 || orig_prgm != 1 */
+    ALLTRAX_FEAT_THROTTLE_CAPS,  /* orig_boot > 2 || orig_prgm > 2 */
+    ALLTRAX_FEAT_FORWARD_INPUT,  /* orig_prgm >= 68 || prgm_ver == 200 */
+    ALLTRAX_FEAT_USER1_INPUT,    /* orig_prgm >= 70 || prgm_ver == 200 */
+    ALLTRAX_FEAT_USER_PROFILES,  /* V1.005+ (program_rev) */
+    ALLTRAX_FEAT_USER_DEFAULTS,  /* V1.007+ (original_program_rev) */
+    ALLTRAX_FEAT_CAN_HIGHSIDE,   /* V1.008+ (original_program_rev) */
+    ALLTRAX_FEAT_BAD_VARS_CODE,  /* V1.107+ (program_rev) */
 } alltrax_feature;
 
 bool alltrax_has_feature(const alltrax_info* info, alltrax_feature feat);
