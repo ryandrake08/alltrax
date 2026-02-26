@@ -27,12 +27,14 @@ int cmd_write(int argc, char** argv)
             "Usage: alltrax write [flags] var=value ...\n"
             "\n"
             "Flags:\n"
-            "  --no-cal         Skip CAL/RUN mode bracket\n"
-            "  --no-verify      Skip read-back verification (FLASH)\n"
-            "  --no-goodset     Skip GoodSet pre-check (allows write when\n"
-            "                   a previous interrupted write left GoodSet invalid)\n"
-            "  --no-fw-version  Skip firmware version check\n"
-            "  --reset          Reboot controller after FLASH write\n");
+            "  --no-cal           Skip CAL/RUN mode bracket\n"
+            "  --no-verify        Skip read-back verification (FLASH)\n"
+            "  --no-goodset       Skip GoodSet pre-check (allows write when\n"
+            "                     a previous interrupted write left GoodSet invalid)\n"
+            "  --no-fw-version    Skip firmware version check\n"
+            "  --no-voltage-link  Skip voltage link validation\n"
+            "                     (KSI < UnderVolt < OverVolt, min 1V gaps)\n"
+            "  --reset            Reboot controller after FLASH write\n");
         return 1;
     }
 
@@ -122,11 +124,12 @@ int cmd_write(int argc, char** argv)
         return 1;
     }
 
+    int ret = 0;
+
     /* Build var/value arrays for the library */
     const alltrax_var_def** var_ptrs = calloc((size_t)n_assignments,
                                               sizeof(alltrax_var_def*));
     double* var_values = calloc((size_t)n_assignments, sizeof(double));
-    int ret = 0;
     if (!var_ptrs || !var_values) {
         fprintf(stderr, "Error: out of memory\n");
         ret = 1;
@@ -143,6 +146,7 @@ int cmd_write(int argc, char** argv)
         .skip_verify = flags.no_verify,
         .skip_goodset = flags.no_goodset,
         .skip_fw_check = flags.no_fw_version,
+        .skip_voltage_link = flags.no_voltage_link,
     };
 
     err = alltrax_write_vars(ctrl, var_ptrs, var_values,

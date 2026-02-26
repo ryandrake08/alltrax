@@ -632,6 +632,54 @@ static alltrax_error exit_cal(alltrax_controller* ctrl)
     return write_memory(ctrl, ADDR_RUN_MODE, &run, 1);
 }
 
+/* Validate voltage link constraints (Toolkit "Under/KSI/Over Helper").
+ * Checks: KSI+1 <= UnderVolt, UnderVolt+1 <= OverVolt,
+ *         UnderVolt+1 <= BMSMissing <= OverVolt.
+ * All values in display units (volts). Set bms_missing < 0 to skip BMS
+ * constraints. Returns ALLTRAX_OK or ALLTRAX_ERR_INVALID_ARG. */
+alltrax_error validate_voltage_link(
+    double ksi, double under_volt, double over_volt,
+    double bms_missing, char* err_msg, size_t err_msg_size)
+{
+    if (ksi + 1.0 > under_volt) {
+        if (err_msg)
+            snprintf(err_msg, err_msg_size,
+                "KSI (%.1fV) must be at least 1V below UnderVolt (%.1fV)",
+                ksi, under_volt);
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+
+    if (under_volt + 1.0 > over_volt) {
+        if (err_msg)
+            snprintf(err_msg, err_msg_size,
+                "UnderVolt (%.1fV) must be at least 1V below OverVolt (%.1fV)",
+                under_volt, over_volt);
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+
+    if (bms_missing >= 0) {
+        if (under_volt + 1.0 > bms_missing) {
+            if (err_msg)
+                snprintf(err_msg, err_msg_size,
+                    "UnderVolt (%.1fV) must be at least 1V below "
+                    "BMS_Missing_HiBat_Vlim (%.1fV)",
+                    under_volt, bms_missing);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+
+        if (bms_missing > over_volt) {
+            if (err_msg)
+                snprintf(err_msg, err_msg_size,
+                    "BMS_Missing_HiBat_Vlim (%.1fV) must not exceed "
+                    "OverVolt (%.1fV)",
+                    bms_missing, over_volt);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+    }
+
+    return ALLTRAX_OK;
+}
+
 alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, const double* values, size_t count,
     const alltrax_write_opts* opts)
@@ -691,6 +739,72 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
         return ALLTRAX_ERR_INVALID_ARG;
     }
 
+    /* ---- 1b. Voltage link validation ---- */
+    /* Enforce KSI < UnderVolt < OverVolt with 1V gaps, plus BMS constraints.
+     * Reads current values for any voltage vars not in the write set. */
+
+    alltrax_error rc;
+
+    if (!opts->skip_voltage_link) {
+        static const char* vlink_names[4] = {
+            "AnalogInputs_Threshold",   /* KSI */
+            "LoBat_Vlim",               /* UnderVolt */
+            "HiBat_Vlim",               /* OverVolt */
+            "BMS_Missing_HiBat_Vlim",   /* BMS Missing OverVolt */
+        };
+        double vlink_vals[4] = { -1, -1, -1, -1 };
+        bool vlink_touched[4] = { false, false, false, false };
+        bool any_voltage = false;
+
+        for (size_t i = 0; i < count; i++) {
+            for (int v = 0; v < 4; v++) {
+                if (strcmp(vars[i]->name, vlink_names[v]) == 0) {
+                    vlink_vals[v] = values[i];
+                    vlink_touched[v] = true;
+                    any_voltage = true;
+                }
+            }
+        }
+
+        if (any_voltage) {
+            /* Read current values for untouched voltage vars */
+            const alltrax_var_def* to_read[4];
+            int read_idx[4];
+            int n_reads = 0;
+
+            for (int v = 0; v < 4; v++) {
+                if (!vlink_touched[v]) {
+                    to_read[n_reads] = alltrax_find_var(vlink_names[v]);
+                    read_idx[n_reads] = v;
+                    n_reads++;
+                }
+            }
+
+            if (n_reads > 0) {
+                alltrax_var_value read_out[4];
+                rc = alltrax_read_vars(ctrl, to_read, (size_t)n_reads,
+                                       read_out);
+                if (rc) {
+                    set_error_detail(ctrl,
+                        "Failed to read current voltage settings for "
+                        "link validation");
+                    return rc;
+                }
+                for (int i = 0; i < n_reads; i++)
+                    vlink_vals[read_idx[i]] = read_out[i].display;
+            }
+
+            char errmsg[256];
+            rc = validate_voltage_link(
+                vlink_vals[0], vlink_vals[1], vlink_vals[2],
+                vlink_vals[3], errmsg, sizeof(errmsg));
+            if (rc) {
+                set_error_detail(ctrl, "%s", errmsg);
+                return ALLTRAX_ERR_INVALID_ARG;
+            }
+        }
+    }
+
     /* ---- 2. Encode all variables ---- */
 
     ram_encoded_t ram_encoded[MAX_RAM_WRITE_VARS];
@@ -728,8 +842,6 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     }
 
     /* ---- 3. FLASH pre-checks (before entering CAL) ---- */
-
-    alltrax_error rc;
 
     if (flash_count > 0) {
         rc = flash_prechecks(ctrl, opts);

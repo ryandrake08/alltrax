@@ -18,6 +18,7 @@ typedef struct {
     bool no_goodset;
     bool no_fw_version;
     bool no_crypt;
+    bool no_voltage_link;
     bool reset;
 } cli_flags;
 

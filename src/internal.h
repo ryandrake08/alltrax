@@ -131,6 +131,11 @@ alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
 int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf);
 
 /* controller.c */
+alltrax_error validate_voltage_link(
+    double ksi, double under_volt, double over_volt,
+    double bms_missing, char* err_msg, size_t err_msg_size);
+
+/* controller.c */
 alltrax_controller_type detect_controller_type(const char* model);
 
 /* transport.c */
