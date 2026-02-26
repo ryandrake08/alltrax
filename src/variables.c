@@ -528,7 +528,7 @@ int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf)
 /* Type range helpers                                                   */
 /* ------------------------------------------------------------------ */
 
-static void type_range(alltrax_var_type type, int64_t* lo, int64_t* hi)
+void type_range(alltrax_var_type type, int64_t* lo, int64_t* hi)
 {
     switch (type) {
     case ALLTRAX_TYPE_UINT8:  *lo = 0;      *hi = UINT8_MAX;  return;
@@ -542,7 +542,7 @@ static void type_range(alltrax_var_type type, int64_t* lo, int64_t* hi)
 }
 
 /* Compute effective bounds = intersection of explicit bounds and type range */
-static void effective_bounds(const alltrax_var_def* var, int64_t* lo, int64_t* hi)
+void effective_bounds(const alltrax_var_def* var, int64_t* lo, int64_t* hi)
 {
     int64_t type_lo, type_hi;
     type_range(var->type, &type_lo, &type_hi);

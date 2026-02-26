@@ -7,6 +7,7 @@
 #include "helpers.h"
 #include "alltrax.h"
 #include "internal.h"
+#include "test_internal.h"
 
 /* ------------------------------------------------------------------ */
 /* Helper: parse hex string to byte array                              */
