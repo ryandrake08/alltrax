@@ -146,6 +146,18 @@ these tables independently from the scalar variable system.
 | `genfield` | Generator field curve | A / A |
 | `all` | All 5 curves (get and diff only) | |
 
+**Presets** (built-in curves, use with `--preset`):
+
+| Curve | Preset | Description |
+|-------|--------|-------------|
+| `linearization` | `linear` | Simple linear response |
+| `linearization` | `0-5k-2wire` | S-curve for 0-5K ohm 2-wire pot |
+| `linearization` | `5k-0-2wire` | Inverse S-curve for 5K-0 ohm 2-wire pot |
+| `linearization` | `yamaha` | Compressed range for Yamaha 0-1K throttle |
+| `linearization` | `clubcar` | Offset start for Club Car 3-wire throttle |
+| `speed` | `standard` | Standard linear speed curve |
+| `torque` | `standard` | Aggressive XCT torque curve |
+
 ```sh
 # List available curve types
 alltrax curve list
@@ -170,6 +182,10 @@ alltrax curve set linearization 0,0 0.2,0 2.4,7.8 10,20 50,50 100,100
 
 # Write curve from CSV file
 alltrax curve set linearization --file lin.csv
+
+# Write a built-in preset curve
+alltrax curve set linearization --preset 0-5k-2wire
+alltrax curve set torque --preset standard
 
 # Write with device reboot
 alltrax curve set linearization --reset --file lin.csv
@@ -205,6 +221,7 @@ points are set to 0,0.
 | Flag | Applies to | Effect |
 |------|-----------|--------|
 | `--file <path>` | get, set | CSV file for import/export |
+| `--preset <name>` | set | Use a built-in preset curve |
 | `--plot` | get | ASCII chart instead of table |
 | `--no-cal` | set, reset | Skip CAL/RUN mode bracket |
 | `--no-verify` | set, reset | Skip read-back verification |

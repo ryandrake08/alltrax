@@ -183,6 +183,110 @@ static int test_factory_offsets(void)
 }
 
 /* ------------------------------------------------------------------ */
+/* Preset tests                                                        */
+/* ------------------------------------------------------------------ */
+
+static int test_preset_count(void)
+{
+    ASSERT_EQ(alltrax_curve_preset_count(), 7);
+    return 0;
+}
+
+static int test_preset_by_index(void)
+{
+    const alltrax_curve_preset* p0 = alltrax_curve_preset_by_index(0);
+    ASSERT_NOT_NULL(p0);
+    ASSERT_STR_EQ(p0->curve_type, "linearization");
+
+    const alltrax_curve_preset* p6 = alltrax_curve_preset_by_index(6);
+    ASSERT_NOT_NULL(p6);
+    ASSERT_STR_EQ(p6->curve_type, "torque");
+
+    ASSERT_NULL(alltrax_curve_preset_by_index(7));
+    ASSERT_NULL(alltrax_curve_preset_by_index(100));
+    return 0;
+}
+
+static int test_preset_find(void)
+{
+    /* Linearization presets */
+    const alltrax_curve_preset* p;
+
+    p = alltrax_find_curve_preset("linearization", "linear");
+    ASSERT_NOT_NULL(p);
+    ASSERT_STR_EQ(p->name, "linear");
+
+    p = alltrax_find_curve_preset("linearization", "0-5k-2wire");
+    ASSERT_NOT_NULL(p);
+    ASSERT_STR_EQ(p->name, "0-5k-2wire");
+
+    p = alltrax_find_curve_preset("linearization", "5k-0-2wire");
+    ASSERT_NOT_NULL(p);
+
+    p = alltrax_find_curve_preset("linearization", "yamaha");
+    ASSERT_NOT_NULL(p);
+
+    p = alltrax_find_curve_preset("linearization", "clubcar");
+    ASSERT_NOT_NULL(p);
+
+    /* Speed/torque presets */
+    p = alltrax_find_curve_preset("speed", "standard");
+    ASSERT_NOT_NULL(p);
+
+    p = alltrax_find_curve_preset("torque", "standard");
+    ASSERT_NOT_NULL(p);
+
+    /* Non-existent */
+    ASSERT_NULL(alltrax_find_curve_preset("linearization", "nosuch"));
+    ASSERT_NULL(alltrax_find_curve_preset("field", "standard"));
+    ASSERT_NULL(alltrax_find_curve_preset("speed", "linear"));
+
+    return 0;
+}
+
+static int test_preset_data_s_curve(void)
+{
+    /* Verify 0-5k-2wire S-curve is correct */
+    const alltrax_curve_preset* p =
+        alltrax_find_curve_preset("linearization", "0-5k-2wire");
+    ASSERT_NOT_NULL(p);
+
+    /* Check a few key points from the S-curve */
+    ASSERT_NEAR(p->x[1], 1.0, 0.01);
+    ASSERT_NEAR(p->y[1], 0.0, 0.01);
+    ASSERT_NEAR(p->x[5], 50.0, 0.01);
+    ASSERT_NEAR(p->y[5], 15.0, 0.01);
+    ASSERT_NEAR(p->x[11], 99.0, 0.01);
+    ASSERT_NEAR(p->y[11], 100.0, 0.01);
+    ASSERT_NEAR(p->x[12], 100.0, 0.01);
+    ASSERT_NEAR(p->y[12], 100.0, 0.01);
+
+    /* Trailing points should be zero */
+    ASSERT_NEAR(p->x[13], 0.0, 0.01);
+    ASSERT_NEAR(p->y[13], 0.0, 0.01);
+
+    return 0;
+}
+
+static int test_preset_data_xct_torque(void)
+{
+    /* Verify XCT torque preset is correct */
+    const alltrax_curve_preset* p =
+        alltrax_find_curve_preset("torque", "standard");
+    ASSERT_NOT_NULL(p);
+
+    /* Aggressive curve: reaches 100% at 20% input */
+    ASSERT_NEAR(p->x[2], 7.0, 0.01);
+    ASSERT_NEAR(p->y[2], 69.0, 0.01);
+    ASSERT_NEAR(p->x[6], 20.0, 0.01);
+    ASSERT_NEAR(p->y[6], 100.0, 0.01);
+    ASSERT_NEAR(p->x[7], 100.0, 0.01);
+    ASSERT_NEAR(p->y[7], 100.0, 0.01);
+
+    return 0;
+}
+
+/* ------------------------------------------------------------------ */
 /* Runner                                                              */
 /* ------------------------------------------------------------------ */
 
@@ -200,4 +304,9 @@ void run_curves_tests(void)
     RUN_TEST(test_addresses_in_flash_pages);
     RUN_TEST(test_scale_factors);
     RUN_TEST(test_factory_offsets);
+    RUN_TEST(test_preset_count);
+    RUN_TEST(test_preset_by_index);
+    RUN_TEST(test_preset_find);
+    RUN_TEST(test_preset_data_s_curve);
+    RUN_TEST(test_preset_data_xct_torque);
 }

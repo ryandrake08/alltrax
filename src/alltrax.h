@@ -279,6 +279,23 @@ alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
     const alltrax_write_opts* opts);
 
 /* ------------------------------------------------------------------ */
+/* Curve presets                                                       */
+/* ------------------------------------------------------------------ */
+
+typedef struct {
+    const char* name;        /* "linear", "0-5k-2wire", "standard", etc. */
+    const char* description;
+    const char* curve_type;  /* "linearization", "speed", or "torque" */
+    double x[ALLTRAX_CURVE_POINTS];
+    double y[ALLTRAX_CURVE_POINTS];
+} alltrax_curve_preset;
+
+size_t alltrax_curve_preset_count(void);
+const alltrax_curve_preset* alltrax_curve_preset_by_index(size_t index);
+const alltrax_curve_preset* alltrax_find_curve_preset(
+    const char* curve_type, const char* name);
+
+/* ------------------------------------------------------------------ */
 /* Monitoring                                                          */
 /* ------------------------------------------------------------------ */
 

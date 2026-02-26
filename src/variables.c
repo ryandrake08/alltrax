@@ -655,3 +655,85 @@ const alltrax_curve_def* alltrax_curve_by_index(size_t index)
         return NULL;
     return &curve_defs[index];
 }
+
+/* ------------------------------------------------------------------ */
+/* Curve preset definitions                                           */
+/* ------------------------------------------------------------------ */
+/*   XCT_ThrotLin[12]  — linearization presets per throttle type      */
+/*   Curves_Speed[1]    — standard speed preset                       */
+/*   XCT_Curves_Torque[1] — XCT torque preset                         */
+/* All values are in display units (percentages).                     */
+
+static const alltrax_curve_preset curve_presets[] = {
+    /* --- Linearization presets --- */
+    {
+        "linear", "Simple linear response",
+        "linearization",
+        { 0, 1, 99, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
+        { 0, 0, 100, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
+    },
+    {
+        "0-5k-2wire", "S-curve for 0-5K ohm 2-wire pot",
+        "linearization",
+        { 0, 1, 13, 24, 36, 50, 60, 70, 78, 85, 91, 99, 100, 0,0,0 },
+        { 0, 0,  2,  4,  8, 15, 22, 32, 44, 58, 73, 100, 100, 0,0,0 },
+    },
+    {
+        "5k-0-2wire", "Inverse S-curve for 5K-0 ohm 2-wire pot",
+        "linearization",
+        { 0, 1,  9, 15, 22, 30, 40, 50, 64, 76, 87, 99, 100, 0,0,0 },
+        { 0, 0, 27, 42, 56, 68, 78, 85, 92, 96, 99, 100, 100, 0,0,0 },
+    },
+    {
+        "yamaha", "Compressed range for Yamaha 0-1K throttle",
+        "linearization",
+        { 0, 1, 80, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
+        { 0, 0, 100, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
+    },
+    {
+        "clubcar", "Offset start for Club Car 3-wire throttle",
+        "linearization",
+        { 0, 5, 99, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
+        { 0, 0, 100, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
+    },
+
+    /* --- Speed preset --- */
+    {
+        "standard", "Standard linear speed curve",
+        "speed",
+        { 0, 1, 99, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
+        { 0, 0, 100, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
+    },
+
+    /* --- Torque preset (XCT-specific) --- */
+    {
+        "standard", "Aggressive XCT torque curve",
+        "torque",
+        { 0, 1,  7,  9, 12, 15, 20, 100, 0,0,0,0, 0,0,0,0 },
+        { 0, 0, 69, 83, 93, 98, 100, 100, 0,0,0,0, 0,0,0,0 },
+    },
+};
+#define CURVE_PRESET_COUNT (sizeof(curve_presets) / sizeof(curve_presets[0]))
+
+size_t alltrax_curve_preset_count(void)
+{
+    return CURVE_PRESET_COUNT;
+}
+
+const alltrax_curve_preset* alltrax_curve_preset_by_index(size_t index)
+{
+    if (index >= CURVE_PRESET_COUNT)
+        return NULL;
+    return &curve_presets[index];
+}
+
+const alltrax_curve_preset* alltrax_find_curve_preset(
+    const char* curve_type, const char* name)
+{
+    for (size_t i = 0; i < CURVE_PRESET_COUNT; i++) {
+        if (strcmp(curve_presets[i].curve_type, curve_type) == 0 &&
+            strcmp(curve_presets[i].name, name) == 0)
+            return &curve_presets[i];
+    }
+    return NULL;
+}
