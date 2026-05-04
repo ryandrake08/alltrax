@@ -4,6 +4,10 @@ Open source CLI tool and C library for communicating with
 [Alltrax](https://www.alltraxinc.com/) motor controllers (XCT, SPM, SR series)
 via USB HID.
 
+Please note: This software is experimental, entirely unofficial, and not
+affiliated with the device manufacturer, Alltrax, in any way. It is a hobby
+project written by an enthusiastic end user.
+
 ```
 $ alltrax info
 Controller Type:  XCT
