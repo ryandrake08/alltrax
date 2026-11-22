@@ -6,12 +6,14 @@
  * and libxml2 for XML generation/parsing.
  */
 
+#define _POSIX_C_SOURCE 200112L
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
 #include <inttypes.h>
 #include <errno.h>
+#include <sys/stat.h>
 #include <openssl/evp.h>
 #include <libxml/parser.h>
 #include <libxml/tree.h>
@@ -544,39 +546,47 @@ static int do_save(int argc, char** argv)
         return 1;
     }
 
+    /* Encrypt before opening the destination so a failure leaves it intact. */
+    const void* data = xml;
+    size_t data_len = strlen(xml);
+    unsigned char* cipher = NULL;
+    if (!flags.no_crypt) {
+        cipher = des3_encrypt(xml, data_len, &data_len);
+        if (!cipher) {
+            free(xml);
+            fprintf(stderr, "Error: 3DES encryption failed; no file written\n");
+            return 1;
+        }
+        data = cipher;
+    }
+
     FILE* f = fopen(filepath, "wb");
     if (!f) {
-        fprintf(stderr, "Error: cannot create file: %s\n", filepath);
+        fprintf(stderr, "Error: cannot create file %s: %s\n",
+                filepath, strerror(errno));
         free(xml);
+        free(cipher);
         return 1;
     }
 
-    size_t written;
-    if (flags.no_crypt) {
-        size_t xml_len = strlen(xml);
-        written = fwrite(xml, 1, xml_len, f);
-        fclose(f);
-        free(xml);
-        if (written != xml_len) {
-            fprintf(stderr, "Error: short write to %s\n", filepath);
-            return 1;
-        }
-    } else {
-        size_t cipher_len;
-        unsigned char* cipher = des3_encrypt(xml, strlen(xml), &cipher_len);
-        free(xml);
-        if (!cipher) {
-            fclose(f);
-            fprintf(stderr, "Error: 3DES encryption failed\n");
-            return 1;
-        }
-        written = fwrite(cipher, 1, cipher_len, f);
-        fclose(f);
-        free(cipher);
-        if (written != cipher_len) {
-            fprintf(stderr, "Error: short write to %s\n", filepath);
-            return 1;
-        }
+    /* Buffered write errors such as a full disk surface at fclose(). */
+    struct stat st;
+    bool regular = fstat(fileno(f), &st) == 0 && S_ISREG(st.st_mode);
+    bool failed = fwrite(data, 1, data_len, f) != data_len;
+    int write_errno = failed ? errno : 0;
+    if (fclose(f) != 0 && !failed) {
+        failed = true;
+        write_errno = errno;
+    }
+    free(xml);
+    free(cipher);
+    if (failed) {
+        /* Only a regular file is removed; device and pipe paths are kept. */
+        bool removed = regular && remove(filepath) == 0;
+        fprintf(stderr, "Error: writing %s failed: %s%s\n", filepath,
+                write_errno ? strerror(write_errno) : "short write",
+                removed ? "; partial file removed" : "");
+        return 1;
     }
 
     printf("Saved %zu variables + %zu curves to %s\n",

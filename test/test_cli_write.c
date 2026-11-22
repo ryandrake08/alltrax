@@ -5,7 +5,10 @@
 #include "../cli/cli.h"
 #include <errno.h>
 #include <math.h>
+#include <signal.h>
 #include <stdlib.h>
+#include <sys/resource.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 int test_pass_count;
@@ -534,12 +537,13 @@ static int test_fw_flag_reaches_write_options_in_any_position(void)
 }
 
 #ifdef TEST_CONFIG
-/* Run `config save --no-crypt <path>` against the simulated device. */
-static int run_config_save(const char* path, uint32_t program_rev)
+/* Run `config save [--no-crypt] <path>` against the simulated device. */
+static int run_config_save_as(const char* path, uint32_t program_rev,
+    bool encrypt)
 {
     char file[256];
     snprintf(file, sizeof(file), "%s", path);
-    char* argv[] = { "config", "save", "--no-crypt", file };
+    char* argv[] = { "config", "save", encrypt ? file : "--no-crypt", file };
     fake_ctrl = (alltrax_controller) {
         .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
         .controller_type = ALLTRAX_CONTROLLER_XCT,
@@ -549,10 +553,15 @@ static int run_config_save(const char* path, uint32_t program_rev)
     device.enabled = true;
     device.reads = device.mutations = 0;
     open_succeeds = true;
-    int rc = cmd_config(4, argv);
+    int rc = cmd_config(encrypt ? 3 : 4, argv);
     open_succeeds = false;
     device.enabled = false;
     return rc;
+}
+
+static int run_config_save(const char* path, uint32_t program_rev)
+{
+    return run_config_save_as(path, program_rev, false);
 }
 
 /* Returns the file contents (caller frees), or NULL if it cannot be read. */
@@ -688,6 +697,75 @@ static int test_config_save_on_unreadable_firmware_preserves_destination(void)
     free(contents);
     return 0;
 }
+
+static int test_config_save_encrypts_before_writing(void)
+{
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    memset(&device, 0, sizeof(device));
+    ASSERT_EQ(run_config_save_as(path, 5005, true), 0);
+    struct stat st;
+    ASSERT_EQ(stat(path, &st), 0);
+    char* contents = read_file(path);
+    remove(path);
+    ASSERT_TRUE(contents != NULL);
+    ASSERT_TRUE(st.st_size > 0);
+    ASSERT_EQ(st.st_size % 8, 0); /* Whole 3DES blocks */
+    ASSERT_NULL(strstr(contents, "<XCT"));
+    free(contents);
+    return 0;
+}
+
+/* Run the save with a file size limit (bytes). */
+static int run_config_save_size_limited(const char* path, bool encrypt,
+    rlim_t limit)
+{
+    struct rlimit saved;
+    if (getrlimit(RLIMIT_FSIZE, &saved) != 0) return -1;
+    struct rlimit limited = saved;
+    limited.rlim_cur = limit;
+    void (*old_handler)(int) = signal(SIGXFSZ, SIG_IGN);
+    if (setrlimit(RLIMIT_FSIZE, &limited) != 0) return -1;
+    int rc = run_config_save_as(path, 5005, encrypt);
+    setrlimit(RLIMIT_FSIZE, &saved);
+    signal(SIGXFSZ, old_handler);
+    return rc;
+}
+
+/* A 64-byte limit fails the first write. A limit one byte short of the full
+ * file lets fwrite() succeed and fails only the final flush in fclose(). */
+static int test_config_save_write_failure_removes_partial_file(void)
+{
+    for (int encrypt = 0; encrypt <= 1; encrypt++) {
+        char path[64];
+        ASSERT_EQ(make_temp_path(path), 0);
+        memset(&device, 0, sizeof(device));
+        ASSERT_EQ(run_config_save_as(path, 5005, encrypt != 0), 0);
+        struct stat st;
+        ASSERT_EQ(stat(path, &st), 0);
+        const rlim_t limits[] = { 64, (rlim_t)st.st_size - 1 };
+        for (size_t i = 0; i < sizeof(limits) / sizeof(limits[0]); i++) {
+            ASSERT_EQ(write_file(path, "previous backup"), 0);
+            ASSERT_EQ(run_config_save_size_limited(path, encrypt != 0,
+                                                   limits[i]), 1);
+            ASSERT_EQ(access(path, F_OK), -1);
+            ASSERT_EQ(device.mutations, 0);
+        }
+    }
+    return 0;
+}
+
+static int test_config_save_write_failure_keeps_device_paths(void)
+{
+    if (access("/dev/full", W_OK) != 0)
+        return 0; /* /dev/full is Linux-specific. */
+    memset(&device, 0, sizeof(device));
+    ASSERT_EQ(run_config_save("/dev/full", 5005), 1);
+    struct stat st;
+    ASSERT_EQ(stat("/dev/full", &st), 0);
+    ASSERT_TRUE(S_ISCHR(st.st_mode));
+    return 0;
+}
 #endif
 
 /* Run `get <name>` against the simulated device with `value` at the
@@ -791,6 +869,9 @@ int main(void)
     RUN_TEST(test_config_save_any_read_failure_preserves_destination);
     RUN_TEST(test_config_save_rejects_invalid_settings);
     RUN_TEST(test_config_save_on_unreadable_firmware_preserves_destination);
+    RUN_TEST(test_config_save_encrypts_before_writing);
+    RUN_TEST(test_config_save_write_failure_removes_partial_file);
+    RUN_TEST(test_config_save_write_failure_keeps_device_paths);
 #endif
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;

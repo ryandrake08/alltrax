@@ -140,8 +140,10 @@ alltrax config load --no-crypt --reset settings.xml
 `config save` writes a file only when every settings group and curve has been
 read. It refuses to save when the controller's user settings are not valid
 (Var_GoodSet ≠ 0): either only factory defaults are present, or no settings
-are loaded. On any failure it exits with an error and leaves an existing file
-unchanged.
+are loaded. Read, validity, and encryption failures exit with an error and
+leave an existing file unchanged. If writing the file itself fails (for example,
+a full disk), it exits with an error and removes the partial file; the previous
+contents are not kept.
 
 Config files saved by the Alltrax Toolkit ("Save All Settings") can be loaded
 with `alltrax config load`. Config files saved by the CLI can be loaded by the
