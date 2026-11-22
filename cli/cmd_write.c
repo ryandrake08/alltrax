@@ -32,7 +32,7 @@ int cmd_write(int argc, char** argv)
             "  --no-verify        Skip read-back verification (FLASH)\n"
             "  --no-goodset       Skip GoodSet pre-check (allows write when\n"
             "                     a previous interrupted write left GoodSet invalid)\n"
-            "  --no-fw-version    Skip firmware version check\n"
+            "  --no-fw-version    Allow unvalidated firmware within V0.001-V5.999\n"
             "  --no-voltage-link  Skip voltage link validation\n"
             "                     (KSI < UnderVolt < OverVolt, min 1V gaps)\n"
             "  --reset            Reboot controller after FLASH write\n");
@@ -165,7 +165,7 @@ int cmd_write(int argc, char** argv)
                assigns[i].var->is_flash ? "FLASH" : "RAM");
 
     if (flags.reset) {
-        err = alltrax_reset_device(ctrl);
+        err = alltrax_reset_device(ctrl, &write_opts);
         if (err) {
             cli_error(ctrl, err, "resetting device");
             ret = 1;

@@ -320,7 +320,7 @@ static int do_set(int argc, char** argv)
             "  --preset <name>  Use a built-in preset curve\n"
             "  --no-cal         Skip CAL/RUN mode bracket\n"
             "  --no-verify      Skip read-back verification\n"
-            "  --no-fw-version  Skip firmware version check\n"
+            "  --no-fw-version  Allow unvalidated firmware within V0.001-V5.999\n"
             "  --reset          Reboot controller after write\n");
         return 1;
     }
@@ -422,7 +422,7 @@ static int do_set(int argc, char** argv)
     printf("Wrote %s curve (%d points)\n", def->name, ALLTRAX_CURVE_POINTS);
 
     if (flags.reset) {
-        err = alltrax_reset_device(ctrl);
+        err = alltrax_reset_device(ctrl, &opts);
         if (err) {
             cli_error(ctrl, err, "resetting device");
             alltrax_close(ctrl);
@@ -530,7 +530,7 @@ static int do_curve_reset(int argc, char** argv)
             "Flags:\n"
             "  --no-cal         Skip CAL/RUN mode bracket\n"
             "  --no-verify      Skip read-back verification\n"
-            "  --no-fw-version  Skip firmware version check\n"
+            "  --no-fw-version  Allow unvalidated firmware within V0.001-V5.999\n"
             "  --reset          Reboot controller after write\n");
         return 1;
     }
@@ -599,7 +599,7 @@ static int do_curve_reset(int argc, char** argv)
     }
 
     if (ret == 0 && flags.reset) {
-        err = alltrax_reset_device(ctrl);
+        err = alltrax_reset_device(ctrl, &opts);
         if (err) {
             cli_error(ctrl, err, "resetting device");
             alltrax_close(ctrl);

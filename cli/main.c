@@ -7,6 +7,7 @@
 #include "cli.h"
 
 const char* cli_device_path = NULL;
+bool cli_no_fw_version = false;
 
 alltrax_error cli_open(alltrax_controller** ctrl, bool writes)
 {
@@ -15,8 +16,11 @@ alltrax_error cli_open(alltrax_controller** ctrl, bool writes)
         fprintf(stderr, "Error: %s\n", alltrax_strerror(err));
         if (*ctrl)
             fprintf(stderr, "  %s\n", alltrax_last_error_detail(*ctrl));
+        return err;
     }
-    return err;
+    if (cli_no_fw_version)
+        alltrax_set_firmware_read_override(*ctrl, true);
+    return ALLTRAX_OK;
 }
 
 void cli_error(alltrax_controller* ctrl, alltrax_error err, const char* action)
@@ -32,6 +36,7 @@ void cli_error(alltrax_controller* ctrl, alltrax_error err, const char* action)
 int cli_parse_flags(int argc, char** argv, cli_flags* flags)
 {
     memset(flags, 0, sizeof(*flags));
+    flags->no_fw_version = cli_no_fw_version;
     int i;
     for (i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--no-cal") == 0)
@@ -61,6 +66,8 @@ static void print_usage(void)
         "\n"
         "Global options:\n"
         "  --device <path>  HID device path (e.g. /dev/hidraw0)\n"
+        "  --no-fw-version  Read firmware outside V0.001-V5.999; write\n"
+        "                   unvalidated firmware within V0.001-V5.999\n"
         "\n"
         "Commands:\n"
         "  info      Controller identity and firmware\n"
@@ -91,6 +98,9 @@ int main(int argc, char** argv)
             }
             cli_device_path = argv[argi + 1];
             argi += 2;
+        } else if (strcmp(argv[argi], "--no-fw-version") == 0) {
+            cli_no_fw_version = true;
+            argi++;
         } else {
             break;  /* Not a global flag — let subcommand handle it */
         }

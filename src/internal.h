@@ -23,6 +23,9 @@ struct alltrax_controller {
     uint16_t     vid;
     uint16_t     pid;
     alltrax_controller_type controller_type; /* Validated model family */
+    uint32_t     boot_rev;     /* Read when the controller is identified */
+    uint32_t     program_rev;
+    bool         firmware_read_override;
     bool         allow_writes;
     char         error_detail[256];
 };
@@ -109,9 +112,6 @@ struct alltrax_controller {
 #define ALLTRAX_PID_XCT 0x0002   /* XCT, SRX, NCT */
 #define ALLTRAX_PID_SPM 0x0001   /* SPM, SPB, SR, BMS, BMS2 */
 
-/* Validated firmware version */
-#define VALIDATED_FIRMWARE 5005
-
 /* ------------------------------------------------------------------ */
 /* Internal function declarations                                      */
 /* ------------------------------------------------------------------ */
@@ -143,7 +143,8 @@ alltrax_error transport_write(alltrax_controller* ctrl,
 alltrax_error transport_read(alltrax_controller* ctrl,
     uint8_t buf[PACKET_SIZE]);
 
-/* controller.c: read and validate the model after USB identity is established. */
+/* controller.c: read and validate the model and firmware revisions after USB
+ * identity is established. */
 alltrax_error identify_controller(alltrax_controller* ctrl);
 
 /* Byte helpers */

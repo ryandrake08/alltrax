@@ -549,7 +549,7 @@ static int do_load(int argc, char** argv)
             "  --no-cal         Skip CAL/RUN mode bracket\n"
             "  --no-verify      Skip read-back verification\n"
             "  --no-goodset     Skip GoodSet pre-check\n"
-            "  --no-fw-version  Skip firmware version check\n"
+            "  --no-fw-version  Allow unvalidated firmware within V0.001-V5.999\n"
             "  --reset          Reboot controller after write\n");
         return 1;
     }
@@ -694,7 +694,7 @@ static int do_load(int argc, char** argv)
     }
 
     if (flags.reset) {
-        err = alltrax_reset_device(ctrl);
+        err = alltrax_reset_device(ctrl, &write_opts);
         if (err) {
             cli_error(ctrl, err, "resetting device");
             ret = 1;
@@ -731,7 +731,7 @@ int cmd_config(int argc, char** argv)
             "  --no-cal         Skip CAL/RUN mode bracket\n"
             "  --no-verify      Skip read-back verification\n"
             "  --no-goodset     Skip GoodSet pre-check\n"
-            "  --no-fw-version  Skip firmware version check\n"
+            "  --no-fw-version  Allow unvalidated firmware within V0.001-V5.999\n"
             "  --reset          Reboot controller after write\n");
         return 1;
     }

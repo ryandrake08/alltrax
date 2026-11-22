@@ -196,10 +196,20 @@ alltrax_error identify_controller(alltrax_controller* ctrl)
     get_string(buf, sizeof(buf), model, sizeof(model));
     ctrl->controller_type = detect_controller_type(model);
     rc = require_xct_controller(ctrl);
-    if (rc)
+    if (rc) {
         set_error_detail(ctrl, "Unsupported controller model '%s'; "
                          "requires XCT, SRX, or NCT", model);
-    return rc;
+        return rc;
+    }
+
+    uint8_t rev[4];
+    rc = read_memory(ctrl, ADDR_BOOT_REV, sizeof(rev), rev);
+    if (rc) return rc;
+    ctrl->boot_rev = get_le32(rev);
+    rc = read_memory(ctrl, ADDR_PRGM_REV, sizeof(rev), rev);
+    if (rc) return rc;
+    ctrl->program_rev = get_le32(rev);
+    return ALLTRAX_OK;
 }
 
 const char* alltrax_controller_type_name(alltrax_controller_type type)
@@ -257,6 +267,77 @@ bool firmware_in_bounds(alltrax_controller_type type,
         return false;
     }
     return false;
+}
+
+/* XCT program revisions validated for writes on real hardware. */
+static const uint32_t write_validated_firmware[] = { 5005 };
+
+static bool firmware_write_validated(uint32_t program_rev)
+{
+    size_t n = sizeof(write_validated_firmware) /
+               sizeof(write_validated_firmware[0]);
+    for (size_t i = 0; i < n; i++) {
+        if (write_validated_firmware[i] == program_rev)
+            return true;
+    }
+    return false;
+}
+
+/* Reads require firmware within V0.001-V5.999 unless the read override
+ * is enabled. */
+static alltrax_error require_readable_firmware(alltrax_controller* ctrl)
+{
+    alltrax_error rc = require_xct_controller(ctrl);
+    if (rc || ctrl->firmware_read_override)
+        return rc;
+    if (!firmware_in_bounds(ctrl->controller_type, ctrl->boot_rev,
+                            ctrl->program_rev)) {
+        char boot[16], prgm[16];
+        set_error_detail(ctrl,
+            "Firmware boot %s / program %s is outside V0.001-V5.999; "
+            "reads require the firmware read override",
+            format_rev(ctrl->boot_rev, boot, sizeof(boot)),
+            format_rev(ctrl->program_rev, prgm, sizeof(prgm)));
+        return ALLTRAX_ERR_FIRMWARE;
+    }
+    return ALLTRAX_OK;
+}
+
+/* Writes require write-validated firmware. skip_fw_check widens this to
+ * V0.001-V5.999; firmware outside those bounds is never written. The read
+ * override has no effect on writes. */
+static alltrax_error require_writable_firmware(alltrax_controller* ctrl,
+    bool skip_fw_check)
+{
+    alltrax_error rc = require_xct_controller(ctrl);
+    if (rc) return rc;
+    char boot[16], prgm[16];
+    format_rev(ctrl->boot_rev, boot, sizeof(boot));
+    format_rev(ctrl->program_rev, prgm, sizeof(prgm));
+    if (!firmware_in_bounds(ctrl->controller_type, ctrl->boot_rev,
+                            ctrl->program_rev)) {
+        set_error_detail(ctrl,
+            "Firmware boot %s / program %s is outside V0.001-V5.999; "
+            "writes are not allowed", boot, prgm);
+        return ALLTRAX_ERR_FIRMWARE;
+    }
+    if (!skip_fw_check && !firmware_write_validated(ctrl->program_rev)) {
+        set_error_detail(ctrl,
+            "Firmware %s is not validated for writes (validated: V5.005); "
+            "skip the firmware check to write firmware within V0.001-V5.999",
+            prgm);
+        return ALLTRAX_ERR_FIRMWARE;
+    }
+    return ALLTRAX_OK;
+}
+
+alltrax_error alltrax_set_firmware_read_override(alltrax_controller* ctrl,
+    bool enabled)
+{
+    if (!ctrl)
+        return ALLTRAX_ERR_INVALID_ARG;
+    ctrl->firmware_read_override = enabled;
+    return ALLTRAX_OK;
 }
 
 alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
@@ -320,6 +401,8 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     if (rc) return rc;
     out->program_rev = get_le32(prgm_buf);
     out->program_ver = get_le16(prgm_buf + 4);
+    ctrl->boot_rev = out->boot_rev;
+    ctrl->program_rev = out->program_rev;
 
     /* Format revision strings */
     format_rev(out->boot_rev, out->boot_rev_str,
@@ -372,9 +455,10 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     }
 
     /* Device family is already validated; firmware support is independent. */
-    out->supported = (out->controller_type == ALLTRAX_CONTROLLER_XCT &&
-                      firmware_in_bounds(out->controller_type,
-                                         out->boot_rev, out->program_rev));
+    out->supported = firmware_in_bounds(out->controller_type,
+                                        out->boot_rev, out->program_rev);
+    out->write_validated = out->supported &&
+                           firmware_write_validated(out->program_rev);
 
     return ALLTRAX_OK;
 }
@@ -445,8 +529,8 @@ static alltrax_error validate_var_for_io(alltrax_controller* ctrl,
 alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, size_t count, alltrax_var_value* out)
 {
-    alltrax_error family_rc = require_xct_controller(ctrl);
-    if (family_rc) return family_rc;
+    alltrax_error gate_rc = require_readable_firmware(ctrl);
+    if (gate_rc) return gate_rc;
     if (count == 0)
         return ALLTRAX_OK;
 
@@ -564,10 +648,12 @@ static alltrax_error page_erase(alltrax_controller* ctrl, uint8_t page)
     return ALLTRAX_OK;
 }
 
-alltrax_error alltrax_reset_device(alltrax_controller* ctrl)
+alltrax_error alltrax_reset_device(alltrax_controller* ctrl,
+    const alltrax_write_opts* opts)
 {
-    alltrax_error family_rc = require_xct_controller(ctrl);
-    if (family_rc) return family_rc;
+    alltrax_error gate_rc = require_writable_firmware(ctrl,
+        opts && opts->skip_fw_check);
+    if (gate_rc) return gate_rc;
     uint8_t request[PACKET_SIZE];
     build_reset_request(request);
 
@@ -656,27 +742,9 @@ static alltrax_error write_flash_page(alltrax_controller* ctrl,
 static alltrax_error flash_prechecks(alltrax_controller* ctrl,
     const alltrax_write_opts* opts)
 {
-    alltrax_error rc;
-
-    if (!opts->skip_fw_check) {
-        uint8_t prgm_buf[6];
-        rc = read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf);
-        if (rc) return rc;
-
-        uint32_t prgm_rev = get_le32(prgm_buf);
-        if (prgm_rev != VALIDATED_FIRMWARE) {
-            char buf[16];
-            format_rev(prgm_rev, buf, sizeof(buf));
-            set_error_detail(ctrl,
-                "Firmware %s is not validated. Only V5.005 is supported",
-                buf);
-            return ALLTRAX_ERR_FIRMWARE;
-        }
-    }
-
     if (!opts->skip_goodset) {
         uint8_t gs_buf[2];
-        rc = read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf);
+        alltrax_error rc = read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf);
         if (rc) return rc;
         uint16_t v_gs = get_le16(gs_buf);
 
@@ -798,8 +866,9 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, const double* values, size_t count,
     const alltrax_write_opts* opts)
 {
-    alltrax_error family_rc = require_xct_controller(ctrl);
-    if (family_rc) return family_rc;
+    alltrax_error gate_rc = require_writable_firmware(ctrl,
+        opts && opts->skip_fw_check);
+    if (gate_rc) return gate_rc;
     if (!vars || !values || count == 0) {
         set_error_detail(ctrl, "Variables and values are required");
         return ALLTRAX_ERR_INVALID_ARG;
@@ -1061,8 +1130,8 @@ static alltrax_error read_curve_array(alltrax_controller* ctrl,
 alltrax_error alltrax_read_curve(alltrax_controller* ctrl,
     const alltrax_curve_def* def, alltrax_curve_data* out)
 {
-    alltrax_error family_rc = require_xct_controller(ctrl);
-    if (family_rc) return family_rc;
+    alltrax_error gate_rc = require_readable_firmware(ctrl);
+    if (gate_rc) return gate_rc;
     if (!out)
         return ALLTRAX_ERR_INVALID_ARG;
     alltrax_error rc = validate_curve_def(ctrl, def, false);
@@ -1079,8 +1148,8 @@ alltrax_error alltrax_read_curve(alltrax_controller* ctrl,
 alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
     const alltrax_curve_def* def, alltrax_curve_data* out)
 {
-    alltrax_error family_rc = require_xct_controller(ctrl);
-    if (family_rc) return family_rc;
+    alltrax_error gate_rc = require_readable_firmware(ctrl);
+    if (gate_rc) return gate_rc;
     if (!out)
         return ALLTRAX_ERR_INVALID_ARG;
     alltrax_error rc = validate_curve_def(ctrl, def, true);
@@ -1138,8 +1207,9 @@ alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
     const alltrax_curve_def* def, const alltrax_curve_data* data,
     const alltrax_write_opts* opts)
 {
-    alltrax_error family_rc = require_xct_controller(ctrl);
-    if (family_rc) return family_rc;
+    alltrax_error gate_rc = require_writable_firmware(ctrl,
+        opts && opts->skip_fw_check);
+    if (gate_rc) return gate_rc;
     if (!def || !data)
         return ALLTRAX_ERR_INVALID_ARG;
     alltrax_error rc = validate_curve_def(ctrl, def, false);
@@ -1197,8 +1267,8 @@ static const struct { uint32_t addr; size_t size; } monitor_blocks[] = {
 alltrax_error alltrax_read_monitor(alltrax_controller* ctrl,
     alltrax_monitor_data* out)
 {
-    alltrax_error family_rc = require_xct_controller(ctrl);
-    if (family_rc) return family_rc;
+    alltrax_error gate_rc = require_readable_firmware(ctrl);
+    if (gate_rc) return gate_rc;
     memset(out, 0, sizeof(*out));
 
     uint8_t blocks[MONITOR_BLOCK_COUNT][MAX_PAYLOAD];

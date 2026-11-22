@@ -11,6 +11,10 @@
 /* Global --device path (NULL = auto-detect) */
 extern const char* cli_device_path;
 
+/* Global --no-fw-version: enables the library firmware read override and
+ * sets no_fw_version in every cli_parse_flags() result. */
+extern bool cli_no_fw_version;
+
 /* Write flags parsed from argv */
 typedef struct {
     bool no_cal;

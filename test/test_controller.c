@@ -34,6 +34,7 @@ static struct {
     uint32_t fault_addr;
     uint8_t fault_request_len, fault_reply_len;
     unsigned fault_occurrence, matches;
+    uint32_t boot_rev, program_rev;
 } mock;
 
 static uint32_t request_address(void)
@@ -50,6 +51,8 @@ static void mock_reset(void)
     mock.ctrl.pid = ALLTRAX_PID_XCT;
     mock.ctrl.controller_type = ALLTRAX_CONTROLLER_XCT;
     mock.ctrl.allow_writes = true;
+    mock.ctrl.boot_rev = mock.boot_rev = 5002;
+    mock.ctrl.program_rev = mock.program_rev = 5005;
     mock.throttles_allowed = 0x7FF;
     for (size_t i = 0; i < sizeof(mock.page); i++)
         mock.page[i] = (uint8_t)(i * 37 + 11);
@@ -70,8 +73,6 @@ static void mock_fault(uint32_t addr, uint8_t request_len,
 static uint8_t mock_read_byte(uint32_t addr)
 {
     static const char model[] = "XCT48400-DCS";
-    static const uint8_t boot_rev[] = { 0x8A, 0x13, 0, 0 }; /* 5002 */
-    static const uint8_t program_rev[] = { 0x8D, 0x13, 0, 0, 0, 0 }; /* 5005 */
 
     if (addr >= VARSET_ADDR && addr < VARSET_ADDR + VARSET_SIZE)
         return mock.page[addr - VARSET_ADDR];
@@ -79,10 +80,10 @@ static uint8_t mock_read_byte(uint32_t addr)
         return mock.factory[addr - FACTSET_ADDR];
     if (addr >= ADDR_CONTROLLER_INFO && addr < ADDR_CONTROLLER_INFO + sizeof(model))
         return (uint8_t)model[addr - ADDR_CONTROLLER_INFO];
-    if (addr >= ADDR_BOOT_REV && addr < ADDR_BOOT_REV + sizeof(boot_rev))
-        return boot_rev[addr - ADDR_BOOT_REV];
-    if (addr >= ADDR_PRGM_REV && addr < ADDR_PRGM_REV + sizeof(program_rev))
-        return program_rev[addr - ADDR_PRGM_REV];
+    if (addr >= ADDR_BOOT_REV && addr < ADDR_BOOT_REV + 4)
+        return (uint8_t)(mock.boot_rev >> ((addr - ADDR_BOOT_REV) * 8));
+    if (addr >= ADDR_PRGM_REV && addr < ADDR_PRGM_REV + 4)
+        return (uint8_t)(mock.program_rev >> ((addr - ADDR_PRGM_REV) * 8));
     if (addr == ADDR_RUN_MODE)
         return mock.mode;
     if (addr >= RAM_END - 4 && addr < RAM_END)
@@ -153,6 +154,8 @@ alltrax_error transport_write(alltrax_controller* ctrl,
             return ALLTRAX_OK;
         }
     }
+    if (data[0] == 0x03 && addr == FUNC_RESET && data[1] == 0)
+        return ALLTRAX_OK;
     if (data[0] == 0x03 && addr == 1 && data[1] == 4 && data[11] == VARSET_PAGE) {
         memset(mock.page, 0xFF, sizeof(mock.page));
         mock.erases++;
@@ -304,7 +307,7 @@ static int test_unsupported_identity_blocks_all_operations(void)
             ASSERT_EQ(alltrax_write_curve(&mock.ctrl, curve, &data, options[o]),
                       ALLTRAX_ERR_UNSUPPORTED);
         }
-        ASSERT_EQ(alltrax_reset_device(&mock.ctrl), ALLTRAX_ERR_UNSUPPORTED);
+        ASSERT_EQ(alltrax_reset_device(&mock.ctrl, NULL), ALLTRAX_ERR_UNSUPPORTED);
         alltrax_info info;
         alltrax_var_value value;
         alltrax_monitor_data monitor;
@@ -1138,6 +1141,163 @@ static int test_flash_write_rejects_final_verification_length_mismatch(void)
     return 0;
 }
 
+static void set_firmware(uint32_t boot_rev, uint32_t program_rev)
+{
+    mock.ctrl.boot_rev = mock.boot_rev = boot_rev;
+    mock.ctrl.program_rev = mock.program_rev = program_rev;
+}
+
+/* Returns the first public read result that differs from expected. */
+static alltrax_error read_operations(alltrax_error expected)
+{
+    const alltrax_var_def* hpd = alltrax_find_var("HPD");
+    const alltrax_curve_def* curve = alltrax_find_curve("linearization");
+    alltrax_var_value value;
+    alltrax_curve_data data;
+    alltrax_monitor_data monitor;
+    alltrax_error rc[] = {
+        alltrax_read_vars(&mock.ctrl, &hpd, 1, &value),
+        alltrax_read_curve(&mock.ctrl, curve, &data),
+        alltrax_read_curve_factory(&mock.ctrl, curve, &data),
+        alltrax_read_monitor(&mock.ctrl, &monitor),
+    };
+    for (size_t i = 0; i < sizeof(rc) / sizeof(rc[0]); i++) {
+        if (rc[i] != expected) return rc[i];
+    }
+    return expected;
+}
+
+/* Returns the first RAM, FLASH, curve, or reset result that differs from
+ * expected. */
+static alltrax_error write_operations(const alltrax_write_opts* opts,
+    alltrax_error expected)
+{
+    const alltrax_var_def* fan = alltrax_find_var("Fan_On");
+    const alltrax_var_def* hpd = alltrax_find_var("HPD");
+    const alltrax_curve_def* curve = alltrax_find_curve("linearization");
+    const alltrax_curve_preset* preset =
+        alltrax_find_curve_preset("linearization", "linear");
+    alltrax_curve_data data = { .def = curve };
+    memcpy(data.x, preset->x, sizeof(data.x));
+    memcpy(data.y, preset->y, sizeof(data.y));
+    double one = 1;
+    alltrax_error rc[] = {
+        alltrax_write_vars(&mock.ctrl, &fan, &one, 1, opts),
+        alltrax_write_vars(&mock.ctrl, &hpd, &one, 1, opts),
+        alltrax_write_curve(&mock.ctrl, curve, &data, opts),
+        alltrax_reset_device(&mock.ctrl, opts),
+    };
+    for (size_t i = 0; i < sizeof(rc) / sizeof(rc[0]); i++) {
+        if (rc[i] != expected) return rc[i];
+    }
+    return expected;
+}
+
+static int test_firmware_policy_tiers(void)
+{
+    const struct {
+        uint32_t boot, program;
+        bool read, write, write_with_skip;
+    } cases[] = {
+        { 5002, 5005,       true,  true,  true  },
+        { 5002, 5004,       true,  false, true  },
+        { 5002, 1,          true,  false, true  },
+        { 5999, 5999,       true,  false, true  },
+        { 5002, 6000,       false, false, false },
+        { 6000, 5005,       false, false, false },
+        { 5002, 0,          false, false, false },
+        { 5002, 0xFFFFFFFF, false, false, false },
+    };
+    const alltrax_write_opts skip = { .skip_fw_check = true };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        mock_reset();
+        set_firmware(cases[i].boot, cases[i].program);
+        uint8_t original[VARSET_SIZE];
+        memcpy(original, mock.page, sizeof(original));
+
+        alltrax_error expected = cases[i].read ? ALLTRAX_OK : ALLTRAX_ERR_FIRMWARE;
+        ASSERT_EQ(read_operations(expected), expected);
+        if (!cases[i].read)
+            ASSERT_EQ(mock.requests, 0);
+
+        unsigned before = mock.requests;
+        expected = cases[i].write ? ALLTRAX_OK : ALLTRAX_ERR_FIRMWARE;
+        ASSERT_EQ(write_operations(NULL, expected), expected);
+        if (!cases[i].write) {
+            ASSERT_EQ(mock.requests, before);
+            ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+        }
+
+        before = mock.requests;
+        expected = cases[i].write_with_skip ? ALLTRAX_OK : ALLTRAX_ERR_FIRMWARE;
+        ASSERT_EQ(write_operations(&skip, expected), expected);
+        if (!cases[i].write_with_skip)
+            ASSERT_EQ(mock.requests, before);
+        ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+    }
+    return 0;
+}
+
+static int test_firmware_read_override_does_not_enable_writes(void)
+{
+    mock_reset();
+    set_firmware(5002, 6001);
+    ASSERT_EQ(alltrax_set_firmware_read_override(NULL, true), ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(read_operations(ALLTRAX_ERR_FIRMWARE), ALLTRAX_ERR_FIRMWARE);
+    ASSERT_TRUE(strstr(mock.ctrl.error_detail, "V6.001") != NULL);
+    ASSERT_EQ(mock.requests, 0);
+
+    ASSERT_EQ(alltrax_set_firmware_read_override(&mock.ctrl, true), ALLTRAX_OK);
+    ASSERT_EQ(read_operations(ALLTRAX_OK), ALLTRAX_OK);
+
+    unsigned before = mock.requests;
+    const alltrax_write_opts skip = { .skip_fw_check = true };
+    ASSERT_EQ(write_operations(&skip, ALLTRAX_ERR_FIRMWARE), ALLTRAX_ERR_FIRMWARE);
+    ASSERT_TRUE(strstr(mock.ctrl.error_detail, "writes are not allowed") != NULL);
+    ASSERT_EQ(mock.requests, before);
+
+    ASSERT_EQ(alltrax_set_firmware_read_override(&mock.ctrl, false), ALLTRAX_OK);
+    ASSERT_EQ(read_operations(ALLTRAX_ERR_FIRMWARE), ALLTRAX_ERR_FIRMWARE);
+    return 0;
+}
+
+static int test_unvalidated_write_diagnostic_names_firmware(void)
+{
+    mock_reset();
+    set_firmware(5002, 5004);
+    const alltrax_var_def* fan = alltrax_find_var("Fan_On");
+    double one = 1;
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &fan, &one, 1, NULL), ALLTRAX_ERR_FIRMWARE);
+    ASSERT_TRUE(strstr(mock.ctrl.error_detail, "V5.004 is not validated") != NULL);
+    ASSERT_EQ(mock.requests, 0);
+    return 0;
+}
+
+static int test_info_reports_policy_and_refreshes_revisions(void)
+{
+    const struct {
+        uint32_t program;
+        bool supported, write_validated;
+    } cases[] = {
+        { 5005, true,  true  },
+        { 5004, true,  false },
+        { 6001, false, false },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        mock_reset();
+        mock.program_rev = cases[i].program;  /* Device differs from cache. */
+        alltrax_info info;
+        ASSERT_EQ(alltrax_get_info(&mock.ctrl, &info), ALLTRAX_OK);
+        ASSERT_EQ(info.program_rev, cases[i].program);
+        ASSERT_EQ(info.supported, cases[i].supported);
+        ASSERT_EQ(info.write_validated, cases[i].write_validated);
+        ASSERT_EQ(mock.ctrl.program_rev, cases[i].program);
+        alltrax_error expected = cases[i].supported ? ALLTRAX_OK : ALLTRAX_ERR_FIRMWARE;
+        ASSERT_EQ(read_operations(expected), expected);
+    }
+    return 0;
+}
+
 int main(void)
 {
     printf("controller (simulated transport):\n");
@@ -1176,6 +1336,10 @@ int main(void)
     RUN_TEST(test_body_and_run_failures_preserve_original_error);
     RUN_TEST(test_run_failure_after_success_is_reported_explicitly);
     RUN_TEST(test_skip_cal_does_not_introduce_mode_cleanup);
+    RUN_TEST(test_firmware_policy_tiers);
+    RUN_TEST(test_firmware_read_override_does_not_enable_writes);
+    RUN_TEST(test_unvalidated_write_diagnostic_names_firmware);
+    RUN_TEST(test_info_reports_policy_and_refreshes_revisions);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }

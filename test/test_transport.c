@@ -234,7 +234,9 @@ static int test_supported_models_open_and_read_info(void)
             ASSERT_EQ(ctrl->pid, 2);
             ASSERT_EQ(ctrl->controller_type, ALLTRAX_CONTROLLER_XCT);
             ASSERT_EQ(ctrl->allow_writes, writes != 0);
-            ASSERT_EQ(mock.reads, 1);
+            ASSERT_EQ(ctrl->boot_rev, 5002);
+            ASSERT_EQ(ctrl->program_rev, 5005);
+            ASSERT_EQ(mock.reads, 3); /* Model, boot and program revisions. */
             ASSERT_EQ(mock.mutations, 0);
             alltrax_info info;
             ASSERT_EQ(alltrax_get_info(ctrl, &info), ALLTRAX_OK);
@@ -322,13 +324,13 @@ static int test_info_rejects_changed_model_and_revokes_write_access(void)
     mock.models[0] = "SPM48400";
     alltrax_info info;
     ASSERT_EQ(alltrax_get_info(ctrl, &info), ALLTRAX_ERR_UNSUPPORTED);
-    ASSERT_EQ(mock.reads, 2); /* Model check, then info; no XCT revision reads. */
+    ASSERT_EQ(mock.reads, 4); /* Open: model + revisions; info stops at model. */
     unsigned requests = mock.writes;
     const alltrax_var_def* hpd = alltrax_find_var("HPD");
     double value = 1;
     alltrax_write_opts opts = { .skip_fw_check = true };
     ASSERT_EQ(alltrax_write_vars(ctrl, &hpd, &value, 1, &opts), ALLTRAX_ERR_UNSUPPORTED);
-    ASSERT_EQ(alltrax_reset_device(ctrl), ALLTRAX_ERR_UNSUPPORTED);
+    ASSERT_EQ(alltrax_reset_device(ctrl, NULL), ALLTRAX_ERR_UNSUPPORTED);
     ASSERT_EQ(mock.writes, requests);
     ASSERT_EQ(mock.mutations, 0);
     alltrax_close(ctrl);
@@ -366,7 +368,7 @@ static int test_xct_ram_write_reset_and_read_only_protection(void)
         double value = 1;
         alltrax_error expected = writes ? ALLTRAX_OK : ALLTRAX_ERR_BLOCKED;
         ASSERT_EQ(alltrax_write_vars(ctrl, &fan, &value, 1, NULL), expected);
-        ASSERT_EQ(alltrax_reset_device(ctrl), expected);
+        ASSERT_EQ(alltrax_reset_device(ctrl, NULL), expected);
         ASSERT_EQ(mock.mode, RUN_MODE_RUN);
         ASSERT_EQ(mock.mutations, writes ? 4 : 0); /* CAL, Fan_On, RUN, reset */
         alltrax_close(ctrl);
@@ -374,20 +376,30 @@ static int test_xct_ram_write_reset_and_read_only_protection(void)
     return 0;
 }
 
-static int test_unknown_firmware_does_not_block_identity_or_reads(void)
+static int test_unknown_firmware_allows_identity_and_gates_reads(void)
 {
     mock_reset();
     add_device("xct", 0x23D4, 2, "XCT48400-DCS");
     mock.program_rev = 6001;
     alltrax_controller* ctrl = NULL;
-    ASSERT_EQ(alltrax_open(&ctrl, NULL, false), ALLTRAX_OK);
+    ASSERT_EQ(alltrax_open(&ctrl, NULL, true), ALLTRAX_OK);
+    ASSERT_EQ(ctrl->program_rev, 6001);
     alltrax_info info;
     ASSERT_EQ(alltrax_get_info(ctrl, &info), ALLTRAX_OK);
     ASSERT_EQ(info.program_rev, 6001);
     ASSERT_FALSE(info.supported);
+    ASSERT_FALSE(info.write_validated);
     const alltrax_var_def* hpd = alltrax_find_var("HPD");
     alltrax_var_value value;
+    unsigned reads = mock.reads;
+    ASSERT_EQ(alltrax_read_vars(ctrl, &hpd, 1, &value), ALLTRAX_ERR_FIRMWARE);
+    ASSERT_EQ(mock.reads, reads);
+    ASSERT_EQ(alltrax_set_firmware_read_override(ctrl, true), ALLTRAX_OK);
     ASSERT_EQ(alltrax_read_vars(ctrl, &hpd, 1, &value), ALLTRAX_OK);
+    const alltrax_write_opts skip = { .skip_fw_check = true };
+    double one = 1;
+    ASSERT_EQ(alltrax_write_vars(ctrl, &hpd, &one, 1, &skip), ALLTRAX_ERR_FIRMWARE);
+    ASSERT_EQ(alltrax_reset_device(ctrl, &skip), ALLTRAX_ERR_FIRMWARE);
     ASSERT_EQ(mock.mutations, 0);
     alltrax_close(ctrl);
     return 0;
@@ -506,7 +518,7 @@ static int test_reset_requires_a_complete_write(void)
     for (size_t i = 0; i < sizeof(results) / sizeof(results[0]); i++) {
         mock.write_result = results[i];
         unsigned writes = mock.writes;
-        ASSERT_EQ(alltrax_reset_device(ctrl), results[i] == 64 ? ALLTRAX_OK : ALLTRAX_ERR_USB);
+        ASSERT_EQ(alltrax_reset_device(ctrl, NULL), results[i] == 64 ? ALLTRAX_OK : ALLTRAX_ERR_USB);
         ASSERT_EQ(mock.writes, writes + 1);
         ASSERT_EQ(mock.reads, reads); /* Reset has no acknowledgement. */
         if (results[i] < 0)
@@ -597,7 +609,7 @@ int main(void)
     RUN_TEST(test_info_rejects_changed_model_and_revokes_write_access);
     RUN_TEST(test_failed_open_and_invalid_output_handle);
     RUN_TEST(test_xct_ram_write_reset_and_read_only_protection);
-    RUN_TEST(test_unknown_firmware_does_not_block_identity_or_reads);
+    RUN_TEST(test_unknown_firmware_allows_identity_and_gates_reads);
     RUN_TEST(test_transport_blocks_mutations_without_verified_identity);
     RUN_TEST(test_transport_rejects_incomplete_writes);
     RUN_TEST(test_transport_rejects_incomplete_reads);

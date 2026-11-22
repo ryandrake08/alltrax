@@ -74,6 +74,19 @@ Alltrax Controller Monitor
 | `alltrax curve diff <type>` | Compare user vs factory curve |
 | `alltrax curve reset <type>` | Restore factory curve |
 
+### Firmware policy
+
+| Firmware (boot and program) | `info` | Other reads | Writes and `reset` |
+|---|---|---|---|
+| V5.005 (validated for writes) | Yes | Yes | Yes |
+| Other V0.001-V5.999 | Yes | Yes | With `--no-fw-version` |
+| Outside V0.001-V5.999 | Yes | With `alltrax --no-fw-version <command>` | Never |
+
+V0.001-V5.999 is the range the official Toolkit accepts. `--no-fw-version`
+placed before the command applies to reads and writes; placed after a write
+command (`write`, `reset`, `config load`, `curve set`, `curve reset`) it
+applies to that command's writes.
+
 ### Write examples
 
 ```sh
@@ -97,7 +110,7 @@ alltrax write Fan_On=1
 | `--no-cal` | Skip CAL/RUN mode bracket (safe for bench programming with no motor) |
 | `--no-verify` | Skip read-back verification after FLASH write |
 | `--no-goodset` | Skip GoodSet corruption pre-check (required to write when a previous interrupted write left GoodSet invalid) |
-| `--no-fw-version` | Skip firmware version check |
+| `--no-fw-version` | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--reset` | Reboot controller after FLASH write |
 
 ### Config save/load
@@ -130,7 +143,7 @@ Toolkit (unless `--no-crypt` was used).
 | `--no-cal` | load | Skip CAL/RUN mode bracket |
 | `--no-verify` | load | Skip read-back verification |
 | `--no-goodset` | load | Skip GoodSet pre-check |
-| `--no-fw-version` | load | Skip firmware version check |
+| `--no-fw-version` | load | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--reset` | load | Reboot controller after write |
 
 ### Curve tables
@@ -237,7 +250,7 @@ cause the import to fail.
 | `--plot` | get | ASCII chart instead of table |
 | `--no-cal` | set, reset | Skip CAL/RUN mode bracket |
 | `--no-verify` | set, reset | Skip read-back verification |
-| `--no-fw-version` | set, reset | Skip firmware version check |
+| `--no-fw-version` | set, reset | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--reset` | set, reset | Reboot controller after write |
 
 ## Building
@@ -353,9 +366,22 @@ path that matches a supported enumeration entry. Opening performs a read-only
 model check and accepts the XCT, SRX, and NCT prefixes. PID 1 and unrecognized
 families are rejected with `ALLTRAX_ERR_UNSUPPORTED`; unmatched paths return
 `ALLTRAX_ERR_NO_DEVICE`. Firmware overrides cannot bypass these checks.
+Opening also reads the boot and program revisions used by the firmware policy.
 `*out` must be `NULL` on entry and remains `NULL` on failure. Set `allow_writes`
 to `true` if you intend to write settings; the library will reject write
 operations otherwise. Multiple controllers can be open simultaneously.
+
+```c
+alltrax_error alltrax_set_firmware_read_override(alltrax_controller* ctrl,
+    bool enabled);
+```
+
+Firmware policy: `alltrax_get_info()` works on any firmware. Other reads
+require boot and program revisions within V0.001-V5.999 and otherwise return
+`ALLTRAX_ERR_FIRMWARE`; enabling the read override allows them. Writes and
+reset require write-validated firmware (V5.005); `skip_fw_check` widens this to
+V0.001-V5.999. Firmware outside that range is never written, and the read
+override does not affect writes.
 
 ### Error handling
 
@@ -402,9 +428,10 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out);
 ```
 
 Reads controller identity, firmware versions, ratings, and hardware
-capabilities for an accepted XCT-family device. Check `out->supported` to
-determine whether its firmware is within known bounds. Unknown firmware
-remains readable. Unsupported USB identities and controller families are
+capabilities for an accepted XCT-family device, on any firmware. Check
+`out->supported` to determine whether other reads are allowed without the read
+override, and `out->write_validated` to determine whether writes are allowed
+without `skip_fw_check`. Unsupported USB identities and controller families are
 rejected centrally, including by `alltrax_get_info()`; PID 1 identification
 is not implemented.
 
@@ -413,7 +440,8 @@ is not implemented.
 | Field | Type | Description |
 |-------|------|-------------|
 | `controller_type` | `alltrax_controller_type` | Detected type (XCT, SPM, SR, BMS, BMS2, or Unknown) |
-| `supported` | `bool` | `true` for XCT with firmware V0.001-V5.999 |
+| `supported` | `bool` | `true` when boot and program revisions are within V0.001-V5.999 |
+| `write_validated` | `bool` | `true` when the program revision is validated for writes (V5.005) |
 | `model` | `char[16]` | Model string (e.g. `"XCT48400-DCS"`) |
 | `build_date` | `char[16]` | Factory build date |
 | `serial_number` | `uint32_t` | Serial number |
@@ -604,7 +632,7 @@ Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
 | `skip_cal` | Skip CAL/RUN bracket (safe for bench programming with no motor) |
 | `skip_verify` | Skip read-back verification (FLASH only) |
 | `skip_goodset` | Skip GoodSet corruption pre-check (FLASH only) |
-| `skip_fw_check` | Skip firmware version check (FLASH only) |
+| `skip_fw_check` | Allow writes on unvalidated firmware within V0.001-V5.999 |
 
 **RAM variables** (`is_flash=false`) take effect immediately but are not
 persistent across power cycles.
@@ -612,7 +640,7 @@ persistent across power cycles.
 **FLASH variables** (`is_flash=true`) are persistent. The library performs a
 full page cycle: read the 2KB settings page, patch in the new values, erase
 the page, write it back, and verify. Multiple FLASH variables are batched into
-a single page cycle. Requires `allow_writes=true` and firmware V5.005.
+a single page cycle. Requires `allow_writes=true` and the write firmware policy.
 
 When both RAM and FLASH variables are written together, all writes share a
 single CAL/RUN bracket — saving 4 USB packets compared to separate calls.
@@ -790,10 +818,12 @@ Returns the name of error flag at `index` (0-16), e.g. `"Overcurrent"`,
 ### Device reset
 
 ```c
-alltrax_error alltrax_reset_device(alltrax_controller* ctrl);
+alltrax_error alltrax_reset_device(alltrax_controller* ctrl,
+    const alltrax_write_opts* opts);
 ```
 
-Sends a reset command. The controller reboots immediately (USB disconnects).
+Sends a reset command. Reset follows the write firmware policy; `opts` may be
+`NULL`, and only `skip_fw_check` is used. The controller reboots immediately (USB disconnects).
 The controller handle becomes invalid after this call — close it without
 expecting further communication. Used after FLASH writes to make new settings
 take effect without a power cycle.

@@ -141,6 +141,7 @@ static int test_read_only_assignments_use_library_diagnostics(void)
             fake_ctrl = (alltrax_controller) {
                 .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
                 .controller_type = ALLTRAX_CONTROLLER_XCT, .allow_writes = true,
+                .boot_rev = 5002, .program_rev = 5005,
             };
             open_calls = unexpected_calls = error_calls = close_calls = transport_calls = 0;
             open_succeeds = true;
@@ -342,6 +343,7 @@ static int test_invalid_throttle_config_rejected_before_transport(void)
     fake_ctrl = (alltrax_controller) {
         .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
         .controller_type = ALLTRAX_CONTROLLER_XCT, .allow_writes = true,
+        .boot_rev = 5002, .program_rev = 5005,
     };
     open_calls = transport_calls = error_calls = close_calls = unexpected_calls = 0;
     open_succeeds = true;

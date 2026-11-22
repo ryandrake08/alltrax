@@ -71,11 +71,14 @@ int cmd_info(int argc, char** argv)
     printf("\n");
 
     if (!info.supported) {
-        printf("\nWarning: %s controllers are not supported.\n",
-               alltrax_controller_type_name(info.controller_type));
-        printf("Only XCT controllers with firmware V0.001-V5.999 are "
-               "tested and validated.\n");
-        printf("Read/write operations may produce incorrect results.\n");
+        printf("\nWarning: firmware (boot %s, program %s) is outside "
+               "V0.001-V5.999.\n", info.boot_rev_str, info.program_rev_str);
+        printf("Other reads require 'alltrax --no-fw-version <command>' and "
+               "may produce incorrect results. Writes are not allowed.\n");
+    } else if (!info.write_validated) {
+        printf("\nWarning: firmware %s has not been validated for writes.\n",
+               info.program_rev_str);
+        printf("Writes and reset require --no-fw-version.\n");
     }
 
     alltrax_close(ctrl);

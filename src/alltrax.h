@@ -91,6 +91,18 @@ alltrax_error alltrax_open(alltrax_controller** out,
     const char* device_path, bool allow_writes);
 void alltrax_close(alltrax_controller* ctrl);
 
+/* Firmware policy. alltrax_open() reads the boot and program revisions.
+ * - alltrax_get_info() works on any firmware.
+ * - Other reads require XCT boot and program revisions within V0.001-V5.999
+ *   and otherwise return ALLTRAX_ERR_FIRMWARE.
+ * - Writes and reset require write-validated firmware (V5.005).
+ *   alltrax_write_opts.skip_fw_check widens this to V0.001-V5.999.
+ *   Firmware outside that range is never written.
+ * Enabling the read override allows reads on any firmware; it does not
+ * affect writes. Returns ALLTRAX_ERR_INVALID_ARG for a NULL controller. */
+alltrax_error alltrax_set_firmware_read_override(alltrax_controller* ctrl,
+    bool enabled);
+
 /* ------------------------------------------------------------------ */
 /* Controller info                                                     */
 /* ------------------------------------------------------------------ */
@@ -99,11 +111,14 @@ typedef struct {
     /* Controller type (detected from model prefix) */
     alltrax_controller_type controller_type;
 
-    /* True if this controller type is tested and supported.
-     * Currently only XCT with firmware V0.001-V5.999 is supported.
-     * Accepted XCT-family devices with unknown firmware can still be read.
-     * Other device families are rejected by alltrax_open(). */
+    /* True if boot and program revisions are within V0.001-V5.999, so
+     * reads are allowed without the firmware read override. Other device
+     * families are rejected by alltrax_open(). */
     bool     supported;
+
+    /* True if the program revision is validated for writes without
+     * skip_fw_check. */
+    bool     write_validated;
 
     /* Controller identity (52 bytes from INFOSET) */
     char     model[16];
@@ -278,7 +293,7 @@ typedef struct {
     bool skip_cal;           /* Skip CAL/RUN bracket and its restoration */
     bool skip_verify;        /* Skip read-back verification (FLASH only) */
     bool skip_goodset;       /* Skip GoodSet pre-check (FLASH only) */
-    bool skip_fw_check;      /* Skip firmware version check */
+    bool skip_fw_check;      /* Allow unvalidated firmware within V0.001-V5.999 */
     bool skip_voltage_link;  /* Skip voltage link validation */
 } alltrax_write_opts;
 
@@ -402,7 +417,10 @@ const char* alltrax_throttle_type_name(uint8_t type);
 /* Special functions                                                   */
 /* ------------------------------------------------------------------ */
 
-alltrax_error alltrax_reset_device(alltrax_controller* ctrl);
+/* Reboot the controller. Follows the write firmware policy; opts may be NULL
+ * and only skip_fw_check is used. */
+alltrax_error alltrax_reset_device(alltrax_controller* ctrl,
+    const alltrax_write_opts* opts);
 
 #ifdef __cplusplus
 }
