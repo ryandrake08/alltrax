@@ -912,6 +912,26 @@ static int test_config_round_trip_restores_strings_in_one_erase(void)
     return 0;
 }
 
+static int test_config_load_reset_flag_sends_one_reset(void)
+{
+    for (int fail = 0; fail <= 1; fail++) {
+        writable_device_reset();
+        char path[64];
+        ASSERT_EQ(make_temp_path(path), 0);
+        ASSERT_EQ(run_config_save(path, 5005), 0);
+        if (fail)
+            device.page[0] = device.page[1] = 0xFF;  /* GoodSet invalid */
+        device.erases = device.resets = 0;
+        char* argv[] = { "config", "load", "--no-crypt", path, "--reset" };
+        int rc = run_writable(cmd_config, 5, argv);
+        remove(path);
+        ASSERT_EQ(rc, fail ? 1 : 0);
+        ASSERT_EQ(device.erases, fail ? 0u : 1u);
+        ASSERT_EQ(device.resets, fail ? 0u : 1u);
+    }
+    return 0;
+}
+
 static int test_config_load_rejects_invalid_strings_before_open(void)
 {
     const char* bad[] = {
@@ -1029,6 +1049,48 @@ static int test_curve_reset_read_failure_writes_nothing(void)
     return 0;
 }
 
+/* Run one of the --reset command lines below against the writable device. */
+static int run_reset_case(int which)
+{
+    char hpd[] = "HPD=1";
+    char* write_before[] = { "write", "--reset", hpd };
+    char* write_after[] = { "write", hpd, "--reset" };
+    char* curve_set[] = { "curve", "set", "linearization", "--preset", "linear", "--reset" };
+    char* curve_reset[] = { "curve", "reset", "all", "--reset" };
+    switch (which) {
+    case 0: return run_writable(cmd_write, 3, write_before);
+    case 1: return run_writable(cmd_write, 3, write_after);
+    case 2: return run_writable(cmd_curve, 6, curve_set);
+    default: return run_writable(cmd_curve, 4, curve_reset);
+    }
+}
+
+static int test_reset_flag_sends_one_reset_after_success(void)
+{
+    for (int which = 0; which < 4; which++) {
+        writable_device_reset();
+        ASSERT_EQ(run_reset_case(which), 0);
+        ASSERT_EQ(device.erases, 1);
+        ASSERT_EQ(device.resets, 1);
+        ASSERT_EQ(device.mode, RUN_MODE_RUN);  /* RUN restored before reset */
+    }
+    return 0;
+}
+
+static int test_reset_flag_sends_no_reset_after_failure(void)
+{
+    for (int which = 0; which < 4; which++) {
+        /* An invalid GoodSet fails writes; a failed read fails curve reset. */
+        writable_device_reset();
+        device.page[0] = device.page[1] = 0xFF;
+        device.fail_read_at = which == 3 ? 1 : 0;
+        ASSERT_EQ(run_reset_case(which), 1);
+        ASSERT_EQ(device.erases, 0);
+        ASSERT_EQ(device.resets, 0);
+    }
+    return 0;
+}
+
 /* Run `get <name>` against the simulated device with `value` at the
  * variable's address, returning its stdout line in `out`. */
 static int run_get(const char* name, uint32_t value, char* out, size_t out_size)
@@ -1118,6 +1180,8 @@ int main(void)
     RUN_TEST(test_write_command_writes_strings_and_numbers_in_one_batch);
     RUN_TEST(test_curve_reset_restores_in_one_erase);
     RUN_TEST(test_curve_reset_read_failure_writes_nothing);
+    RUN_TEST(test_reset_flag_sends_one_reset_after_success);
+    RUN_TEST(test_reset_flag_sends_no_reset_after_failure);
     RUN_TEST(test_get_prints_full_integer_range);
     RUN_TEST(test_get_keeps_scaled_formatting);
     RUN_TEST(test_options_accepted_before_and_after_positionals);
@@ -1138,6 +1202,7 @@ int main(void)
     RUN_TEST(test_config_save_write_failure_keeps_device_paths);
     RUN_TEST(test_config_round_trip_restores_strings_in_one_erase);
     RUN_TEST(test_config_load_rejects_invalid_strings_before_open);
+    RUN_TEST(test_config_load_reset_flag_sends_one_reset);
 #endif
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;

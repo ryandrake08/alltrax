@@ -3,7 +3,10 @@
 # Usage:
 #   make              — release build (build/release/)
 #   make DEBUG=1      — debug build with ASan (build/debug/)
-#   make test         — build and run tests
+#   make SANITIZE=1   — ASan + UBSan incl. float-cast-overflow (build/sanitize/)
+#   make test         — build and run tests (combine with the variables above)
+#   make CC=clang-22 VARIANT=clang test — build and test with clang in its own
+#                       directory (use a distinct VARIANT per compiler)
 #   make clean        — remove build directory
 
 CC       ?= gcc
@@ -13,13 +16,19 @@ CPPFLAGS := -Isrc
 
 # --- Debug / Release flags ---
 
-ifdef DEBUG
+ifdef SANITIZE
+  SANITIZE_FLAGS := -fsanitize=address,undefined,float-cast-overflow \
+                    -fno-sanitize-recover=all
+  CFLAGS  += -O1 -g -fno-omit-frame-pointer $(SANITIZE_FLAGS)
+  LDFLAGS += $(SANITIZE_FLAGS)
+  VARIANT ?= sanitize
+else ifdef DEBUG
   CFLAGS  += -O0 -ggdb -DDEBUG=1 -fsanitize=address
   LDFLAGS += -fsanitize=address
-  VARIANT := debug
+  VARIANT ?= debug
 else
   CFLAGS  += -O2 -DNDEBUG
-  VARIANT := release
+  VARIANT ?= release
 endif
 
 UNAME := $(shell uname)

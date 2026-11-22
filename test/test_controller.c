@@ -38,6 +38,7 @@ static struct {
     unsigned fault_occurrence, matches;
     uint32_t boot_rev, program_rev;
     uint8_t monitor_ram[0x200];  /* 0x2000F000-0x2000F1FF */
+    size_t stuck_offset;         /* 1-based VARSET offset that stays 0xFF */
 } mock;
 
 static uint32_t request_address(void)
@@ -147,12 +148,15 @@ alltrax_error transport_write(alltrax_controller* ctrl,
             return ALLTRAX_OK;
         }
         if (addr >= RAM_END - 4 && addr < RAM_END && data[1] <= RAM_END - addr) {
-            memcpy(mock.ram_tail + addr - (RAM_END - 4), data + 8, data[1]);
+            memcpy(mock.ram_tail + (addr - (RAM_END - 4)), data + 8, data[1]);
             return ALLTRAX_OK;
         }
         if (addr >= VARSET_ADDR && addr < VARSET_ADDR + VARSET_SIZE &&
             data[1] <= VARSET_ADDR + VARSET_SIZE - addr) {
-            memcpy(mock.page + addr - VARSET_ADDR, data + 8, data[1]);
+            memcpy(mock.page + (addr - VARSET_ADDR), data + 8, data[1]);
+            if (mock.stuck_offset &&
+                mock.stuck_offset - 1 - (addr - VARSET_ADDR) < data[1])
+                mock.page[mock.stuck_offset - 1] = 0xFF;  /* Erased value */
             mock.settings_writes++;
             if (addr == VARSET_ADDR && data[1] == 2 && data[8] == 0 && data[9] == 0)
                 mock.goodset_clears++;
@@ -514,12 +518,12 @@ static int test_factory_curves_round_trip_within_declared_bounds(void)
         raw[0][3] = (uint8_t)(def->x_raw_max >> 8);
         raw[1][2] = (uint8_t)def->y_raw_max;
         raw[1][3] = (uint8_t)(def->y_raw_max >> 8);
-        memcpy(mock.factory + def->factory_x_address - FACTSET_ADDR, raw[0], 32);
-        memcpy(mock.factory + def->factory_y_address - FACTSET_ADDR, raw[1], 32);
+        memcpy(mock.factory + (def->factory_x_address - FACTSET_ADDR), raw[0], 32);
+        memcpy(mock.factory + (def->factory_y_address - FACTSET_ADDR), raw[1], 32);
         uint8_t expected[VARSET_SIZE];
         memcpy(expected, mock.page, sizeof(expected));
-        memcpy(expected + def->x_address - VARSET_ADDR, raw[0], 32);
-        memcpy(expected + def->y_address - VARSET_ADDR, raw[1], 32);
+        memcpy(expected + (def->x_address - VARSET_ADDR), raw[0], 32);
+        memcpy(expected + (def->y_address - VARSET_ADDR), raw[1], 32);
         alltrax_curve_data data;
         ASSERT_EQ(alltrax_read_curve_factory(&mock.ctrl, def, &data), ALLTRAX_OK);
         ASSERT_EQ(alltrax_validate_curve(def, &data), ALLTRAX_OK);
@@ -1523,6 +1527,56 @@ static int test_batch_keeps_voltage_link_checks(void)
     return 0;
 }
 
+static int test_flash_verification_mismatch_keeps_goodset_invalid(void)
+{
+    mock_reset();
+    const alltrax_var_def* hpd = alltrax_find_var("HPD");
+    size_t offset = hpd->address - VARSET_ADDR;
+    mock.stuck_offset = offset + 1;
+    double one = 1;
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &hpd, &one, 1, NULL), ALLTRAX_ERR_FLASH);
+    char text[64];
+    snprintf(text, sizeof(text), "verification failed at offset 0x%04X", (unsigned)offset);
+    ASSERT_TRUE(strstr(mock.ctrl.error_detail, text) != NULL);
+    ASSERT_EQ(mock.erases, 1);
+    ASSERT_EQ(mock.goodset_clears, 0);
+    ASSERT_EQ(get_le16(mock.page), 0xFFFF);
+    ASSERT_EQ(mock.run_attempts, 1);
+    ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+
+    /* skip_verify omits the read-back, so the mismatch goes undetected. */
+    mock_reset();
+    mock.stuck_offset = offset + 1;
+    const alltrax_write_opts no_verify = { .skip_verify = true };
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &hpd, &one, 1, &no_verify), ALLTRAX_OK);
+    ASSERT_EQ(mock.goodset_clears, 1);
+    return 0;
+}
+
+static int test_invalid_goodset_blocks_writes_before_cal(void)
+{
+    mock_reset();
+    mock.page[0] = mock.page[1] = 0xFF;  /* Interrupted earlier write */
+    uint8_t original[VARSET_SIZE];
+    memcpy(original, mock.page, sizeof(original));
+    const alltrax_var_def* hpd = alltrax_find_var("HPD");
+    double one = 1;
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &hpd, &one, 1, NULL), ALLTRAX_ERR_FLASH);
+    ASSERT_TRUE(strstr(mock.ctrl.error_detail, "V_GoodSet=0xFFFF") != NULL);
+    ASSERT_EQ(mock.mode_writes, 0);
+    ASSERT_EQ(mock.erases, 0);
+    ASSERT_EQ(mock.settings_writes, 0);
+    ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+
+    const alltrax_write_opts skip = { .skip_goodset = true };
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &hpd, &one, 1, &skip), ALLTRAX_OK);
+    ASSERT_EQ(mock.erases, 1);
+    ASSERT_EQ(mock.goodset_clears, 1);
+    ASSERT_EQ(get_le16(mock.page), 0x0000);
+    ASSERT_EQ(mock.page[hpd->address - VARSET_ADDR], 1);
+    return 0;
+}
+
 int main(void)
 {
     printf("controller (simulated transport):\n");
@@ -1572,6 +1626,8 @@ int main(void)
     RUN_TEST(test_batch_rejects_bad_items_without_io);
     RUN_TEST(test_batch_flash_patch_limit);
     RUN_TEST(test_batch_keeps_voltage_link_checks);
+    RUN_TEST(test_flash_verification_mismatch_keeps_goodset_invalid);
+    RUN_TEST(test_invalid_goodset_blocks_writes_before_cal);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }

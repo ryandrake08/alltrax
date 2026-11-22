@@ -330,7 +330,14 @@ brew install hidapi openssl libxml2
 make            # builds CLI + library + tests (or library + tests if deps missing)
 make test       # runs tests
 make clean      # removes build/
+
+make DEBUG=1 test      # debug build with AddressSanitizer (build/debug/)
+make SANITIZE=1 test   # AddressSanitizer + UndefinedBehaviorSanitizer,
+                       # including float-cast-overflow (build/sanitize/)
+make CC=clang-22 VARIANT=clang test   # clang in its own build directory
 ```
+
+The automated tests never access USB hardware; they use simulated transports.
 
 ## USB permissions
 
