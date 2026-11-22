@@ -25,11 +25,16 @@ static void print_var(const alltrax_var_value* val)
 
 int cmd_get(int argc, char** argv)
 {
+    cli_flags flags;
+    int nargs = cli_parse_args(argc, argv, "get", 0, 0, -1, &flags);
+    if (nargs < 0)
+        return 1;
+
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, false);
     if (err) return 1;
 
-    if (argc <= 1) {
+    if (nargs == 0) {
         /* No args: print all settings groups */
         alltrax_var_group groups[] = {
             ALLTRAX_VARS_VOLTAGE,
@@ -63,7 +68,7 @@ int cmd_get(int argc, char** argv)
         }
     } else {
         /* Specific variables by name */
-        for (int i = 1; i < argc; i++) {
+        for (int i = 1; i <= nargs; i++) {
             const alltrax_var_def* var = alltrax_find_var(argv[i]);
             if (!var) {
                 fprintf(stderr, "Unknown variable: %s\n", argv[i]);

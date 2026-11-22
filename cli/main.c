@@ -7,7 +7,6 @@
 #include "cli.h"
 
 const char* cli_device_path = NULL;
-bool cli_no_fw_version = false;
 
 alltrax_error cli_open(alltrax_controller** ctrl, bool writes)
 {
@@ -31,32 +30,6 @@ void cli_error(alltrax_controller* ctrl, alltrax_error err, const char* action)
         if (detail[0])
             fprintf(stderr, "  %s\n", detail);
     }
-}
-
-int cli_parse_flags(int argc, char** argv, cli_flags* flags)
-{
-    memset(flags, 0, sizeof(*flags));
-    flags->no_fw_version = cli_no_fw_version;
-    int i;
-    for (i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--no-cal") == 0)
-            flags->no_cal = true;
-        else if (strcmp(argv[i], "--no-verify") == 0)
-            flags->no_verify = true;
-        else if (strcmp(argv[i], "--no-goodset") == 0)
-            flags->no_goodset = true;
-        else if (strcmp(argv[i], "--no-fw-version") == 0)
-            flags->no_fw_version = true;
-        else if (strcmp(argv[i], "--no-crypt") == 0)
-            flags->no_crypt = true;
-        else if (strcmp(argv[i], "--no-voltage-link") == 0)
-            flags->no_voltage_link = true;
-        else if (strcmp(argv[i], "--reset") == 0)
-            flags->reset = true;
-        else
-            break;  /* First non-flag arg */
-    }
-    return i;
 }
 
 static void print_usage(void)

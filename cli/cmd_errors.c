@@ -7,7 +7,9 @@
 
 int cmd_errors(int argc, char** argv)
 {
-    (void)argc; (void)argv;
+    cli_flags flags;
+    if (cli_parse_args(argc, argv, "errors", 0, 0, 0, &flags) < 0)
+        return 1;
 
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, false);

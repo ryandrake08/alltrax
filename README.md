@@ -74,6 +74,11 @@ Alltrax Controller Monitor
 | `alltrax curve diff <type>` | Compare user vs factory curve |
 | `alltrax curve reset <type>` | Restore factory curve |
 
+Command options may appear before or after arguments. Unknown options, options
+a command does not accept, missing option values, and extra arguments are
+errors, reported before the device is opened. `curve set` takes exactly one
+point source: x,y pairs, `--file`, or `--preset`.
+
 ### Firmware policy
 
 | Firmware (boot and program) | `info` | Other reads | Writes and `reset` |

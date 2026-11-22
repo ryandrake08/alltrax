@@ -162,9 +162,6 @@ static int parse_xy_args(int argc, char** argv, int start,
     int count = 0;
 
     for (int i = start; i < argc; i++) {
-        /* Skip flags */
-        if (strncmp(argv[i], "--", 2) == 0)
-            continue;
         if (count == ALLTRAX_CURVE_POINTS) {
             fprintf(stderr, "Error: too many curve points (maximum %d)\n", ALLTRAX_CURVE_POINTS);
             return -1;
@@ -211,7 +208,9 @@ static int parse_xy_args(int argc, char** argv, int start,
 
 static int do_get(int argc, char** argv)
 {
-    if (argc < 2) {
+    cli_flags flags;
+    if (cli_parse_args(argc, argv, "curve get", CLI_OPT_PLOT | CLI_OPT_FILE,
+                       1, 1, &flags) < 0) {
         fprintf(stderr,
             "Usage: alltrax curve get <type> [--plot] [--file f.csv]\n"
             "\n"
@@ -219,25 +218,9 @@ static int do_get(int argc, char** argv)
         return 1;
     }
 
-    /* Parse options */
-    const char* type = NULL;
-    const char* filepath = NULL;
-    bool plot = false;
-
-    for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], "--plot") == 0) {
-            plot = true;
-        } else if (strcmp(argv[i], "--file") == 0 && i + 1 < argc) {
-            filepath = argv[++i];
-        } else if (argv[i][0] != '-') {
-            if (!type) type = argv[i];
-        }
-    }
-
-    if (!type) {
-        fprintf(stderr, "Error: curve type required\n");
-        return 1;
-    }
+    const char* type = argv[1];
+    const char* filepath = flags.file;
+    bool plot = flags.plot;
 
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, false);
@@ -304,14 +287,18 @@ static int do_get(int argc, char** argv)
 }
 
 /* ------------------------------------------------------------------ */
-/* curve set <type> [--file f.csv] [x,y ...] [--no-cal] [--reset]      */
+/* curve set <type> (--file f.csv | --preset name | x,y ...) [flags]  */
 /* ------------------------------------------------------------------ */
 
 static int do_set(int argc, char** argv)
 {
-    if (argc < 2) {
+    cli_flags flags;
+    int nargs = cli_parse_args(argc, argv, "curve set",
+        CLI_OPT_NO_CAL | CLI_OPT_NO_VERIFY | CLI_OPT_NO_FW_VERSION |
+        CLI_OPT_RESET | CLI_OPT_FILE | CLI_OPT_PRESET, 1, -1, &flags);
+    if (nargs < 0) {
         fprintf(stderr,
-            "Usage: alltrax curve set <type> [--file f.csv] [--preset name] [x,y ...]\n"
+            "Usage: alltrax curve set <type> (--file f.csv | --preset name | x,y ...) [flags]\n"
             "\n"
             "Types: linearization, speed, torque, field, genfield\n"
             "\n"
@@ -325,30 +312,13 @@ static int do_set(int argc, char** argv)
         return 1;
     }
 
-    cli_flags flags;
-    int first_arg = cli_parse_flags(argc, argv, &flags);
-
-    /* Find type, --file, and --preset */
-    const char* type = NULL;
-    const char* filepath = NULL;
-    const char* preset_name = NULL;
-    int xy_start = -1;
-
-    for (int i = first_arg; i < argc; i++) {
-        if (strcmp(argv[i], "--file") == 0 && i + 1 < argc) {
-            filepath = argv[++i];
-        } else if (strcmp(argv[i], "--preset") == 0 && i + 1 < argc) {
-            preset_name = argv[++i];
-        } else if (argv[i][0] != '-') {
-            if (!type) {
-                type = argv[i];
-                xy_start = i + 1;
-            }
-        }
-    }
-
-    if (!type) {
-        fprintf(stderr, "Error: curve type required\n");
+    const char* type = argv[1];
+    const char* filepath = flags.file;
+    const char* preset_name = flags.preset;
+    int npairs = nargs - 1;
+    if ((filepath != NULL) + (preset_name != NULL) + (npairs > 0) != 1) {
+        fprintf(stderr,
+            "Error: curve set: provide exactly one of x,y pairs, --file, or --preset\n");
         return 1;
     }
 
@@ -382,16 +352,7 @@ static int do_set(int argc, char** argv)
     } else if (filepath) {
         if (parse_csv_file(filepath, &curve))
             return 1;
-    } else if (xy_start >= 0 && xy_start < argc) {
-        int npoints = parse_xy_args(argc, argv, xy_start, &curve);
-        if (npoints < 0)
-            return 1;
-        if (npoints == 0) {
-            fprintf(stderr, "Error: no x,y points provided\n");
-            return 1;
-        }
-    } else {
-        fprintf(stderr, "Error: provide x,y pairs, --file, or --preset\n");
+    } else if (parse_xy_args(1 + nargs, argv, 2, &curve) < 0) {
         return 1;
     }
 
@@ -441,7 +402,8 @@ static int do_set(int argc, char** argv)
 
 static int do_diff(int argc, char** argv)
 {
-    if (argc < 2) {
+    cli_flags flags;
+    if (cli_parse_args(argc, argv, "curve diff", 0, 1, 1, &flags) < 0) {
         fprintf(stderr,
             "Usage: alltrax curve diff <type>\n"
             "\n"
@@ -521,7 +483,10 @@ static int do_diff(int argc, char** argv)
 
 static int do_curve_reset(int argc, char** argv)
 {
-    if (argc < 2) {
+    cli_flags flags;
+    if (cli_parse_args(argc, argv, "curve reset",
+                       CLI_OPT_NO_CAL | CLI_OPT_NO_VERIFY |
+                       CLI_OPT_NO_FW_VERSION | CLI_OPT_RESET, 1, 1, &flags) < 0) {
         fprintf(stderr,
             "Usage: alltrax curve reset <type> [flags]\n"
             "\n"
@@ -535,23 +500,7 @@ static int do_curve_reset(int argc, char** argv)
         return 1;
     }
 
-    cli_flags flags;
-    cli_parse_flags(argc, argv, &flags);
-
-    /* Find the type arg (first non-flag) */
-    const char* type = NULL;
-    for (int i = 1; i < argc; i++) {
-        if (argv[i][0] != '-') {
-            type = argv[i];
-            break;
-        }
-    }
-
-    if (!type) {
-        fprintf(stderr, "Error: curve type required\n");
-        return 1;
-    }
-
+    const char* type = argv[1];
     bool all = strcmp(type, "all") == 0;
 
     alltrax_controller* ctrl = NULL;
@@ -676,8 +625,12 @@ int cmd_curve(int argc, char** argv)
 
     const char* subcmd = argv[1];
 
-    if (strcmp(subcmd, "list") == 0)
+    if (strcmp(subcmd, "list") == 0) {
+        cli_flags flags;
+        if (cli_parse_args(argc - 1, argv + 1, "curve list", 0, 0, 0, &flags) < 0)
+            return 1;
         return do_list();
+    }
     if (strcmp(subcmd, "get") == 0)
         return do_get(argc - 1, argv + 1);
     if (strcmp(subcmd, "set") == 0)

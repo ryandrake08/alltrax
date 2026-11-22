@@ -8,7 +8,9 @@
 int cmd_reset(int argc, char** argv)
 {
     cli_flags flags;
-    cli_parse_flags(argc, argv, &flags);
+    if (cli_parse_args(argc, argv, "reset", CLI_OPT_NO_FW_VERSION, 0, 0,
+                       &flags) < 0)
+        return 1;
     alltrax_write_opts opts = { .skip_fw_check = flags.no_fw_version };
 
     alltrax_controller* ctrl = NULL;

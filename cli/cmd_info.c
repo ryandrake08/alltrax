@@ -9,7 +9,9 @@ static const char* yn(bool v) { return v ? "Yes" : "No"; }
 
 int cmd_info(int argc, char** argv)
 {
-    (void)argc; (void)argv;
+    cli_flags flags;
+    if (cli_parse_args(argc, argv, "info", 0, 0, 0, &flags) < 0)
+        return 1;
 
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, false);

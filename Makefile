@@ -52,7 +52,7 @@ BUILD := build/$(VARIANT)
 # --- Sources ---
 
 LIB_SRC  := src/protocol.c src/transport.c src/controller.c src/variables.c
-CLI_SRC  := cli/main.c cli/cmd_info.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_monitor.c cli/cmd_errors.c cli/cmd_config.c cli/cmd_curve.c
+CLI_SRC  := cli/main.c cli/args.c cli/cmd_info.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_monitor.c cli/cmd_errors.c cli/cmd_config.c cli/cmd_curve.c
 TEST_SRC := test/test_main.c test/test_protocol.c test/test_variables.c test/test_curves.c
 
 LIB_OBJ  := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(LIB_SRC)))
@@ -74,7 +74,7 @@ ifeq ($(BUILD_CLI),yes)
   ALL_SRC := $(LIB_SRC) $(CLI_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c
   all: $(CLI) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
 else
-  ALL_SRC := $(LIB_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c cli/cmd_write.c cli/cmd_curve.c
+  ALL_SRC := $(LIB_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c cli/args.c cli/cmd_write.c cli/cmd_curve.c cli/cmd_reset.c
   all: $(LIB) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
 endif
 
@@ -91,14 +91,15 @@ $(TEST_BIN): $(TEST_OBJ) $(LIB)
 $(CONTROLLER_TEST_BIN): $(BUILD)/test_controller.o $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
 	$(CC) $(LDFLAGS) -o $@ $^ -lm
 
-# CLI preflight tests use real controller validation with a fake transport/open.
+# CLI preflight tests use real argument parsing and controller validation with
+# a fake transport/open.
 # Include config input coverage when its optional dependencies are available.
 ifeq ($(BUILD_CLI),yes)
   CLI_TEST_CONFIG_OBJ := $(BUILD)/cmd_config.o
   CLI_TEST_CONFIG_LIBS := $(CRYPTO_LIBS) $(XML_LIBS)
   $(BUILD)/test_cli_write.o: CPPFLAGS += -DTEST_CONFIG=1
 endif
-$(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(CLI_TEST_CONFIG_OBJ) $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
+$(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(BUILD)/args.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(BUILD)/cmd_reset.o $(CLI_TEST_CONFIG_OBJ) $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
 	$(CC) $(LDFLAGS) -o $@ $^ $(CLI_TEST_CONFIG_LIBS) -lm
 
 # Transport tests supply hidapi symbols; never link the real USB library.

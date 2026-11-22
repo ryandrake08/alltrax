@@ -16,18 +16,6 @@ static unsigned error_calls, close_calls, transport_calls;
 static alltrax_error reported_error;
 static char reported_detail[256];
 
-/* Only config's leading --no-crypt flag is needed here; general flag parsing
- * is out of scope. */
-int cli_parse_flags(int argc, char** argv, cli_flags* flags)
-{
-    memset(flags, 0, sizeof(*flags));
-    if (argc > 1 && strcmp(argv[1], "--no-crypt") == 0) {
-        flags->no_crypt = true;
-        return 2;
-    }
-    return 1;
-}
-
 alltrax_error cli_open(alltrax_controller** ctrl, bool writes)
 {
     (void)writes;
@@ -361,6 +349,153 @@ static int test_invalid_throttle_config_rejected_before_transport(void)
 }
 #endif
 
+static int test_options_accepted_before_and_after_positionals(void)
+{
+    const unsigned allowed = CLI_OPT_NO_CAL | CLI_OPT_NO_FW_VERSION |
+                             CLI_OPT_RESET | CLI_OPT_FILE;
+    char* argv[] = {
+        "set", "--reset", "linearization", "--no-cal", "-1,0",
+        "--file", "lin.csv", "-", "--no-fw-version",
+    };
+    cli_flags flags;
+    ASSERT_EQ(cli_parse_args(9, argv, "curve set", allowed, 1, -1, &flags), 3);
+    ASSERT_STR_EQ(argv[1], "linearization");
+    ASSERT_STR_EQ(argv[2], "-1,0");
+    ASSERT_STR_EQ(argv[3], "-");
+    ASSERT_TRUE(flags.reset);
+    ASSERT_TRUE(flags.no_cal);
+    ASSERT_TRUE(flags.no_fw_version);
+    ASSERT_FALSE(flags.no_verify);
+    ASSERT_STR_EQ(flags.file, "lin.csv");
+    ASSERT_NULL(flags.preset);
+    return 0;
+}
+
+static int test_invalid_options_and_argument_counts_rejected(void)
+{
+    const unsigned allowed = CLI_OPT_RESET | CLI_OPT_FILE;
+    struct { int argc; char* argv[5]; int min, max; } bad[] = {
+        { 2, { "cmd", "--bogus" }, 0, -1 },            /* unknown */
+        { 2, { "cmd", "--no-goodset" }, 0, -1 },       /* not accepted */
+        { 2, { "cmd", "--file" }, 0, -1 },             /* missing value */
+        { 3, { "cmd", "--file", "--reset" }, 0, -1 },  /* option as value */
+        { 5, { "cmd", "--file", "a", "--file", "b" }, 0, -1 }, /* repeated */
+        { 3, { "cmd", "one", "two" }, 1, 1 },          /* extra */
+        { 2, { "cmd", "--reset" }, 1, 1 },             /* missing */
+        { 2, { "cmd", "--" }, 0, -1 },                 /* bare -- */
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        cli_flags flags;
+        ASSERT_EQ(cli_parse_args(bad[i].argc, bad[i].argv, "cmd", allowed,
+                                 bad[i].min, bad[i].max, &flags), -1);
+    }
+    char* none[] = { "cmd" };
+    cli_flags flags;
+    ASSERT_EQ(cli_parse_args(1, none, "cmd", 0, 0, 0, &flags), 0);
+    return 0;
+}
+
+static int test_global_fw_override_sets_command_flag(void)
+{
+    char* argv[] = { "reset" };
+    cli_flags flags;
+    cli_no_fw_version = true;
+    int rc = cli_parse_args(1, argv, "reset", 0, 0, 0, &flags);
+    cli_no_fw_version = false;
+    ASSERT_EQ(rc, 0);
+    ASSERT_TRUE(flags.no_fw_version);
+    ASSERT_EQ(cli_parse_args(1, argv, "reset", 0, 0, 0, &flags), 0);
+    ASSERT_FALSE(flags.no_fw_version);
+    return 0;
+}
+
+static int test_bad_command_options_rejected_before_open(void)
+{
+    struct { int argc; char* argv[7]; } bad[] = {
+        { 6, { "curve", "set", "linearization", "--preset", "linear", "--bogus" } },
+        { 6, { "curve", "set", "linearization", "--no-goodset", "--preset", "linear" } },
+        { 6, { "curve", "set", "linearization", "--preset", "linear", "0,0" } },
+        { 7, { "curve", "set", "linearization", "--file", "x.csv", "--preset", "linear" } },
+        { 3, { "curve", "set", "linearization" } },
+        { 4, { "curve", "set", "linearization", "--preset" } },
+        { 4, { "curve", "reset", "linearization", "extra" } },
+        { 4, { "curve", "reset", "linearization", "--bogus" } },
+        { 4, { "curve", "reset", "linearization", "--plot" } },
+        { 4, { "curve", "get", "linearization", "extra" } },
+        { 4, { "curve", "diff", "linearization", "--reset" } },
+        { 3, { "curve", "list", "extra" } },
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        open_calls = transport_calls = 0;
+        ASSERT_EQ(cmd_curve(bad[i].argc, bad[i].argv), 1);
+        ASSERT_EQ(open_calls, 0);
+        ASSERT_EQ(transport_calls, 0);
+    }
+    char* reset_extra[] = { "reset", "extra" };
+    char* reset_bogus[] = { "reset", "--reset" };
+    char assign[] = "HPD=1";
+    char* write_bogus[] = { "write", assign, "--plot" };
+    open_calls = 0;
+    ASSERT_EQ(cmd_reset(2, reset_extra), 1);
+    ASSERT_EQ(cmd_reset(2, reset_bogus), 1);
+    ASSERT_EQ(cmd_write(3, write_bogus), 1);
+    ASSERT_EQ(open_calls, 0);
+#ifdef TEST_CONFIG
+    char* save_extra[] = { "config", "save", "out.xml", "extra" };
+    char* load_bogus[] = { "config", "load", "in.xml", "--no-voltage-link" };
+    ASSERT_EQ(cmd_config(4, save_extra), 1);
+    ASSERT_EQ(cmd_config(4, load_bogus), 1);
+    ASSERT_EQ(open_calls, 0);
+#endif
+    return 0;
+}
+
+/* Firmware V5.004 is readable but not write-validated, so the write gate
+ * returns ALLTRAX_ERR_FIRMWARE unless --no-fw-version reached the write
+ * options; with it, the first device transfer fails with ALLTRAX_ERR_USB. */
+static alltrax_error run_on_unvalidated_firmware(int (*cmd)(int, char**),
+    int argc, char** argv)
+{
+    fake_ctrl = (alltrax_controller) {
+        .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
+        .controller_type = ALLTRAX_CONTROLLER_XCT, .allow_writes = true,
+        .boot_rev = 5002, .program_rev = 5004,
+    };
+    open_calls = error_calls = close_calls = transport_calls = 0;
+    reported_error = ALLTRAX_OK;
+    open_succeeds = true;
+    int rc = cmd(argc, argv);
+    open_succeeds = false;
+    return rc == 1 && error_calls == 1 ? reported_error : ALLTRAX_OK;
+}
+
+static int test_fw_flag_reaches_write_options_in_any_position(void)
+{
+    for (int after = 0; after <= 1; after++) {
+        char* set[] = {
+            "curve", "set", after ? "linearization" : "--no-fw-version",
+            "--preset", "linear", after ? "--no-fw-version" : "linearization",
+        };
+        ASSERT_EQ(run_on_unvalidated_firmware(cmd_curve, 6, set), ALLTRAX_ERR_USB);
+        char* set_default[] = { "curve", "set", "linearization", "--preset", "linear" };
+        ASSERT_EQ(run_on_unvalidated_firmware(cmd_curve, 5, set_default),
+                  ALLTRAX_ERR_FIRMWARE);
+        ASSERT_EQ(transport_calls, 0);
+
+        char assign[] = "HPD=1";
+        char* write[] = { "write", after ? assign : "--no-fw-version",
+                          after ? "--no-fw-version" : assign };
+        ASSERT_EQ(run_on_unvalidated_firmware(cmd_write, 3, write), ALLTRAX_ERR_USB);
+    }
+    char* reset[] = { "reset", "--no-fw-version" };
+    ASSERT_EQ(run_on_unvalidated_firmware(cmd_reset, 2, reset), ALLTRAX_ERR_USB);
+    char* reset_default[] = { "reset" };
+    ASSERT_EQ(run_on_unvalidated_firmware(cmd_reset, 1, reset_default),
+              ALLTRAX_ERR_FIRMWARE);
+    ASSERT_EQ(transport_calls, 0);
+    return 0;
+}
+
 int main(void)
 {
     printf("CLI mutation preflight (no USB):\n");
@@ -373,6 +508,11 @@ int main(void)
     RUN_TEST(test_invalid_curve_arguments_rejected_before_open);
     RUN_TEST(test_curve_csv_validation);
     RUN_TEST(test_curve_presets_reach_open);
+    RUN_TEST(test_options_accepted_before_and_after_positionals);
+    RUN_TEST(test_invalid_options_and_argument_counts_rejected);
+    RUN_TEST(test_global_fw_override_sets_command_flag);
+    RUN_TEST(test_bad_command_options_rejected_before_open);
+    RUN_TEST(test_fw_flag_reaches_write_options_in_any_position);
 #ifdef TEST_CONFIG
     RUN_TEST(test_config_curves_rejected_before_any_settings_write);
     RUN_TEST(test_valid_curve_config_reaches_open);

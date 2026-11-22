@@ -21,9 +21,12 @@ typedef struct {
 int cmd_write(int argc, char** argv)
 {
     cli_flags flags;
-    int first_arg = cli_parse_flags(argc, argv, &flags);
+    int n_assignments = cli_parse_args(argc, argv, "write",
+        CLI_OPT_NO_CAL | CLI_OPT_NO_VERIFY | CLI_OPT_NO_GOODSET |
+        CLI_OPT_NO_FW_VERSION | CLI_OPT_NO_VOLTAGE_LINK | CLI_OPT_RESET,
+        1, -1, &flags);
 
-    if (first_arg >= argc) {
+    if (n_assignments < 0) {
         fprintf(stderr,
             "Usage: alltrax write [flags] var=value ...\n"
             "\n"
@@ -39,7 +42,6 @@ int cmd_write(int argc, char** argv)
         return 1;
     }
 
-    int n_assignments = argc - first_arg;
     assignment* assigns = calloc((size_t)n_assignments, sizeof(assignment));
     if (!assigns) {
         fprintf(stderr, "Error: out of memory\n");
@@ -48,7 +50,7 @@ int cmd_write(int argc, char** argv)
 
     /* Parse all var=value pairs */
     for (int i = 0; i < n_assignments; i++) {
-        char* arg = argv[first_arg + i];
+        char* arg = argv[1 + i];
         char* eq = strchr(arg, '=');
         if (!eq || eq == arg) {
             fprintf(stderr, "Error: expected var=value, got: %s\n", arg);

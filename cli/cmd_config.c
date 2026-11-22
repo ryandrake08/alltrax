@@ -466,9 +466,8 @@ invalid_curve:
 static int do_save(int argc, char** argv)
 {
     cli_flags flags;
-    int first_arg = cli_parse_flags(argc, argv, &flags);
-
-    if (first_arg >= argc) {
+    if (cli_parse_args(argc, argv, "config save", CLI_OPT_NO_CRYPT, 1, 1,
+                       &flags) < 0) {
         fprintf(stderr,
             "Usage: alltrax config save [flags] <file>\n"
             "\n"
@@ -476,7 +475,7 @@ static int do_save(int argc, char** argv)
             "  --no-crypt       Write plain XML (not Toolkit-compatible)\n");
         return 1;
     }
-    const char* filepath = argv[first_arg];
+    const char* filepath = argv[1];
 
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, false);
@@ -538,9 +537,10 @@ static int do_save(int argc, char** argv)
 static int do_load(int argc, char** argv)
 {
     cli_flags flags;
-    int first_arg = cli_parse_flags(argc, argv, &flags);
-
-    if (first_arg >= argc) {
+    if (cli_parse_args(argc, argv, "config load",
+                       CLI_OPT_NO_CRYPT | CLI_OPT_NO_CAL | CLI_OPT_NO_VERIFY |
+                       CLI_OPT_NO_GOODSET | CLI_OPT_NO_FW_VERSION |
+                       CLI_OPT_RESET, 1, 1, &flags) < 0) {
         fprintf(stderr,
             "Usage: alltrax config load [flags] <file>\n"
             "\n"
@@ -553,7 +553,7 @@ static int do_load(int argc, char** argv)
             "  --reset          Reboot controller after write\n");
         return 1;
     }
-    const char* filepath = argv[first_arg];
+    const char* filepath = argv[1];
 
     /* Read file */
     FILE* f = fopen(filepath, "rb");
