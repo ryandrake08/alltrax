@@ -270,8 +270,12 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
 /* Write operations                                                    */
 /* ------------------------------------------------------------------ */
 
+/* Variable and curve writes attempt RUN restoration whenever CAL may have
+ * been sent, including failed entry acknowledgements. If both the operation
+ * and restoration fail, the original error is returned and error detail
+ * contains both failures; a restoration-only failure returns its error. */
 typedef struct {
-    bool skip_cal;           /* Skip CAL/RUN bracket */
+    bool skip_cal;           /* Skip CAL/RUN bracket and its restoration */
     bool skip_verify;        /* Skip read-back verification (FLASH only) */
     bool skip_goodset;       /* Skip GoodSet pre-check (FLASH only) */
     bool skip_fw_check;      /* Skip firmware version check */

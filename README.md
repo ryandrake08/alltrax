@@ -571,6 +571,14 @@ variables can be mixed freely — the library separates them internally and uses
 a single CAL/RUN bracket wrapping all writes. Values are automatically
 converted from display units to raw device format.
 
+Variable and curve writes attempt RUN restoration whenever CAL may have been
+sent, including when the CAL transfer or acknowledgement fails. Failures before
+CAL is attempted, a definite read-only rejection, and `skip_cal` do not trigger
+RUN cleanup. If the operation and restoration both fail, the original error
+code is returned and `alltrax_last_error_detail()` includes both failures
+(abbreviated to fit its buffer). If only restoration fails, its error is
+returned explicitly as a RUN restoration failure.
+
 The library enforces each definition's `writable` permission. A read-only
 variable anywhere in a batch returns `ALLTRAX_ERR_INVALID_ARG` before device
 I/O, rejecting the entire batch. Write options cannot bypass this check.

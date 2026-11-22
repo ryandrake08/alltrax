@@ -10,6 +10,11 @@
 int test_pass_count;
 int test_fail_count;
 
+typedef enum {
+    MODE_REPLY_OK, MODE_REPLY_TIMEOUT, MODE_REPLY_USB, MODE_REPLY_BAD_HEADER,
+    MODE_REPLY_BAD_LENGTH, MODE_REPLY_BAD_ECHO, MODE_REPLY_DEVICE_FAIL,
+} mode_reply_fault;
+
 static struct {
     alltrax_controller ctrl;
     uint8_t page[VARSET_SIZE];
@@ -21,6 +26,10 @@ static struct {
     unsigned requests;
     uint32_t throttles_allowed;
     unsigned throttle_mask_reads, mode_writes;
+    unsigned cal_attempts, run_attempts, fan_writes;
+    bool cal_transfer_error, run_transfer_error, fan_transfer_error;
+    bool cal_write_blocked;
+    mode_reply_fault cal_reply, run_reply;
     bool fault_enabled;
     uint32_t fault_addr;
     uint8_t fault_request_len, fault_reply_len;
@@ -100,8 +109,35 @@ alltrax_error transport_write(alltrax_controller* ctrl,
     }
     if (data[0] == 0x02) {
         if (addr == ADDR_RUN_MODE && data[1] == 1) {
+            if (data[8] == RUN_MODE_CAL && mock.cal_write_blocked) {
+                set_error_detail(ctrl, "CAL write blocked before send");
+                return ALLTRAX_ERR_BLOCKED;
+            }
             mock.mode_writes++;
+            if (data[8] == RUN_MODE_CAL) {
+                mock.cal_attempts++;
+                /* CAL may have taken effect even when send reports failure. */
+                mock.mode = data[8];
+                if (mock.cal_transfer_error) {
+                    set_error_detail(ctrl, "CAL transfer failure");
+                    return ALLTRAX_ERR_USB;
+                }
+            } else if (data[8] == RUN_MODE_RUN) {
+                mock.run_attempts++;
+                if (mock.run_transfer_error) {
+                    set_error_detail(ctrl, "RUN transfer failure");
+                    return ALLTRAX_ERR_USB;
+                }
+            }
             mock.mode = data[8];
+            return ALLTRAX_OK;
+        }
+        if (addr == 0x2000F204 && data[1] == 1) {
+            if (mock.fan_transfer_error) {
+                set_error_detail(ctrl, "Fan_On transfer failure");
+                return ALLTRAX_ERR_USB;
+            }
+            mock.fan_writes++;
             return ALLTRAX_OK;
         }
         if (addr >= RAM_END - 4 && addr < RAM_END && data[1] <= RAM_END - addr) {
@@ -141,6 +177,23 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
     buf[4] = 0x01;
     if (mock.request[0] == 0x02) {
         memcpy(buf + 8, mock.request + 8, buf[1]);
+        if (request_address() == ADDR_RUN_MODE) {
+            bool cal = mock.request[8] == RUN_MODE_CAL;
+            mode_reply_fault fault = cal ? mock.cal_reply : mock.run_reply;
+            switch (fault) {
+            case MODE_REPLY_OK: break;
+            case MODE_REPLY_TIMEOUT:
+                set_error_detail(ctrl, "%s acknowledgement timeout", cal ? "CAL" : "RUN");
+                return ALLTRAX_ERR_TIMEOUT;
+            case MODE_REPLY_USB:
+                set_error_detail(ctrl, "%s acknowledgement USB failure", cal ? "CAL" : "RUN");
+                return ALLTRAX_ERR_USB;
+            case MODE_REPLY_BAD_HEADER: buf[0] = 0x05; break;
+            case MODE_REPLY_BAD_LENGTH: buf[1] = 0; break;
+            case MODE_REPLY_BAD_ECHO: buf[8] ^= 1; break;
+            case MODE_REPLY_DEVICE_FAIL: buf[6] = 1; break;
+            }
+        }
         return ALLTRAX_OK;
     }
 
@@ -813,6 +866,148 @@ static int test_all_canonical_variable_groups_remain_readable(void)
     return 0;
 }
 
+/* Exercise both variable paths and the separate curve entry point. */
+static alltrax_error mode_test_write(int operation, const alltrax_write_opts* opts)
+{
+    if (operation < 2) {
+        const alltrax_var_def* var = alltrax_find_var(operation == 0 ? "Fan_On" : "HPD");
+        double value = 1;
+        return alltrax_write_vars(&mock.ctrl, &var, &value, 1, opts);
+    }
+    const alltrax_curve_def* def = alltrax_find_curve("linearization");
+    const alltrax_curve_data data = { .def = def };
+    return alltrax_write_curve(&mock.ctrl, def, &data, opts);
+}
+
+static int test_failed_cal_entry_attempts_run_and_skips_requested_writes(void)
+{
+    const alltrax_error expected[] = {
+        ALLTRAX_OK, ALLTRAX_ERR_TIMEOUT, ALLTRAX_ERR_USB, ALLTRAX_ERR_PROTOCOL,
+        ALLTRAX_ERR_VERIFY, ALLTRAX_ERR_VERIFY, ALLTRAX_ERR_DEVICE_FAIL,
+    };
+    for (int op = 0; op < 3; op++) {
+        for (int fault = 1; fault <= 7; fault++) {
+            mock_reset();
+            uint8_t original[VARSET_SIZE];
+            memcpy(original, mock.page, sizeof(original));
+            if (fault == 7) mock.cal_transfer_error = true;
+            else mock.cal_reply = (mode_reply_fault)fault;
+            ASSERT_EQ(mode_test_write(op, NULL), fault == 7 ? ALLTRAX_ERR_USB : expected[fault]);
+            ASSERT_EQ(mock.cal_attempts, 1);
+            ASSERT_EQ(mock.run_attempts, 1);
+            ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+            ASSERT_EQ(mock.fan_writes, 0);
+            ASSERT_EQ(mock.settings_writes, 0);
+            ASSERT_EQ(mock.erases, 0);
+            ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+            if (fault == MODE_REPLY_TIMEOUT)
+                ASSERT_STR_EQ(mock.ctrl.error_detail, "CAL acknowledgement timeout");
+            if (fault == 7) ASSERT_STR_EQ(mock.ctrl.error_detail, "CAL transfer failure");
+        }
+    }
+    return 0;
+}
+
+static int test_failures_before_cal_attempt_do_not_write_run(void)
+{
+    for (int op = 0; op < 3; op++) {
+        for (int failure = 0; failure < 3; failure++) {
+            mock_reset();
+            if (failure == 0) mock_fault(ADDR_RUN_MODE, 1, 0, 1);
+            else if (failure == 1) mock.mode = RUN_MODE_CAL;
+            else mock.cal_write_blocked = true;
+            ASSERT_EQ(mode_test_write(op, NULL),
+                      failure == 0 ? ALLTRAX_ERR_PROTOCOL :
+                      failure == 1 ? ALLTRAX_ERR_NOT_RUN : ALLTRAX_ERR_BLOCKED);
+            ASSERT_EQ(mock.cal_attempts, 0);
+            ASSERT_EQ(mock.run_attempts, 0);
+            ASSERT_EQ(mock.mode_writes, 0);
+            ASSERT_EQ(mock.mode, failure == 1 ? RUN_MODE_CAL : RUN_MODE_RUN);
+        }
+    }
+    return 0;
+}
+
+static int test_cal_and_run_failures_preserve_both_diagnostics(void)
+{
+    for (int op = 0; op < 3; op++) {
+        mock_reset();
+        mock.cal_reply = MODE_REPLY_TIMEOUT;
+        mock.run_transfer_error = true;
+        ASSERT_EQ(mode_test_write(op, NULL), ALLTRAX_ERR_TIMEOUT);
+        ASSERT_EQ(mock.run_attempts, 1);
+        ASSERT_EQ(mock.mode, RUN_MODE_CAL);
+        ASSERT_TRUE(strstr(mock.ctrl.error_detail, "CAL acknowledgement timeout") != NULL);
+        ASSERT_TRUE(strstr(mock.ctrl.error_detail, "RUN restoration failed (-1)") != NULL);
+        ASSERT_TRUE(strstr(mock.ctrl.error_detail, "RUN transfer failure") != NULL);
+        mock_reset();
+        mock.cal_transfer_error = true;
+        mock.run_reply = MODE_REPLY_TIMEOUT;
+        ASSERT_EQ(mode_test_write(op, NULL), ALLTRAX_ERR_USB);
+        ASSERT_TRUE(strstr(mock.ctrl.error_detail, "CAL transfer failure") != NULL);
+        ASSERT_TRUE(strstr(mock.ctrl.error_detail, "RUN restoration failed (-2)") != NULL);
+        ASSERT_TRUE(strstr(mock.ctrl.error_detail, "RUN acknowledgement timeout") != NULL);
+    }
+    return 0;
+}
+
+static int test_body_and_run_failures_preserve_original_error(void)
+{
+    for (int op = 0; op < 3; op++) {
+        for (int cleanup_failure = 0; cleanup_failure < 2; cleanup_failure++) {
+            mock_reset();
+            if (op == 0) mock.fan_transfer_error = true;
+            else mock_fault(VARSET_ADDR, MAX_PAYLOAD, 0, 1);
+            if (cleanup_failure) mock.run_reply = MODE_REPLY_TIMEOUT;
+            ASSERT_EQ(mode_test_write(op, NULL), op == 0 ? ALLTRAX_ERR_USB : ALLTRAX_ERR_PROTOCOL);
+            ASSERT_EQ(mock.cal_attempts, 1);
+            ASSERT_EQ(mock.run_attempts, 1);
+            ASSERT_TRUE(strstr(mock.ctrl.error_detail,
+                               op == 0 ? "Fan_On transfer failure" : "Read length mismatch") != NULL);
+            if (cleanup_failure) {
+                ASSERT_TRUE(strstr(mock.ctrl.error_detail, "RUN restoration failed (-2)") != NULL);
+                ASSERT_TRUE(strstr(mock.ctrl.error_detail, "RUN acknowledgement timeout") != NULL);
+            }
+            ASSERT_EQ(mock.erases, 0);
+        }
+    }
+    return 0;
+}
+
+static int test_run_failure_after_success_is_reported_explicitly(void)
+{
+    for (int op = 0; op < 3; op++) {
+        for (int transfer_failure = 0; transfer_failure < 2; transfer_failure++) {
+            mock_reset();
+            if (transfer_failure) mock.run_transfer_error = true;
+            else mock.run_reply = MODE_REPLY_TIMEOUT;
+            ASSERT_EQ(mode_test_write(op, NULL), transfer_failure ? ALLTRAX_ERR_USB : ALLTRAX_ERR_TIMEOUT);
+            ASSERT_EQ(mock.run_attempts, 1);
+            ASSERT_TRUE(strstr(mock.ctrl.error_detail, "RUN restoration failed") != NULL);
+            ASSERT_EQ(mock.mode, transfer_failure ? RUN_MODE_CAL : RUN_MODE_RUN);
+            ASSERT_EQ(mock.fan_writes, op == 0 ? 1 : 0);
+            ASSERT_EQ(mock.erases, op == 0 ? 0 : 1);
+        }
+    }
+    return 0;
+}
+
+static int test_skip_cal_does_not_introduce_mode_cleanup(void)
+{
+    const alltrax_write_opts opts = { .skip_cal = true };
+    for (int op = 0; op < 3; op++) {
+        mock_reset();
+        ASSERT_EQ(mode_test_write(op, &opts), ALLTRAX_OK);
+        ASSERT_EQ(mock.mode_writes, 0);
+        mock_reset();
+        if (op == 0) mock.fan_transfer_error = true;
+        else mock_fault(VARSET_ADDR, MAX_PAYLOAD, 0, 1);
+        ASSERT_EQ(mode_test_write(op, &opts), op == 0 ? ALLTRAX_ERR_USB : ALLTRAX_ERR_PROTOCOL);
+        ASSERT_EQ(mock.mode_writes, 0);
+    }
+    return 0;
+}
+
 static int test_info_exact_read_lengths(void)
 {
     mock_reset();
@@ -975,6 +1170,12 @@ int main(void)
     RUN_TEST(test_curve_read_spans_and_shapes_reject_before_io);
     RUN_TEST(test_curve_patches_ending_at_page_limit_preserve_neighbors);
     RUN_TEST(test_all_canonical_variable_groups_remain_readable);
+    RUN_TEST(test_failed_cal_entry_attempts_run_and_skips_requested_writes);
+    RUN_TEST(test_failures_before_cal_attempt_do_not_write_run);
+    RUN_TEST(test_cal_and_run_failures_preserve_both_diagnostics);
+    RUN_TEST(test_body_and_run_failures_preserve_original_error);
+    RUN_TEST(test_run_failure_after_success_is_reported_explicitly);
+    RUN_TEST(test_skip_cal_does_not_introduce_mode_cleanup);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }

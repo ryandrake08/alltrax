@@ -692,7 +692,7 @@ static alltrax_error flash_prechecks(alltrax_controller* ctrl,
     return ALLTRAX_OK;
 }
 
-static alltrax_error enter_cal(alltrax_controller* ctrl, bool* in_cal)
+static alltrax_error enter_cal(alltrax_controller* ctrl, bool* cal_attempted)
 {
     uint8_t mode_buf[1];
     alltrax_error rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf);
@@ -705,16 +705,45 @@ static alltrax_error enter_cal(alltrax_controller* ctrl, bool* in_cal)
     }
 
     uint8_t cal = RUN_MODE_CAL;
+    /* A failed transfer or echo cannot prove that CAL was not applied. */
+    *cal_attempted = true;
     rc = write_memory(ctrl, ADDR_RUN_MODE, &cal, 1);
-    if (rc) return rc;
-    *in_cal = true;
-    return ALLTRAX_OK;
+    /* A read-only rejection proves that the command was not sent. */
+    if (rc == ALLTRAX_ERR_BLOCKED) *cal_attempted = false;
+    return rc;
 }
 
 static alltrax_error exit_cal(alltrax_controller* ctrl)
 {
     uint8_t run = RUN_MODE_RUN;
     return write_memory(ctrl, ADDR_RUN_MODE, &run, 1);
+}
+
+static alltrax_error finish_cal_write(alltrax_controller* ctrl,
+    bool cal_attempted, alltrax_error rc)
+{
+    if (!cal_attempted)
+        return rc;
+
+    char original_detail[sizeof(ctrl->error_detail)];
+    memcpy(original_detail, ctrl->error_detail, sizeof(original_detail));
+    alltrax_error cleanup_rc = exit_cal(ctrl);
+    if (!cleanup_rc) {
+        if (rc) memcpy(ctrl->error_detail, original_detail, sizeof(original_detail));
+        return rc;
+    }
+
+    char cleanup_detail[sizeof(ctrl->error_detail)];
+    memcpy(cleanup_detail, ctrl->error_detail, sizeof(cleanup_detail));
+    if (rc) {
+        set_error_detail(ctrl,
+            "Operation failed (%d): %.90s; RUN restoration failed (%d): %.90s",
+            rc, original_detail, cleanup_rc, cleanup_detail);
+    } else {
+        set_error_detail(ctrl, "RUN restoration failed (%d): %.210s",
+                         cleanup_rc, cleanup_detail);
+    }
+    return rc ? rc : cleanup_rc;
 }
 
 /* Validate voltage link constraints.
@@ -959,11 +988,11 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
 
     /* ---- 4. Enter CAL mode (single bracket for all writes) ---- */
 
-    bool in_cal = false;
+    bool cal_attempted = false;
 
     if (!opts->skip_cal) {
-        rc = enter_cal(ctrl, &in_cal);
-        if (rc) return rc;
+        rc = enter_cal(ctrl, &cal_attempted);
+        if (rc) return finish_cal_write(ctrl, cal_attempted, rc);
     }
 
     /* ---- 5. Write RAM variables ---- */
@@ -985,11 +1014,7 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     rc = ALLTRAX_OK;
 
 restore_run:
-    if (in_cal) {
-        alltrax_error rc2 = exit_cal(ctrl);
-        if (!rc) rc = rc2;
-    }
-    return rc;
+    return finish_cal_write(ctrl, cal_attempted, rc);
 }
 
 /* ------------------------------------------------------------------ */
@@ -1143,19 +1168,15 @@ alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
     if (rc) return rc;
 
     /* Enter CAL */
-    bool in_cal = false;
+    bool cal_attempted = false;
     if (!opts->skip_cal) {
-        rc = enter_cal(ctrl, &in_cal);
-        if (rc) return rc;
+        rc = enter_cal(ctrl, &cal_attempted);
+        if (rc) return finish_cal_write(ctrl, cal_attempted, rc);
     }
 
     rc = write_flash_page(ctrl, patches, 2, opts->skip_verify);
 
-    if (in_cal) {
-        alltrax_error rc2 = exit_cal(ctrl);
-        if (!rc) rc = rc2;
-    }
-    return rc;
+    return finish_cal_write(ctrl, cal_attempted, rc);
 }
 
 /* ------------------------------------------------------------------ */
