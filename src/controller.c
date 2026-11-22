@@ -11,7 +11,7 @@
 /* ------------------------------------------------------------------ */
 
 static alltrax_error read_memory(alltrax_controller* ctrl, uint32_t addr,
-    size_t num_bytes, uint8_t* buf, size_t* out_len)
+    size_t num_bytes, uint8_t* buf)
 {
     if (num_bytes < 1 || num_bytes > MAX_PAYLOAD) {
         set_error_detail(ctrl, "num_bytes must be 1-%d, got %zu",
@@ -48,8 +48,15 @@ static alltrax_error read_memory(alltrax_controller* ctrl, uint32_t addr,
         return ALLTRAX_ERR_DEVICE_FAIL;
     }
 
-    memcpy(buf, payload, n);
-    if (out_len) *out_len = n;
+    /* Callers size their buffers for the request, not the reply's claim. */
+    if (n != num_bytes) {
+        set_error_detail(ctrl,
+            "Read length mismatch at 0x%08X: expected %zu bytes, got %u",
+            addr, num_bytes, (unsigned)n);
+        return ALLTRAX_ERR_PROTOCOL;
+    }
+
+    memcpy(buf, payload, num_bytes);
     return ALLTRAX_OK;
 }
 
@@ -61,9 +68,8 @@ static alltrax_error read_memory_range(alltrax_controller* ctrl, uint32_t addr,
         size_t chunk = total_bytes - offset;
         if (chunk > MAX_PAYLOAD) chunk = MAX_PAYLOAD;
 
-        size_t got;
         alltrax_error rc = read_memory(ctrl, addr + (uint32_t)offset,
-                                                chunk, buf + offset, &got);
+                                                chunk, buf + offset);
         if (rc) return rc;
         offset += chunk;
     }
@@ -254,7 +260,7 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     }
 
     /* Controller identity (52 bytes) */
-    rc = read_memory(ctrl, info_addr, 52, buf, NULL);
+    rc = read_memory(ctrl, info_addr, 52, buf);
     if (rc) return rc;
 
     get_string(buf, 15, out->model, sizeof(out->model));
@@ -266,7 +272,7 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     out->hardware_rev         = get_le32(buf + 0x30);
 
     /* Hardware config (24 bytes) */
-    rc = read_memory(ctrl, hw_config_addr, 24, buf, NULL);
+    rc = read_memory(ctrl, hw_config_addr, 24, buf);
     if (rc) return rc;
 
     out->rated_voltage     = get_le16(buf);
@@ -289,13 +295,13 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
 
     /* Read boot revision (4 bytes) */
     uint8_t boot_buf[4];
-    rc = read_memory(ctrl, ADDR_BOOT_REV, 4, boot_buf, NULL);
+    rc = read_memory(ctrl, ADDR_BOOT_REV, 4, boot_buf);
     if (rc) return rc;
     out->boot_rev = get_le32(boot_buf);
 
     /* Read program revision + version (6 bytes) */
     uint8_t prgm_buf[6];
-    rc = read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf, NULL);
+    rc = read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf);
     if (rc) return rc;
     out->program_rev = get_le32(prgm_buf);
     out->program_ver = get_le16(prgm_buf + 4);
@@ -450,14 +456,13 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
         /* Read the coalesced block */
         size_t span = block_end - base_addr;
         uint8_t buf[MAX_PAYLOAD];
-        size_t got;
-        alltrax_error rc = read_memory(ctrl, base_addr, span, buf, &got);
+        alltrax_error rc = read_memory(ctrl, base_addr, span, buf);
         if (rc) return rc;
 
         /* Decode each variable from the block buffer */
         for (size_t k = block_start; k < pos; k++) {
             size_t orig = idx[k];
-            rc = alltrax_decode_var(buf, got, vars[orig], base_addr,
+            rc = alltrax_decode_var(buf, span, vars[orig], base_addr,
                                     &out[orig]);
             if (rc) return rc;
         }
@@ -593,7 +598,7 @@ static alltrax_error flash_prechecks(alltrax_controller* ctrl,
 
     if (!opts->skip_fw_check) {
         uint8_t prgm_buf[6];
-        rc = read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf, NULL);
+        rc = read_memory(ctrl, ADDR_PRGM_REV, 6, prgm_buf);
         if (rc) return rc;
 
         uint32_t prgm_rev = get_le32(prgm_buf);
@@ -609,7 +614,7 @@ static alltrax_error flash_prechecks(alltrax_controller* ctrl,
 
     if (!opts->skip_goodset) {
         uint8_t gs_buf[2];
-        rc = read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf, NULL);
+        rc = read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf);
         if (rc) return rc;
         uint16_t v_gs = get_le16(gs_buf);
 
@@ -628,7 +633,7 @@ static alltrax_error flash_prechecks(alltrax_controller* ctrl,
 static alltrax_error enter_cal(alltrax_controller* ctrl, bool* in_cal)
 {
     uint8_t mode_buf[1];
-    alltrax_error rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf, NULL);
+    alltrax_error rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf);
     if (rc) return rc;
 
     if (mode_buf[0] != RUN_MODE_RUN) {
@@ -834,7 +839,7 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
                     hw_addr -= 0x0400;
 
                 uint8_t ta_buf[4];
-                rc = read_memory(ctrl, hw_addr, 4, ta_buf, NULL);
+                rc = read_memory(ctrl, hw_addr, 4, ta_buf);
                 if (rc) return rc;
 
                 uint32_t throttles_allowed = get_le32(ta_buf);
@@ -941,7 +946,7 @@ static alltrax_error read_curve_array(alltrax_controller* ctrl,
 {
     uint8_t buf[ALLTRAX_CURVE_POINTS * 2];
     alltrax_error rc = read_memory(ctrl, addr,
-        ALLTRAX_CURVE_POINTS * 2, buf, NULL);
+        ALLTRAX_CURVE_POINTS * 2, buf);
     if (rc) return rc;
 
     for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++)
@@ -1067,7 +1072,7 @@ alltrax_error alltrax_read_monitor(alltrax_controller* ctrl,
     for (int i = 0; i < MONITOR_BLOCK_COUNT; i++) {
         alltrax_error rc = read_memory(ctrl,
             monitor_blocks[i].addr, monitor_blocks[i].size,
-            blocks[i], NULL);
+            blocks[i]);
         if (rc) return rc;
     }
 
