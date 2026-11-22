@@ -5,6 +5,7 @@
 
 #include "helpers.h"
 #include "internal.h"
+#include <math.h>
 #include <float.h>
 
 int test_pass_count;
@@ -35,6 +36,7 @@ static struct {
     uint8_t fault_request_len, fault_reply_len;
     unsigned fault_occurrence, matches;
     uint32_t boot_rev, program_rev;
+    uint8_t monitor_ram[0x200];  /* 0x2000F000-0x2000F1FF */
 } mock;
 
 static uint32_t request_address(void)
@@ -84,6 +86,8 @@ static uint8_t mock_read_byte(uint32_t addr)
         return (uint8_t)(mock.boot_rev >> ((addr - ADDR_BOOT_REV) * 8));
     if (addr >= ADDR_PRGM_REV && addr < ADDR_PRGM_REV + 4)
         return (uint8_t)(mock.program_rev >> ((addr - ADDR_PRGM_REV) * 8));
+    if (addr >= 0x2000F000 && addr < 0x2000F000 + sizeof(mock.monitor_ram))
+        return mock.monitor_ram[addr - 0x2000F000];
     if (addr == ADDR_RUN_MODE)
         return mock.mode;
     if (addr >= RAM_END - 4 && addr < RAM_END)
@@ -1298,6 +1302,38 @@ static int test_info_reports_policy_and_refreshes_revisions(void)
     return 0;
 }
 
+static void put_monitor_le16(uint32_t addr, int16_t value)
+{
+    mock.monitor_ram[addr - 0x2000F000] = (uint8_t)value;
+    mock.monitor_ram[addr - 0x2000F000 + 1] = (uint8_t)((uint16_t)value >> 8);
+}
+
+static int test_monitor_reads_user_profile_and_inputs(void)
+{
+    mock_reset();
+    put_monitor_le16(0x2000F160, 2);     /* UserProfile_Num */
+    put_monitor_le16(0x2000F162, -1);    /* User1_InputPercent */
+    put_monitor_le16(0x2000F164, 75);    /* User2_InputPercent */
+    put_monitor_le16(0x2000F13A, 3210);  /* Speed */
+    put_monitor_le16(0x2000F14A, 875);   /* State_Of_Charge, 0.1 % */
+    put_monitor_le16(0x2000F15A, -123);  /* Battery_Amps low word, 0.1 A */
+    put_monitor_le16(0x2000F15C, -1);    /* Battery_Amps high word */
+    mock.monitor_ram[0x09C] = 1;         /* User3_Input */
+
+    alltrax_monitor_data data;
+    ASSERT_EQ(alltrax_read_monitor(&mock.ctrl, &data), ALLTRAX_OK);
+    ASSERT_EQ(mock.requests, 6);
+    ASSERT_EQ(data.user_profile_num, 2);
+    ASSERT_EQ(data.user1_input_percent, -1);
+    ASSERT_EQ(data.user2_input_percent, 75);
+    ASSERT_EQ(data.speed_rpm, 3210);
+    ASSERT_TRUE(fabs(data.state_of_charge - 87.5) < 1e-9);
+    ASSERT_TRUE(fabs(data.battery_amps - -12.3) < 1e-9);
+    ASSERT_TRUE(data.user3_input);
+    ASSERT_FALSE(data.user1_input);
+    return 0;
+}
+
 int main(void)
 {
     printf("controller (simulated transport):\n");
@@ -1340,6 +1376,7 @@ int main(void)
     RUN_TEST(test_firmware_read_override_does_not_enable_writes);
     RUN_TEST(test_unvalidated_write_diagnostic_names_firmware);
     RUN_TEST(test_info_reports_policy_and_refreshes_revisions);
+    RUN_TEST(test_monitor_reads_user_profile_and_inputs);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }

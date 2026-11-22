@@ -404,11 +404,16 @@ typedef struct {
 
     int16_t bad_vars_code;
 
+    /* Meaningful only when alltrax_info.speed_sensor is true. */
     int16_t speed_rpm;
-    bool    speed_valid;
 
-    int16_t user_input_state;
     bool    user1_input, user2_input, user3_input;
+
+    /* Meaningful only when alltrax_has_feature(ALLTRAX_FEAT_USER_PROFILES)
+     * and the UserInputs_State setting selects them: state 1 uses
+     * user_profile_num (0 Normal, 1 User1, 2 User2) and user1_input_percent;
+     * state 2 uses user1_input_percent and user2_input_percent. A negative
+     * percent means the input is disconnected. */
     int16_t user_profile_num;
     int16_t user1_input_percent, user2_input_percent;
 } alltrax_monitor_data;

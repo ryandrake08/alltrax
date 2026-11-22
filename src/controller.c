@@ -1260,7 +1260,7 @@ static const struct { uint32_t addr; size_t size; } monitor_blocks[] = {
     { 0x2000F090, 17 },  /* Digital inputs */
     { 0x2000F0E6,  2 },  /* Temperature */
     { 0x2000F110, 56 },  /* Voltage, current, throttle */
-    { 0x2000F148, 22 },  /* Battery, power */
+    { 0x2000F148, 30 },  /* Battery, power, user profile and inputs */
 };
 #define MONITOR_BLOCK_COUNT 6
 
@@ -1319,11 +1319,14 @@ alltrax_error alltrax_read_monitor(alltrax_controller* ctrl,
         out->speed_rpm         = (int16_t)get_le16(p + 42);
     }
 
-    /* Block 5: Battery (22 bytes at 0x2000F148) */
+    /* Block 5: Battery and user inputs (30 bytes at 0x2000F148) */
     {
         const uint8_t* p = blocks[5];
-        out->state_of_charge = (double)(int16_t)get_le16(p + 2) * 0.1;
-        out->battery_amps    = (double)(int32_t)get_le32(p + 18) * 0.1;
+        out->state_of_charge     = (double)(int16_t)get_le16(p + 2) * 0.1;
+        out->battery_amps        = (double)(int32_t)get_le32(p + 18) * 0.1;
+        out->user_profile_num    = (int16_t)get_le16(p + 24); /* 0x2000F160 */
+        out->user1_input_percent = (int16_t)get_le16(p + 26); /* 0x2000F162 */
+        out->user2_input_percent = (int16_t)get_le16(p + 28); /* 0x2000F164 */
     }
 
     return ALLTRAX_OK;

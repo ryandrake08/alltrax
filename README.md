@@ -801,7 +801,7 @@ Reads real-time status in a single call (6 USB reads internally).
 | `field_amps` | `double` | Field current (A) |
 | `temp_c` | `double` | Controller temperature (C) |
 | `state_of_charge` | `double` | Battery state of charge (%) |
-| `speed_rpm` | `int16_t` | Motor speed (RPM) |
+| `speed_rpm` | `int16_t` | Motor speed (RPM); meaningful only when `alltrax_info.speed_sensor` is true |
 | `throttle_local` | `int16_t` | Throttle input (machine units) |
 | `throttle_position` | `int16_t` | Throttle position (machine units) |
 | `throttle_pointer` | `int16_t` | Throttle setpoint (machine units) |
@@ -821,10 +821,16 @@ Reads real-time status in a single call (6 USB reads internally).
 | `user1_input` | `bool` | User 1 input state |
 | `user2_input` | `bool` | User 2 input state |
 | `user3_input` | `bool` | User 3 input state |
-| `user_input_state` | `int16_t` | Combined user input state |
-| `user_profile_num` | `int16_t` | Active user profile number |
-| `user1_input_percent` | `int16_t` | User 1 input level (%) |
-| `user2_input_percent` | `int16_t` | User 2 input level (%) |
+| `user_profile_num` | `int16_t` | Selected profile: 0 Normal, 1 User 1, 2 User 2 (see below) |
+| `user1_input_percent` | `int16_t` | User 1 analog input, 0-100 %; negative means disconnected (see below) |
+| `user2_input_percent` | `int16_t` | User 2 analog input, 0-100 %; negative means disconnected (see below) |
+
+The profile and analog input fields require firmware V1.005+
+(`alltrax_has_feature(info, ALLTRAX_FEAT_USER_PROFILES)`) and are meaningful
+only for the configuration selected by the `UserInputs_State` setting:
+state 1 uses `user_profile_num` and `user1_input_percent`; state 2 uses
+`user1_input_percent` and `user2_input_percent`; state 0 (switches) uses the
+`user1_input`/`user2_input` booleans.
 
 ```c
 const char* alltrax_error_flag_name(int index);

@@ -17,7 +17,7 @@ static void sigint_handler(int sig)
     running = 0;
 }
 
-static void print_monitor(const alltrax_monitor_data* d)
+static void print_monitor(const alltrax_monitor_data* d, bool speed_sensor)
 {
     printf("\033[2J\033[H");  /* Clear screen, move to top-left */
 
@@ -47,7 +47,10 @@ static void print_monitor(const alltrax_monitor_data* d)
     printf("  Field Current       %7.2f A\n", d->field_amps);
     printf("  Temperature         %7.1f C\n", d->temp_c);
     printf("  State of Charge     %7.1f %%\n", d->state_of_charge);
-    printf("  Motor Speed         %7d RPM\n", d->speed_rpm);
+    if (speed_sensor)
+        printf("  Motor Speed         %7d RPM\n", d->speed_rpm);
+    else
+        printf("  Motor Speed             n/a (no speed sensor)\n");
 
     /* Throttle */
     printf("\n--- Throttle ---\n");
@@ -82,6 +85,14 @@ int cmd_monitor(int argc, char** argv)
     alltrax_error err = cli_open(&ctrl, false);
     if (err) return 1;
 
+    alltrax_info info;
+    err = alltrax_get_info(ctrl, &info);
+    if (err) {
+        cli_error(ctrl, err, "reading controller info");
+        alltrax_close(ctrl);
+        return 1;
+    }
+
     struct sigaction sa;
     sa.sa_handler = sigint_handler;
     sigemptyset(&sa.sa_mask);
@@ -97,7 +108,7 @@ int cmd_monitor(int argc, char** argv)
             alltrax_close(ctrl);
             return 1;
         }
-        print_monitor(&data);
+        print_monitor(&data, info.speed_sensor);
         nanosleep(&(struct timespec){ 0, 250000000 }, NULL);
     }
 
