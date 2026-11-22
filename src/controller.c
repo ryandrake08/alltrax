@@ -724,6 +724,13 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     for (size_t i = 0; i < count; i++) {
         const alltrax_var_def* var = vars[i];
 
+        if (var->type == ALLTRAX_TYPE_STRING) {
+            set_error_detail(ctrl,
+                "Variable %s is a string; numeric writes do not support strings",
+                var->name);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+
         if (alltrax_validate_var_value(var, values[i])) {
             set_error_detail(ctrl, "Value out of range for %s", var->name);
             return ALLTRAX_ERR_INVALID_ARG;

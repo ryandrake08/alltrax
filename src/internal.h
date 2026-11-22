@@ -127,6 +127,7 @@ alltrax_error parse_response(const uint8_t data[PACKET_SIZE],
 size_t alltrax_var_byte_size(const alltrax_var_def* var);
 alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
     const alltrax_var_def* var, uint32_t base_address, alltrax_var_value* out);
+/* Returns encoded byte count, or 0 for unsupported types (including strings). */
 int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf);
 
 /* transport.c */

@@ -545,6 +545,10 @@ variables can be mixed freely — the library separates them internally and uses
 a single CAL/RUN bracket wrapping all writes. Values are automatically
 converted from display units to raw device format.
 
+Only numeric and boolean assignments are supported. String assignments (including
+`Throttle_Type_Name` and `F_Table_Name`) return `ALLTRAX_ERR_INVALID_ARG` before
+device I/O and reject the entire batch. The CLI also rejects string writes.
+
 Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
 `alltrax_write_opts` struct to control individual safety checks:
 

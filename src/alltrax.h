@@ -215,7 +215,8 @@ const char* alltrax_var_group_name(alltrax_var_group group);
 
 /* Validate a display-unit value against the variable's bounds.
  * Returns ALLTRAX_OK if in range, ALLTRAX_ERR_INVALID_ARG if out of range.
- * Bools and strings always pass. */
+ * Bools always pass. Strings return ALLTRAX_ERR_INVALID_ARG because this
+ * numeric API cannot represent string payloads. */
 alltrax_error alltrax_validate_var_value(const alltrax_var_def* var, double value);
 
 /* Get effective bounds in display units. Sets *min_out / *max_out to NAN
@@ -264,6 +265,8 @@ typedef struct {
     bool skip_voltage_link;  /* Skip voltage link validation */
 } alltrax_write_opts;
 
+/* Write numeric/bool values in display units. String assignments return
+ * ALLTRAX_ERR_INVALID_ARG before device I/O, rejecting the entire batch. */
 alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, const double* values, size_t count,
     const alltrax_write_opts* opts);

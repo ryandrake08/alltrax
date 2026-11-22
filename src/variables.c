@@ -517,10 +517,8 @@ int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf)
     }
 
     case ALLTRAX_TYPE_STRING:
-        /* For strings, buf should already contain the string data.
-         * This function doesn't handle string encoding — callers
-         * pass string bytes directly via write operations. */
-        return var->size;
+        /* A double cannot supply string bytes. Never claim an encoded payload. */
+        return 0;
     }
 
     return 0;
@@ -555,8 +553,12 @@ void effective_bounds(const alltrax_var_def* var, int64_t* lo, int64_t* hi)
 
 alltrax_error alltrax_validate_var_value(const alltrax_var_def* var, double value)
 {
-    /* Bools and strings skip bounds checking */
-    if (var->type == ALLTRAX_TYPE_BOOL || var->type == ALLTRAX_TYPE_STRING)
+    /* This numeric API cannot represent a string assignment. */
+    if (var->type == ALLTRAX_TYPE_STRING)
+        return ALLTRAX_ERR_INVALID_ARG;
+
+    /* Bools skip bounds checking */
+    if (var->type == ALLTRAX_TYPE_BOOL)
         return ALLTRAX_OK;
 
     /* Convert display value to raw */

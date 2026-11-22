@@ -1,5 +1,5 @@
 /*
- * Controller read-length regression tests with a simulated transport.
+ * Controller regression tests with a simulated transport.
  * This executable does not link transport.c or hidapi and cannot access USB.
  */
 
@@ -15,6 +15,7 @@ static struct {
     uint8_t request[PACKET_SIZE];
     uint8_t mode;
     unsigned erases, settings_writes, goodset_clears;
+    unsigned requests;
     bool fault_enabled;
     uint32_t fault_addr;
     uint8_t fault_request_len, fault_reply_len;
@@ -71,6 +72,7 @@ static uint8_t mock_read_byte(uint32_t addr)
 alltrax_error transport_write(alltrax_controller* ctrl,
     const uint8_t data[PACKET_SIZE])
 {
+    mock.requests++;
     if (ctrl != &mock.ctrl || data[1] > MAX_PAYLOAD)
         return ALLTRAX_ERR_INVALID_ARG;
     memcpy(mock.request, data, PACKET_SIZE);
@@ -136,6 +138,48 @@ static alltrax_error write_hpd(void)
     const alltrax_var_def* var = alltrax_find_var("HPD");
     double value = 1;
     return alltrax_write_vars(&mock.ctrl, &var, &value, 1, NULL);
+}
+
+static int test_string_assignments_rejected_before_device_access(void)
+{
+    const char* names[] = { "Throttle_Type_Name", "F_Table_Name" };
+    const alltrax_write_opts unchecked = {
+        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_fw_check = true, .skip_voltage_link = true,
+    };
+    const alltrax_write_opts* options[] = { NULL, &unchecked };
+
+    for (size_t n = 0; n < sizeof(names) / sizeof(names[0]); n++) {
+        for (size_t o = 0; o < sizeof(options) / sizeof(options[0]); o++) {
+            /* Alone, and before/after valid RAM and FLASH assignments. */
+            for (size_t pos = 0; pos < 4; pos++) {
+                mock_reset();
+                uint8_t original[VARSET_SIZE];
+                memcpy(original, mock.page, sizeof(original));
+                const alltrax_var_def* vars[3] = {
+                    alltrax_find_var("Fan_On"), alltrax_find_var("HPD"), NULL,
+                };
+                double values[] = { 1, 1, 1 };
+                size_t count = pos == 3 ? 1 : 3;
+                size_t string_pos = pos == 3 ? 0 : pos;
+                for (size_t i = 2; i > string_pos; i--)
+                    vars[i] = vars[i - 1];
+                vars[string_pos] = alltrax_find_var(names[n]);
+                values[string_pos] = 123;
+
+                ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values, count,
+                                             options[o]), ALLTRAX_ERR_INVALID_ARG);
+                ASSERT_EQ(mock.requests, 0);
+                ASSERT_TRUE(strstr(mock.ctrl.error_detail, names[n]) != NULL);
+                ASSERT_TRUE(strstr(mock.ctrl.error_detail, "string") != NULL);
+                ASSERT_EQ(mock.erases, 0);
+                ASSERT_EQ(mock.settings_writes, 0);
+                ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+                ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+            }
+        }
+    }
+    return 0;
 }
 
 static int test_info_exact_read_lengths(void)
@@ -280,6 +324,7 @@ int main(void)
     RUN_TEST(test_flash_write_aborts_on_oversized_final_chunk);
     RUN_TEST(test_flash_write_rejects_incomplete_verification);
     RUN_TEST(test_flash_write_rejects_final_verification_length_mismatch);
+    RUN_TEST(test_string_assignments_rejected_before_device_access);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }

@@ -391,6 +391,26 @@ static int test_encode_bool(void)
     return 0;
 }
 
+static int test_numeric_api_rejects_strings(void)
+{
+    const char* names[] = { "Throttle_Type_Name", "F_Table_Name" };
+    const double values[] = { 0, 123, NAN, INFINITY };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        const alltrax_var_def* var = alltrax_find_var(names[i]);
+        ASSERT_TRUE(var != NULL);
+        for (size_t j = 0; j < sizeof(values) / sizeof(values[0]); j++) {
+            uint8_t buf[32], original[32];
+            memset(buf, 0xA5, sizeof(buf));
+            memcpy(original, buf, sizeof(original));
+            ASSERT_EQ(alltrax_encode_var(var, values[j], buf), 0);
+            ASSERT_MEM_EQ(buf, original, sizeof(buf));
+            ASSERT_EQ(alltrax_validate_var_value(var, values[j]),
+                      ALLTRAX_ERR_INVALID_ARG);
+        }
+    }
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* 11. Error flag names                                                */
 /* ------------------------------------------------------------------ */
@@ -1127,6 +1147,7 @@ void run_variables_tests(void)
     RUN_TEST(test_encode_voltage_281);
     RUN_TEST(test_encode_decode_round_trip);
     RUN_TEST(test_encode_bool);
+    RUN_TEST(test_numeric_api_rejects_strings);
 
     /* Error flag names */
     RUN_TEST(test_error_flag_names);
