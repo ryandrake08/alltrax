@@ -87,9 +87,8 @@ point source: x,y pairs, `--file`, or `--preset`.
 | Other V0.001-V5.999 | Yes | Yes | With `--no-fw-version` |
 | Outside V0.001-V5.999 | Yes | With `alltrax --no-fw-version <command>` | Never |
 
-V0.001-V5.999 is the range the official Toolkit accepts. `--no-fw-version`
-placed before the command applies to reads and writes; placed after a write
-command (`write`, `reset`, `config load`, `curve set`, `curve reset`) it
+`--no-fw-version` placed before the command applies to reads and writes; placed after
+a write command (`write`, `reset`, `config load`, `curve set`, `curve reset`) it
 applies to that command's writes.
 
 ### Write examples
@@ -138,7 +137,13 @@ alltrax config load settings.txt
 alltrax config load --no-crypt --reset settings.xml
 ```
 
-Config files saved by the Windows Toolkit ("Save All Settings") can be loaded
+`config save` writes a file only when every settings group and curve has been
+read. It refuses to save when the controller's user settings are not valid
+(Var_GoodSet ≠ 0): either only factory defaults are present, or no settings
+are loaded. On any failure it exits with an error and leaves an existing file
+unchanged.
+
+Config files saved by the Alltrax Toolkit ("Save All Settings") can be loaded
 with `alltrax config load`. Config files saved by the CLI can be loaded by the
 Toolkit (unless `--no-crypt` was used).
 

@@ -51,22 +51,51 @@ const char* alltrax_strerror(alltrax_error err)
     return "unexpected error formatting";
 }
 
-/* Use the real controller implementation; any transport call fails the test. */
+/* Simulated device for config save: answers read requests with zero-filled
+ * payloads (except the GoodSet markers) and fails read reply `fail_read_at`
+ * (1-based). Non-read requests are counted as mutations. */
+static struct {
+    bool enabled;
+    uint8_t request[PACKET_SIZE];
+    unsigned reads, mutations, fail_read_at;
+    uint16_t var_goodset, fact_goodset;
+} device;
+
+/* Use the real controller implementation; transport calls fail unless the
+ * simulated device is enabled. */
 alltrax_error transport_write(alltrax_controller* ctrl,
     const uint8_t data[PACKET_SIZE])
 {
     (void)ctrl;
-    (void)data;
     transport_calls++;
-    return ALLTRAX_ERR_USB;
+    if (!device.enabled)
+        return ALLTRAX_ERR_USB;
+    if (data[0] != REPORT_ID_READ) {
+        device.mutations++;
+        return ALLTRAX_ERR_USB;
+    }
+    memcpy(device.request, data, PACKET_SIZE);
+    return ALLTRAX_OK;
 }
 
 alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
 {
     (void)ctrl;
-    (void)buf;
     transport_calls++;
-    return ALLTRAX_ERR_USB;
+    if (!device.enabled || ++device.reads == device.fail_read_at)
+        return ALLTRAX_ERR_USB;
+    const uint8_t* a = device.request + 4;
+    uint32_t addr = ((uint32_t)a[0] << 24) | ((uint32_t)a[1] << 16) |
+                    ((uint32_t)a[2] << 8) | a[3];
+    memset(buf, 0, PACKET_SIZE);
+    buf[0] = RESPONSE_ID;
+    buf[1] = device.request[1];
+    buf[4] = RESPONSE_TYPE_RW;
+    uint16_t marker = addr == VARSET_ADDR ? device.var_goodset :
+                      addr == FACTSET_ADDR ? device.fact_goodset : 0;
+    buf[8] = (uint8_t)marker;
+    buf[9] = (uint8_t)(marker >> 8);
+    return ALLTRAX_OK;
 }
 
 static int test_strings_rejected_before_open(void)
@@ -496,6 +525,163 @@ static int test_fw_flag_reaches_write_options_in_any_position(void)
     return 0;
 }
 
+#ifdef TEST_CONFIG
+/* Run `config save --no-crypt <path>` against the simulated device. */
+static int run_config_save(const char* path, uint32_t program_rev)
+{
+    char file[256];
+    snprintf(file, sizeof(file), "%s", path);
+    char* argv[] = { "config", "save", "--no-crypt", file };
+    fake_ctrl = (alltrax_controller) {
+        .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
+        .controller_type = ALLTRAX_CONTROLLER_XCT,
+        .boot_rev = 5002, .program_rev = program_rev,
+    };
+    open_calls = error_calls = close_calls = transport_calls = 0;
+    device.enabled = true;
+    device.reads = device.mutations = 0;
+    open_succeeds = true;
+    int rc = cmd_config(4, argv);
+    open_succeeds = false;
+    device.enabled = false;
+    return rc;
+}
+
+/* Returns the file contents (caller frees), or NULL if it cannot be read. */
+static char* read_file(const char* path)
+{
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    static char data[65536];
+    size_t n = fread(data, 1, sizeof(data) - 1, f);
+    fclose(f);
+    data[n] = '\0';
+    return strdup(data);
+}
+
+static int make_temp_path(char path[64])
+{
+    snprintf(path, 64, "/tmp/alltrax-save-test-XXXXXX");
+    int fd = mkstemp(path);
+    if (fd < 0) return -1;
+    close(fd);
+    return 0;
+}
+
+static int write_file(const char* path, const char* contents)
+{
+    FILE* f = fopen(path, "wb");
+    if (!f) return -1;
+    bool ok = fputs(contents, f) >= 0;
+    return fclose(f) == 0 && ok ? 0 : -1;
+}
+
+static int test_config_save_includes_every_group_and_curve(void)
+{
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    memset(&device, 0, sizeof(device));
+    ASSERT_EQ(run_config_save(path, 5005), 0);
+    ASSERT_EQ(device.mutations, 0);
+    char* xml = read_file(path);
+    remove(path);
+    ASSERT_TRUE(xml != NULL);
+    const char* groups[] = {
+        "Voltage", "Normal_User", "User_1", "User_2", "Other_Settings",
+        "Throttle", "Field",
+    };
+    for (size_t i = 0; i < sizeof(groups) / sizeof(groups[0]); i++) {
+        char node[64];
+        snprintf(node, sizeof(node), "<Node-%s>", groups[i]);
+        ASSERT_TRUE(strstr(xml, node) != NULL);
+    }
+    const char* curves[] = {
+        "Lin_Table_Pointer", "Lin_Table_Data", "V_Table_Pointer",
+        "V_Table_Data", "I_Table_Pointer", "I_Table_Data", "F_Table_Pointer",
+        "F_Table_Data", "Gen_Field_Pointer", "Gen_Field_Data",
+    };
+    for (size_t i = 0; i < sizeof(curves) / sizeof(curves[0]); i++) {
+        char node[64];
+        snprintf(node, sizeof(node), "<%s>", curves[i]);
+        ASSERT_TRUE(strstr(xml, node) != NULL);
+    }
+    free(xml);
+    return 0;
+}
+
+static int test_config_save_any_read_failure_preserves_destination(void)
+{
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    memset(&device, 0, sizeof(device));
+    ASSERT_EQ(run_config_save(path, 5005), 0);
+    unsigned total_reads = device.reads;
+    ASSERT_TRUE(total_reads > 2);
+
+    const char* previous = "previous backup";
+    for (unsigned n = 1; n <= total_reads; n++) {
+        ASSERT_EQ(write_file(path, previous), 0);
+        device.fail_read_at = n;
+        ASSERT_EQ(run_config_save(path, 5005), 1);
+        ASSERT_EQ(device.reads, n); /* The save stops at the failed read. */
+        ASSERT_EQ(error_calls, 1);
+        ASSERT_EQ(reported_error, ALLTRAX_ERR_USB);
+        char* contents = read_file(path);
+        ASSERT_TRUE(contents != NULL);
+        ASSERT_STR_EQ(contents, previous);
+        free(contents);
+    }
+    remove(path);
+
+    /* A failed save does not create a missing destination. */
+    device.fail_read_at = total_reads;
+    ASSERT_EQ(run_config_save(path, 5005), 1);
+    ASSERT_EQ(access(path, F_OK), -1);
+    device.fail_read_at = 0;
+    return 0;
+}
+
+static int test_config_save_rejects_invalid_settings(void)
+{
+    const uint16_t factory[] = { 0x0000, 0xFFFF };
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    ASSERT_EQ(write_file(path, "previous backup"), 0);
+    for (size_t i = 0; i < sizeof(factory) / sizeof(factory[0]); i++) {
+        memset(&device, 0, sizeof(device));
+        device.var_goodset = 0xFFFF;
+        device.fact_goodset = factory[i];
+        ASSERT_EQ(run_config_save(path, 5005), 1);
+        ASSERT_EQ(device.reads, 2); /* Only the two GoodSet markers. */
+        ASSERT_EQ(error_calls, 0);
+        char* contents = read_file(path);
+        ASSERT_TRUE(contents != NULL);
+        ASSERT_STR_EQ(contents, "previous backup");
+        free(contents);
+    }
+    remove(path);
+    return 0;
+}
+
+static int test_config_save_on_unreadable_firmware_preserves_destination(void)
+{
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    ASSERT_EQ(write_file(path, "previous backup"), 0);
+    memset(&device, 0, sizeof(device));
+    ASSERT_EQ(run_config_save(path, 6001), 1);
+    ASSERT_EQ(transport_calls, 0);
+    ASSERT_EQ(error_calls, 1);
+    ASSERT_EQ(reported_error, ALLTRAX_ERR_FIRMWARE);
+    char* contents = read_file(path);
+    remove(path);
+    ASSERT_TRUE(contents != NULL);
+    ASSERT_STR_EQ(contents, "previous backup");
+    free(contents);
+    return 0;
+}
+#endif
+
 int main(void)
 {
     printf("CLI mutation preflight (no USB):\n");
@@ -517,6 +703,10 @@ int main(void)
     RUN_TEST(test_config_curves_rejected_before_any_settings_write);
     RUN_TEST(test_valid_curve_config_reaches_open);
     RUN_TEST(test_invalid_throttle_config_rejected_before_transport);
+    RUN_TEST(test_config_save_includes_every_group_and_curve);
+    RUN_TEST(test_config_save_any_read_failure_preserves_destination);
+    RUN_TEST(test_config_save_rejects_invalid_settings);
+    RUN_TEST(test_config_save_on_unreadable_firmware_preserves_destination);
 #endif
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;

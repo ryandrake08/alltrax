@@ -149,28 +149,67 @@ static void format_curve_csv(const double* display, double scale, char* buf,
     }
 }
 
+static void report_no_memory(void)
+{
+    fprintf(stderr, "Error: out of memory building config XML\n");
+}
+
+static bool saved_settings_valid(alltrax_controller* ctrl)
+{
+    const alltrax_var_def* vars[] = {
+        alltrax_find_var("Var_GoodSet"), alltrax_find_var("Fact_GoodSet"),
+    };
+    if (!vars[0] || !vars[1]) {
+        fprintf(stderr, "Error: GoodSet variable definitions are missing\n");
+        return false;
+    }
+    alltrax_var_value vals[2];
+    alltrax_error err = alltrax_read_vars(ctrl, vars, 2, vals);
+    if (err) {
+        cli_error(ctrl, err, "reading settings validity");
+        return false;
+    }
+    int64_t user = alltrax_var_raw_int64(&vals[0]);
+    int64_t factory = alltrax_var_raw_int64(&vals[1]);
+    if (user == 0)
+        return true;
+    fprintf(stderr,
+        "Error: cannot save settings: %s (Var_GoodSet=0x%04X, Fact_GoodSet=0x%04X)\n",
+        factory == 0 ? "only factory default values are present on the controller"
+                     : "no settings loaded into the controller",
+        (unsigned)user, (unsigned)factory);
+    return false;
+}
+
+/* Read every save group and curve into XML. Any read or XML failure
+ * prints an error and returns NULL. */
 static char* build_xml(alltrax_controller* ctrl, size_t* total_vars,
     size_t* total_curves)
 {
-    xmlDocPtr doc = xmlNewDoc(BAD_CAST "1.0");
-    if (!doc) return NULL;
-
-    xmlNodePtr root = xmlNewNode(NULL, BAD_CAST "XCT");
-    xmlDocSetRootElement(doc, root);
-
-    size_t count = 0;
+    char* result = NULL;
+    xmlBufferPtr buf = NULL;
+    size_t count = 0, curves = 0;
 
     /* Track group nodes so we can append curves to them */
-    xmlNodePtr group_nodes[ALLTRAX_VARS_GROUP_COUNT];
-    memset(group_nodes, 0, sizeof(group_nodes));
+    xmlNodePtr group_nodes[ALLTRAX_VARS_GROUP_COUNT] = {0};
+
+    xmlDocPtr doc = xmlNewDoc(BAD_CAST "1.0");
+    xmlNodePtr root = doc ? xmlNewNode(NULL, BAD_CAST "XCT") : NULL;
+    if (!root) {
+        report_no_memory();
+        goto cleanup;
+    }
+    xmlDocSetRootElement(doc, root);
 
     for (size_t g = 0; g < NUM_SAVE_GROUPS; g++) {
         size_t var_count;
         const alltrax_var_def* defs =
             alltrax_get_var_defs(save_groups[g], &var_count);
-        if (!defs || var_count == 0) continue;
-
         const char* gname = alltrax_var_group_name(save_groups[g]);
+        if (!defs || var_count == 0) {
+            fprintf(stderr, "Error: no variable definitions for %s\n", gname);
+            goto cleanup;
+        }
 
         /* Read all variables in this group */
         const alltrax_var_def** ptrs =
@@ -178,8 +217,10 @@ static char* build_xml(alltrax_controller* ctrl, size_t* total_vars,
         alltrax_var_value* vals =
             calloc(var_count, sizeof(alltrax_var_value));
         if (!ptrs || !vals) {
-            free(ptrs); free(vals); xmlFreeDoc(doc);
-            return NULL;
+            free(ptrs);
+            free(vals);
+            report_no_memory();
+            goto cleanup;
         }
 
         for (size_t i = 0; i < var_count; i++)
@@ -188,83 +229,94 @@ static char* build_xml(alltrax_controller* ctrl, size_t* total_vars,
         alltrax_error err = alltrax_read_vars(ctrl, ptrs, var_count, vals);
         free(ptrs);
         if (err) {
-            fprintf(stderr, "Warning: failed to read %s: %s\n",
-                    gname, alltrax_strerror(err));
             free(vals);
-            continue;
+            char action[96];
+            snprintf(action, sizeof(action), "reading %s settings", gname);
+            cli_error(ctrl, err, action);
+            goto cleanup;
         }
 
         char node_name[80];
         snprintf(node_name, sizeof(node_name), "Node-%s", gname);
         xmlNodePtr group = xmlNewChild(root, NULL, BAD_CAST node_name, NULL);
-        group_nodes[save_groups[g]] = group;
+        bool ok = group != NULL;
 
-        for (size_t i = 0; i < var_count; i++) {
+        for (size_t i = 0; ok && i < var_count; i++) {
             char vbuf[32];
+            const char* text = vbuf;
             if (defs[i].type == ALLTRAX_TYPE_STRING) {
-                xmlNewTextChild(group, NULL,
-                    BAD_CAST defs[i].name, BAD_CAST vals[i].raw.str);
+                text = vals[i].raw.str;
             } else {
                 int64_t raw = alltrax_var_raw_int64(&vals[i]);
                 snprintf(vbuf, sizeof(vbuf), "%" PRId64, raw);
-                xmlNewTextChild(group, NULL,
-                    BAD_CAST defs[i].name, BAD_CAST vbuf);
             }
-            count++;
+            ok = xmlNewTextChild(group, NULL, BAD_CAST defs[i].name,
+                                 BAD_CAST text) != NULL;
         }
-
         free(vals);
+        if (!ok) {
+            report_no_memory();
+            goto cleanup;
+        }
+        group_nodes[save_groups[g]] = group;
+        count += var_count;
     }
 
     /* Append curve data to existing group nodes */
-    size_t curves = 0;
     for (size_t c = 0; c < NUM_CURVE_XML; c++) {
         xmlNodePtr gnode = group_nodes[curve_xml_map[c].group];
-        if (!gnode) continue;
-
         const alltrax_curve_def* def =
             alltrax_find_curve(curve_xml_map[c].curve_type);
-        if (!def) continue;
+        if (!gnode || !def) {
+            fprintf(stderr, "Error: no save group or definition for curve %s\n",
+                    curve_xml_map[c].curve_type);
+            goto cleanup;
+        }
 
         alltrax_curve_data data;
         alltrax_error err = alltrax_read_curve(ctrl, def, &data);
         if (err) {
-            fprintf(stderr, "Warning: failed to read curve %s: %s\n",
-                    curve_xml_map[c].curve_type, alltrax_strerror(err));
-            continue;
+            char action[96];
+            snprintf(action, sizeof(action), "reading %s curve",
+                     curve_xml_map[c].curve_type);
+            cli_error(ctrl, err, action);
+            goto cleanup;
         }
 
-        char csv[128];
-
-        format_curve_csv(data.x, def->x_scale, csv, sizeof(csv));
-        xmlNewTextChild(gnode, NULL,
-            BAD_CAST curve_xml_map[c].pointer_name, BAD_CAST csv);
-
-        format_curve_csv(data.y, def->y_scale, csv, sizeof(csv));
-        xmlNewTextChild(gnode, NULL,
-            BAD_CAST curve_xml_map[c].data_name, BAD_CAST csv);
-
+        char x_csv[128], y_csv[128];
+        format_curve_csv(data.x, def->x_scale, x_csv, sizeof(x_csv));
+        format_curve_csv(data.y, def->y_scale, y_csv, sizeof(y_csv));
+        if (!xmlNewTextChild(gnode, NULL,
+                BAD_CAST curve_xml_map[c].pointer_name, BAD_CAST x_csv) ||
+            !xmlNewTextChild(gnode, NULL,
+                BAD_CAST curve_xml_map[c].data_name, BAD_CAST y_csv)) {
+            report_no_memory();
+            goto cleanup;
+        }
         curves++;
     }
 
     /* Serialize to string without XML declaration */
-    xmlBufferPtr buf = xmlBufferCreate();
-    if (!buf) { xmlFreeDoc(doc); return NULL; }
-
-    xmlNodeDump(buf, doc, root, 0, 1);
-
-    size_t xml_len = (size_t)xmlBufferLength(buf);
-    char* result = malloc(xml_len + 1);
-    if (result) {
-        memcpy(result, xmlBufferContent(buf), xml_len);
-        result[xml_len] = '\0';
+    buf = xmlBufferCreate();
+    if (!buf || xmlNodeDump(buf, doc, root, 0, 1) < 0) {
+        report_no_memory();
+        goto cleanup;
     }
 
-    xmlBufferFree(buf);
-    xmlFreeDoc(doc);
-
+    size_t xml_len = (size_t)xmlBufferLength(buf);
+    result = malloc(xml_len + 1);
+    if (!result) {
+        report_no_memory();
+        goto cleanup;
+    }
+    memcpy(result, xmlBufferContent(buf), xml_len);
+    result[xml_len] = '\0';
     *total_vars = count;
     *total_curves = curves;
+
+cleanup:
+    if (buf) xmlBufferFree(buf);
+    if (doc) xmlFreeDoc(doc);
     return result;
 }
 
@@ -481,12 +533,14 @@ static int do_save(int argc, char** argv)
     alltrax_error err = cli_open(&ctrl, false);
     if (err) return 1;
 
+    /* Every read completes before the destination is opened. */
     size_t total_vars = 0, total_curves = 0;
-    char* xml = build_xml(ctrl, &total_vars, &total_curves);
+    char* xml = saved_settings_valid(ctrl)
+        ? build_xml(ctrl, &total_vars, &total_curves) : NULL;
     alltrax_close(ctrl);
 
     if (!xml) {
-        fprintf(stderr, "Error: failed to build config XML\n");
+        fprintf(stderr, "Error: config save: no file written\n");
         return 1;
     }
 
