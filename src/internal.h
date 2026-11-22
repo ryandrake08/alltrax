@@ -20,7 +20,9 @@ typedef struct hid_device_ hid_device;
 
 struct alltrax_controller {
     hid_device*  hid;
+    uint16_t     vid;
     uint16_t     pid;
+    alltrax_controller_type controller_type; /* Validated model family */
     bool         allow_writes;
     char         error_detail[256];
 };
@@ -136,6 +138,9 @@ alltrax_error transport_write(alltrax_controller* ctrl,
 alltrax_error transport_read(alltrax_controller* ctrl,
     uint8_t buf[PACKET_SIZE]);
 
+/* controller.c: read and validate the model after USB identity is established. */
+alltrax_error identify_controller(alltrax_controller* ctrl);
+
 /* Byte helpers */
 static inline uint16_t get_le16(const uint8_t* buf)
 {
@@ -168,5 +173,32 @@ static inline void get_string(const uint8_t* src, size_t src_len,
 /* Helper to set error detail */
 #define set_error_detail(ctrl, ...) \
     snprintf((ctrl)->error_detail, sizeof((ctrl)->error_detail), __VA_ARGS__)
+
+/* USB identity is required even for the initial model read. */
+static inline alltrax_error require_xct_usb(alltrax_controller* ctrl)
+{
+    if (!ctrl)
+        return ALLTRAX_ERR_INVALID_ARG;
+    if (ctrl->vid != ALLTRAX_VID || ctrl->pid != ALLTRAX_PID_XCT) {
+        set_error_detail(ctrl,
+            "Unsupported USB identity %04X:%04X; requires Alltrax %04X:%04X",
+            ctrl->vid, ctrl->pid, ALLTRAX_VID, ALLTRAX_PID_XCT);
+        return ALLTRAX_ERR_UNSUPPORTED;
+    }
+    return ALLTRAX_OK;
+}
+
+/* Every public device operation requires a validated XCT-family model. */
+static inline alltrax_error require_xct_controller(alltrax_controller* ctrl)
+{
+    alltrax_error rc = require_xct_usb(ctrl);
+    if (rc) return rc;
+    if (ctrl->controller_type != ALLTRAX_CONTROLLER_XCT) {
+        set_error_detail(ctrl, "Unsupported or unidentified controller family; "
+                         "requires a validated XCT-family model");
+        return ALLTRAX_ERR_UNSUPPORTED;
+    }
+    return ALLTRAX_OK;
+}
 
 #endif /* ALLTRAX_INTERNAL_H */

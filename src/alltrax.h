@@ -1,7 +1,7 @@
 /*
  * alltrax.h — Public API for liballtrax-usb
  *
- * Communicates with Alltrax motor controllers (XCT, SPM, SR series) via
+ * Communicates with Alltrax XCT-family motor controllers via
  * USB HID. Reads/writes settings and monitors real-time status.
  *
  * Usage:
@@ -49,6 +49,7 @@ typedef enum {
     ALLTRAX_ERR_NO_DEVICE   = -11,  /* No Alltrax device found */
     ALLTRAX_ERR_BLOCKED     = -12,  /* Write blocked (allow_writes=false) */
     ALLTRAX_ERR_NO_MEMORY   = -13,  /* Memory allocation failed */
+    ALLTRAX_ERR_UNSUPPORTED = -14,  /* Unsupported USB identity or controller family */
 } alltrax_error;
 
 const char* alltrax_strerror(alltrax_error err);
@@ -81,7 +82,11 @@ const char* alltrax_last_error_detail(const alltrax_controller* ctrl);
 
 /* *out must be NULL on entry; returns ALLTRAX_ERR_INVALID_ARG otherwise.
  * device_path: OS-level HID path (e.g. "/dev/hidraw0"), or NULL to
- * auto-detect (tries XCT PID first, then SPM PID). */
+ * auto-detect. Only enumerated VID 0x23D4 / PID 0x0002 devices with an
+ * XCT-family model prefix (XCT, SRX, NCT) are accepted. Opening reads the
+ * model to validate identity; PID 1 and unrecognized families are rejected
+ * with ALLTRAX_ERR_UNSUPPORTED. Unknown paths return ALLTRAX_ERR_NO_DEVICE.
+ * Firmware overrides do not bypass device-family checks. */
 alltrax_error alltrax_open(alltrax_controller** out,
     const char* device_path, bool allow_writes);
 void alltrax_close(alltrax_controller* ctrl);
@@ -96,8 +101,8 @@ typedef struct {
 
     /* True if this controller type is tested and supported.
      * Currently only XCT with firmware V0.001-V5.999 is supported.
-     * Non-supported devices can still be queried via alltrax_get_info()
-     * but other operations (read/write variables, etc.) are not validated. */
+     * Accepted XCT-family devices with unknown firmware can still be read.
+     * Other device families are rejected by alltrax_open(). */
     bool     supported;
 
     /* Controller identity (52 bytes from INFOSET) */

@@ -64,17 +64,18 @@ CLI      := $(BUILD)/alltrax
 TEST_BIN := $(BUILD)/test_alltrax
 CONTROLLER_TEST_BIN := $(BUILD)/test_controller
 CLI_WRITE_TEST_BIN := $(BUILD)/test_cli_write
+TRANSPORT_TEST_BIN := $(BUILD)/test_transport
 
 # --- Targets ---
 
 COMPDB  := $(BUILD)/compile_commands.json
 
 ifeq ($(BUILD_CLI),yes)
-  ALL_SRC := $(LIB_SRC) $(CLI_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c
-  all: $(CLI) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(COMPDB)
+  ALL_SRC := $(LIB_SRC) $(CLI_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c
+  all: $(CLI) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
 else
-  ALL_SRC := $(LIB_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c cli/cmd_write.c
-  all: $(LIB) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(COMPDB)
+  ALL_SRC := $(LIB_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c cli/cmd_write.c
+  all: $(LIB) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
 endif
 
 $(LIB): $(LIB_OBJ)
@@ -94,10 +95,15 @@ $(CONTROLLER_TEST_BIN): $(BUILD)/test_controller.o $(filter-out $(BUILD)/transpo
 $(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(BUILD)/cmd_write.o $(BUILD)/variables.o
 	$(CC) $(LDFLAGS) -o $@ $^ -lm
 
-test: $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN)
+# Transport tests supply hidapi symbols; never link the real USB library.
+$(TRANSPORT_TEST_BIN): $(BUILD)/test_transport.o $(LIB)
+	$(CC) $(LDFLAGS) -o $@ $^ -lm
+
+test: $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(TRANSPORT_TEST_BIN)
 	./$(TEST_BIN)
 	./$(CONTROLLER_TEST_BIN)
 	./$(CLI_WRITE_TEST_BIN)
+	./$(TRANSPORT_TEST_BIN)
 
 clean:
 	rm -rf build

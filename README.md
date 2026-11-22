@@ -1,7 +1,7 @@
 # alltrax
 
 Open source CLI tool and C library for communicating with
-[Alltrax](https://www.alltraxinc.com/) motor controllers (XCT, SPM, SR series)
+[Alltrax](https://www.alltraxinc.com/) XCT-family motor controllers
 via USB HID.
 
 Please note: This software is experimental, entirely unofficial, and not
@@ -314,7 +314,7 @@ thin wrapper around it. Link with `-lalltrax-usb -lhidapi-hidraw -lm`.
 alltrax_init();
 
 alltrax_controller* ctrl = NULL;
-alltrax_error err = alltrax_open(&ctrl, false);
+alltrax_error err = alltrax_open(&ctrl, NULL, false);
 
 alltrax_info info;
 alltrax_get_info(ctrl, &info);
@@ -335,14 +335,20 @@ Call `alltrax_init()` once before any other library call. Call `alltrax_exit()`
 after all controllers are closed. These manage the underlying USB HID library.
 
 ```c
-alltrax_error alltrax_open(alltrax_controller** out, bool allow_writes);
+alltrax_error alltrax_open(alltrax_controller** out,
+    const char* device_path, bool allow_writes);
 void          alltrax_close(alltrax_controller* ctrl);
 ```
 
-`alltrax_open()` connects to the first Alltrax USB device found. `*out` must
-be `NULL` on entry. Set `allow_writes` to `true` if you intend to write
-settings; the library will reject write operations otherwise. Multiple
-controllers can be open simultaneously.
+`alltrax_open()` connects to an enumerated Alltrax XCT-family device
+(VID `0x23d4`, PID `0x0002`). Pass `NULL` for automatic detection or an OS HID
+path that matches a supported enumeration entry. Opening performs a read-only
+model check and accepts the XCT, SRX, and NCT prefixes. PID 1 and unrecognized
+families are rejected with `ALLTRAX_ERR_UNSUPPORTED`; unmatched paths return
+`ALLTRAX_ERR_NO_DEVICE`. Firmware overrides cannot bypass these checks.
+`*out` must be `NULL` on entry and remains `NULL` on failure. Set `allow_writes`
+to `true` if you intend to write settings; the library will reject write
+operations otherwise. Multiple controllers can be open simultaneously.
 
 ### Error handling
 
@@ -362,6 +368,7 @@ All functions that can fail return `alltrax_error`:
 | `ALLTRAX_ERR_INVALID_ARG` | Bad argument |
 | `ALLTRAX_ERR_ADDRESS` | Address out of range |
 | `ALLTRAX_ERR_NO_DEVICE` | No Alltrax device found |
+| `ALLTRAX_ERR_UNSUPPORTED` | Unsupported USB identity or controller family |
 | `ALLTRAX_ERR_BLOCKED` | Write blocked (`allow_writes=false`) |
 | `ALLTRAX_ERR_NO_MEMORY` | Memory allocation failed |
 
@@ -382,14 +389,11 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out);
 ```
 
 Reads controller identity, firmware versions, ratings, and hardware
-capabilities. Always returns `ALLTRAX_OK` if communication succeeds — check
-`out->supported` to determine whether the controller type and firmware are
-validated.
-
-The library auto-detects the controller type from the USB PID and model
-string. Non-XCT controllers (SPM, SR, BMS, BMS2) can be identified via
-`alltrax_get_info()` but other operations (read/write variables, etc.) are
-not validated for those types.
+capabilities for an accepted XCT-family device. Check `out->supported` to
+determine whether its firmware is within known bounds. Unknown firmware
+remains readable. Unsupported USB identities and controller families are
+rejected centrally, including by `alltrax_get_info()`; PID 1 identification
+is not implemented.
 
 **`alltrax_info` fields:**
 
@@ -1043,14 +1047,19 @@ model string prefix:
 | USB PID | Model Prefix | Type | Supported |
 |---------|-------------|------|-----------|
 | `0x0002` | XCT, SRX, NCT | XCT | Yes |
-| `0x0001` | SPM, SPB | SPM | Detected only |
-| `0x0001` | SR* (not SRX) | SR | Detected only |
-| `0x0001` | BMS | BMS | Detected only |
-| `0x0001` | BMS2 | BMS2 | Detected only |
+| `0x0001` | SPM, SPB | SPM | Rejected |
+| `0x0001` | SR* (not SRX) | SR | Rejected |
+| `0x0001` | BMS | BMS | Rejected |
+| `0x0001` | BMS2 | BMS2 | Rejected |
 
-Non-XCT controllers can be identified via `alltrax info` but other operations
-(read/write variables, curves, monitoring) are not validated. The CLI warns
-when a non-supported controller is connected.
+PID 1 devices are rejected before opening, including for `alltrax info`.
+Their checksum and identity/revision handling require a separate implementation.
+PID 2 devices with unrecognized model prefixes are closed after the read-only
+model check. Every public device operation requires a validated XCT-family
+identity, independently of firmware overrides.
+
+Have a PID `0x0001` device (SPM, SPB, SR, BMS, or BMS2)? Contributions toward
+support are welcome. We currently lack hardware to validate these devices.
 
 ## How it works
 

@@ -182,6 +182,26 @@ alltrax_controller_type detect_controller_type(const char* model)
     return ALLTRAX_CONTROLLER_UNKNOWN;
 }
 
+alltrax_error identify_controller(alltrax_controller* ctrl)
+{
+    alltrax_error rc = require_xct_usb(ctrl);
+    if (rc) return rc;
+
+    ctrl->controller_type = ALLTRAX_CONTROLLER_UNKNOWN;
+    uint8_t buf[15];
+    rc = read_memory(ctrl, ADDR_CONTROLLER_INFO, sizeof(buf), buf);
+    if (rc) return rc;
+
+    char model[16];
+    get_string(buf, sizeof(buf), model, sizeof(model));
+    ctrl->controller_type = detect_controller_type(model);
+    rc = require_xct_controller(ctrl);
+    if (rc)
+        set_error_detail(ctrl, "Unsupported controller model '%s'; "
+                         "requires XCT, SRX, or NCT", model);
+    return rc;
+}
+
 const char* alltrax_controller_type_name(alltrax_controller_type type)
 {
     switch (type) {
@@ -241,6 +261,8 @@ bool firmware_in_bounds(alltrax_controller_type type,
 
 alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
 {
+    alltrax_error family_rc = require_xct_controller(ctrl);
+    if (family_rc) return family_rc;
     if (!out)
         return ALLTRAX_ERR_INVALID_ARG;
 
@@ -248,22 +270,15 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     alltrax_error rc;
     uint8_t buf[56];
 
-    /* PID-dependent identity address.
-     * ALL_Variables adds +0x400 for PID 2 (XCT) to the common identity
-     * block, so PID 1 (SPM/SR/BMS) reads from 0x08000400 and PID 2 (XCT)
-     * reads from 0x08000800. Hardware config follows at +0x80. */
-    uint32_t info_addr = ADDR_CONTROLLER_INFO;
-    uint32_t hw_config_addr = ADDR_HARDWARE_CONFIG;
-    if (ctrl->pid == ALLTRAX_PID_SPM) {
-        info_addr -= 0x0400;
-        hw_config_addr -= 0x0400;
-    }
-
     /* Controller identity (52 bytes) */
-    rc = read_memory(ctrl, info_addr, 52, buf);
+    rc = read_memory(ctrl, ADDR_CONTROLLER_INFO, 52, buf);
     if (rc) return rc;
 
     get_string(buf, 15, out->model, sizeof(out->model));
+    out->controller_type = detect_controller_type(out->model);
+    ctrl->controller_type = out->controller_type;
+    rc = require_xct_controller(ctrl);
+    if (rc) return rc;
     get_string(buf + 0x10, 15, out->build_date, sizeof(out->build_date));
     out->serial_number        = get_le32(buf + 0x20);
     out->original_boot_rev    = get_le32(buf + 0x24);
@@ -272,7 +287,7 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     out->hardware_rev         = get_le32(buf + 0x30);
 
     /* Hardware config (24 bytes) */
-    rc = read_memory(ctrl, hw_config_addr, 24, buf);
+    rc = read_memory(ctrl, ADDR_HARDWARE_CONFIG, 24, buf);
     if (rc) return rc;
 
     out->rated_voltage     = get_le16(buf);
@@ -316,9 +331,6 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     format_rev(out->original_program_rev, out->original_program_rev_str,
                sizeof(out->original_program_rev_str));
 
-    /* Determine controller type from model string */
-    out->controller_type = detect_controller_type(out->model);
-
     /* Apply version gates to hardware config fields (XCT only).
      *
      * Old XCT firmware may not have reliable hardware config bytes,
@@ -359,9 +371,7 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
             out->throttles_allowed = 0x7FF;
     }
 
-    /* Set supported flag: true only for XCT with firmware in bounds.
-     * Non-XCT devices can still be queried via alltrax_get_info() but
-     * other operations (read/write variables, etc.) are not validated. */
+    /* Device family is already validated; firmware support is independent. */
     out->supported = (out->controller_type == ALLTRAX_CONTROLLER_XCT &&
                       firmware_in_bounds(out->controller_type,
                                          out->boot_rev, out->program_rev));
@@ -403,6 +413,8 @@ bool alltrax_has_feature(const alltrax_info* info, alltrax_feature feat)
 alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, size_t count, alltrax_var_value* out)
 {
+    alltrax_error family_rc = require_xct_controller(ctrl);
+    if (family_rc) return family_rc;
     if (count == 0)
         return ALLTRAX_OK;
 
@@ -516,6 +528,8 @@ static alltrax_error page_erase(alltrax_controller* ctrl, uint8_t page)
 
 alltrax_error alltrax_reset_device(alltrax_controller* ctrl)
 {
+    alltrax_error family_rc = require_xct_controller(ctrl);
+    if (family_rc) return family_rc;
     uint8_t request[PACKET_SIZE];
     build_reset_request(request);
 
@@ -707,6 +721,8 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, const double* values, size_t count,
     const alltrax_write_opts* opts)
 {
+    alltrax_error family_rc = require_xct_controller(ctrl);
+    if (family_rc) return family_rc;
     if (count == 0) {
         set_error_detail(ctrl, "No variables to write");
         return ALLTRAX_ERR_INVALID_ARG;
@@ -842,9 +858,6 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
             if (ttype > 0) {
                 /* Read throttles_allowed from hardware config */
                 uint32_t hw_addr = ADDR_HARDWARE_CONFIG + 16;
-                if (ctrl->pid == ALLTRAX_PID_SPM)
-                    hw_addr -= 0x0400;
-
                 uint8_t ta_buf[4];
                 rc = read_memory(ctrl, hw_addr, 4, ta_buf);
                 if (rc) return rc;
@@ -965,6 +978,8 @@ static alltrax_error read_curve_array(alltrax_controller* ctrl,
 alltrax_error alltrax_read_curve(alltrax_controller* ctrl,
     const alltrax_curve_def* def, alltrax_curve_data* out)
 {
+    alltrax_error family_rc = require_xct_controller(ctrl);
+    if (family_rc) return family_rc;
     if (!def || !out)
         return ALLTRAX_ERR_INVALID_ARG;
 
@@ -980,6 +995,8 @@ alltrax_error alltrax_read_curve(alltrax_controller* ctrl,
 alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
     const alltrax_curve_def* def, alltrax_curve_data* out)
 {
+    alltrax_error family_rc = require_xct_controller(ctrl);
+    if (family_rc) return family_rc;
     if (!def || !out)
         return ALLTRAX_ERR_INVALID_ARG;
 
@@ -1008,6 +1025,8 @@ alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
     const alltrax_curve_def* def, const alltrax_curve_data* data,
     const alltrax_write_opts* opts)
 {
+    alltrax_error family_rc = require_xct_controller(ctrl);
+    if (family_rc) return family_rc;
     if (!def || !data)
         return ALLTRAX_ERR_INVALID_ARG;
 
@@ -1073,6 +1092,8 @@ static const struct { uint32_t addr; size_t size; } monitor_blocks[] = {
 alltrax_error alltrax_read_monitor(alltrax_controller* ctrl,
     alltrax_monitor_data* out)
 {
+    alltrax_error family_rc = require_xct_controller(ctrl);
+    if (family_rc) return family_rc;
     memset(out, 0, sizeof(*out));
 
     uint8_t blocks[MONITOR_BLOCK_COUNT][MAX_PAYLOAD];

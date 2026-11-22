@@ -32,6 +32,9 @@ static uint32_t request_address(void)
 static void mock_reset(void)
 {
     memset(&mock, 0, sizeof(mock));
+    mock.ctrl.vid = ALLTRAX_VID;
+    mock.ctrl.pid = ALLTRAX_PID_XCT;
+    mock.ctrl.controller_type = ALLTRAX_CONTROLLER_XCT;
     mock.ctrl.allow_writes = true;
     for (size_t i = 0; i < sizeof(mock.page); i++)
         mock.page[i] = (uint8_t)(i * 37 + 11);
@@ -182,6 +185,69 @@ static int test_string_assignments_rejected_before_device_access(void)
     return 0;
 }
 
+static int test_unsupported_identity_blocks_all_operations(void)
+{
+    const struct {
+        uint16_t vid, pid;
+        alltrax_controller_type type;
+    } identities[] = {
+        { 0, 0, ALLTRAX_CONTROLLER_UNKNOWN },
+        { 0x1234, ALLTRAX_PID_XCT, ALLTRAX_CONTROLLER_XCT },
+        { ALLTRAX_VID, ALLTRAX_PID_SPM, ALLTRAX_CONTROLLER_XCT },
+        { ALLTRAX_VID, 0x1234, ALLTRAX_CONTROLLER_XCT },
+        { ALLTRAX_VID, ALLTRAX_PID_XCT, ALLTRAX_CONTROLLER_UNKNOWN },
+        { ALLTRAX_VID, ALLTRAX_PID_XCT, ALLTRAX_CONTROLLER_SPM },
+        { ALLTRAX_VID, ALLTRAX_PID_XCT, ALLTRAX_CONTROLLER_SR },
+        { ALLTRAX_VID, ALLTRAX_PID_XCT, ALLTRAX_CONTROLLER_BMS },
+        { ALLTRAX_VID, ALLTRAX_PID_XCT, ALLTRAX_CONTROLLER_BMS2 },
+    };
+    const alltrax_write_opts unchecked = {
+        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_fw_check = true, .skip_voltage_link = true,
+    };
+    const alltrax_write_opts* options[] = { NULL, &unchecked };
+    const alltrax_var_def* vars[] = {
+        alltrax_find_var("Fan_On"), alltrax_find_var("HPD"),
+    };
+    const double values[] = { 1, 1 };
+    const alltrax_curve_def* curve = alltrax_find_curve("linearization");
+    alltrax_curve_data data = {0};
+
+    for (size_t i = 0; i < sizeof(identities) / sizeof(identities[0]); i++) {
+        mock_reset();
+        mock.ctrl.vid = identities[i].vid;
+        mock.ctrl.pid = identities[i].pid;
+        mock.ctrl.controller_type = identities[i].type;
+        uint8_t original[VARSET_SIZE];
+        memcpy(original, mock.page, sizeof(original));
+
+        for (size_t o = 0; o < sizeof(options) / sizeof(options[0]); o++) {
+            for (size_t v = 0; v < 2; v++) {
+                ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars + v, values + v,
+                                             1, options[o]), ALLTRAX_ERR_UNSUPPORTED);
+            }
+            ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values, 2, options[o]),
+                      ALLTRAX_ERR_UNSUPPORTED);
+            ASSERT_EQ(alltrax_write_curve(&mock.ctrl, curve, &data, options[o]),
+                      ALLTRAX_ERR_UNSUPPORTED);
+        }
+        ASSERT_EQ(alltrax_reset_device(&mock.ctrl), ALLTRAX_ERR_UNSUPPORTED);
+        alltrax_info info;
+        alltrax_var_value value;
+        alltrax_monitor_data monitor;
+        ASSERT_EQ(alltrax_get_info(&mock.ctrl, &info), ALLTRAX_ERR_UNSUPPORTED);
+        ASSERT_EQ(alltrax_read_vars(&mock.ctrl, vars, 1, &value), ALLTRAX_ERR_UNSUPPORTED);
+        ASSERT_EQ(alltrax_read_curve(&mock.ctrl, curve, &data), ALLTRAX_ERR_UNSUPPORTED);
+        ASSERT_EQ(alltrax_read_curve_factory(&mock.ctrl, curve, &data), ALLTRAX_ERR_UNSUPPORTED);
+        ASSERT_EQ(alltrax_read_monitor(&mock.ctrl, &monitor), ALLTRAX_ERR_UNSUPPORTED);
+        ASSERT_TRUE(strstr(mock.ctrl.error_detail, "requires") != NULL);
+        ASSERT_EQ(mock.requests, 0);
+        ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+        ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+    }
+    return 0;
+}
+
 static int test_info_exact_read_lengths(void)
 {
     mock_reset();
@@ -325,6 +391,7 @@ int main(void)
     RUN_TEST(test_flash_write_rejects_incomplete_verification);
     RUN_TEST(test_flash_write_rejects_final_verification_length_mismatch);
     RUN_TEST(test_string_assignments_rejected_before_device_access);
+    RUN_TEST(test_unsupported_identity_blocks_all_operations);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }
