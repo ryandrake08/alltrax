@@ -507,12 +507,6 @@ static alltrax_error validate_var_for_io(alltrax_controller* ctrl,
             set_error_detail(ctrl, "Variable is read-only: %s", var->name);
             return ALLTRAX_ERR_INVALID_ARG;
         }
-        if (var->type == ALLTRAX_TYPE_STRING) {
-            set_error_detail(ctrl,
-                "Variable %s is a string; numeric writes do not support strings",
-                var->name);
-            return ALLTRAX_ERR_INVALID_ARG;
-        }
     }
     uint32_t base = var->is_flash ? (writing ? VARSET_ADDR : FLASH_BASE) : RAM_BASE;
     size_t capacity = var->is_flash ? (writing ? VARSET_SIZE : FLASH_END - FLASH_BASE) :
@@ -862,230 +856,6 @@ alltrax_error validate_voltage_link(
     return ALLTRAX_OK;
 }
 
-alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
-    const alltrax_var_def** vars, const double* values, size_t count,
-    const alltrax_write_opts* opts)
-{
-    alltrax_error gate_rc = require_writable_firmware(ctrl,
-        opts && opts->skip_fw_check);
-    if (gate_rc) return gate_rc;
-    if (!vars || !values || count == 0) {
-        set_error_detail(ctrl, "Variables and values are required");
-        return ALLTRAX_ERR_INVALID_ARG;
-    }
-
-    /* Ensure we have opts, use defaults if not passed */
-    alltrax_write_opts defaults = {0};
-    if (!opts) opts = &defaults;
-
-    /* ---- 1. Validate and count all variables ---- */
-
-    size_t ram_total = 0;
-    size_t flash_total = 0;
-
-    for (size_t i = 0; i < count; i++) {
-        const alltrax_var_def* var = vars[i];
-        alltrax_error rc = validate_var_for_io(ctrl, var, true);
-        if (rc) return rc;
-
-        if (alltrax_validate_var_value(var, values[i])) {
-            set_error_detail(ctrl, "Value out of range for %s", var->name);
-            return ALLTRAX_ERR_INVALID_ARG;
-        }
-
-        if (var->is_flash) {
-            flash_total++;
-        } else {
-            ram_total++;
-        }
-    }
-
-    if (ram_total > MAX_RAM_WRITE_VARS) {
-        set_error_detail(ctrl, "Too many RAM variables (max %d)",
-                         MAX_RAM_WRITE_VARS);
-        return ALLTRAX_ERR_INVALID_ARG;
-    }
-    if (flash_total > MAX_FLASH_WRITE_VARS) {
-        set_error_detail(ctrl, "Too many FLASH variables (max %d)",
-                         MAX_FLASH_WRITE_VARS);
-        return ALLTRAX_ERR_INVALID_ARG;
-    }
-
-    /* ---- 1b. Voltage link validation ---- */
-    /* Enforce KSI < UnderVolt < OverVolt with 1V gaps, plus BMS constraints.
-     * Reads current values for any voltage vars not in the write set. */
-
-    alltrax_error rc;
-
-    if (!opts->skip_voltage_link) {
-        static const char* vlink_names[4] = {
-            "AnalogInputs_Threshold",   /* KSI */
-            "LoBat_Vlim",               /* UnderVolt */
-            "HiBat_Vlim",               /* OverVolt */
-            "BMS_Missing_HiBat_Vlim",   /* BMS Missing OverVolt */
-        };
-        double vlink_vals[4] = { -1, -1, -1, -1 };
-        bool vlink_touched[4] = { false, false, false, false };
-        bool any_voltage = false;
-
-        for (size_t i = 0; i < count; i++) {
-            for (int v = 0; v < 4; v++) {
-                if (strcmp(vars[i]->name, vlink_names[v]) == 0) {
-                    vlink_vals[v] = values[i];
-                    vlink_touched[v] = true;
-                    any_voltage = true;
-                }
-            }
-        }
-
-        if (any_voltage) {
-            /* Read current values for untouched voltage vars */
-            const alltrax_var_def* to_read[4];
-            int read_idx[4];
-            int n_reads = 0;
-
-            for (int v = 0; v < 4; v++) {
-                if (!vlink_touched[v]) {
-                    to_read[n_reads] = alltrax_find_var(vlink_names[v]);
-                    read_idx[n_reads] = v;
-                    n_reads++;
-                }
-            }
-
-            if (n_reads > 0) {
-                alltrax_var_value read_out[4];
-                rc = alltrax_read_vars(ctrl, to_read, (size_t)n_reads,
-                                       read_out);
-                if (rc) return rc;  /* Preserve the read failure diagnostic. */
-                for (int i = 0; i < n_reads; i++)
-                    vlink_vals[read_idx[i]] = read_out[i].display;
-            }
-
-            char errmsg[256];
-            rc = validate_voltage_link(
-                vlink_vals[0], vlink_vals[1], vlink_vals[2],
-                vlink_vals[3], errmsg, sizeof(errmsg));
-            if (rc) {
-                set_error_detail(ctrl, "%s", errmsg);
-                return ALLTRAX_ERR_INVALID_ARG;
-            }
-        }
-    }
-
-    /* ---- 1c. Throttle type validation ---- */
-    /* If Throttle_Type is being written, check that the value is allowed
-     * by the hardware's throttles_allowed bitmask. */
-
-    for (size_t i = 0; i < count; i++) {
-        if (strcmp(vars[i]->name, "Throttle_Type") == 0) {
-            /* Use the checked encoder's byte, including descriptor scaling or
-             * offsets, so hardware validation matches what will be written. */
-            uint8_t encoded[4];
-            if (alltrax_encode_var(vars[i], values[i], encoded) != 1 ||
-                !alltrax_throttle_type_name(encoded[0])) {
-                set_error_detail(ctrl, "Throttle_Type must encode a defined one-byte enum value");
-                return ALLTRAX_ERR_INVALID_ARG;
-            }
-            uint8_t ttype = encoded[0]; /* A defined enum value in [0,11]. */
-
-            /* Type 0 (None) is always allowed */
-            if (ttype > 0) {
-                /* Read throttles_allowed from hardware config */
-                uint32_t hw_addr = ADDR_HARDWARE_CONFIG + 16;
-                uint8_t ta_buf[4];
-                rc = read_memory(ctrl, hw_addr, 4, ta_buf);
-                if (rc) return rc;
-
-                uint32_t throttles_allowed = get_le32(ta_buf);
-                uint32_t bit = UINT32_C(1) << (ttype - 1);
-
-                if (!(throttles_allowed & bit)) {
-                    const char* name = alltrax_throttle_type_name(ttype);
-                    set_error_detail(ctrl,
-                        "Throttle type %u (%s) is not allowed by hardware "
-                        "(allowed: 0x%04X)",
-                        ttype, name ? name : "unknown", throttles_allowed);
-                    return ALLTRAX_ERR_INVALID_ARG;
-                }
-            }
-        }
-    }
-
-    /* ---- 2. Encode all variables ---- */
-
-    ram_encoded_t ram_encoded[MAX_RAM_WRITE_VARS];
-    flash_patch_t flash_patches[MAX_FLASH_WRITE_VARS];
-    size_t ram_count = 0;
-    size_t flash_count = 0;
-
-    for (size_t i = 0; i < count; i++) {
-        const alltrax_var_def* var = vars[i];
-
-        if (var->is_flash) {
-            flash_patch_t* p = &flash_patches[flash_count];
-            p->offset = var->address - VARSET_ADDR;
-            p->len = alltrax_encode_var(var, values[i], p->data);
-            if (p->len <= 0) {
-                set_error_detail(ctrl, "Cannot encode variable %s", var->name);
-                return ALLTRAX_ERR_INVALID_ARG;
-            }
-            if ((size_t)p->len > sizeof(p->data) ||
-                !span_fits(p->offset, (size_t)p->len, VARSET_SIZE)) {
-                set_error_detail(ctrl,
-                    "Variable %s extends beyond VARSET page", var->name);
-                return ALLTRAX_ERR_ADDRESS;
-            }
-            flash_count++;
-        } else {
-            ram_encoded_t* r = &ram_encoded[ram_count];
-            r->addr = var->address;
-            r->len = alltrax_encode_var(var, values[i], r->data);
-            if (r->len <= 0) {
-                set_error_detail(ctrl, "Cannot encode variable %s", var->name);
-                return ALLTRAX_ERR_INVALID_ARG;
-            }
-            ram_count++;
-        }
-    }
-
-    /* ---- 3. FLASH pre-checks (before entering CAL) ---- */
-
-    if (flash_count > 0) {
-        rc = flash_prechecks(ctrl, opts);
-        if (rc) return rc;
-    }
-
-    /* ---- 4. Enter CAL mode (single bracket for all writes) ---- */
-
-    bool cal_attempted = false;
-
-    if (!opts->skip_cal) {
-        rc = enter_cal(ctrl, &cal_attempted);
-        if (rc) return finish_cal_write(ctrl, cal_attempted, rc);
-    }
-
-    /* ---- 5. Write RAM variables ---- */
-
-    for (size_t i = 0; i < ram_count; i++) {
-        rc = write_memory(ctrl, ram_encoded[i].addr,
-                          ram_encoded[i].data, (size_t)ram_encoded[i].len);
-        if (rc) goto restore_run;
-    }
-
-    /* ---- 6. FLASH page cycle ---- */
-
-    if (flash_count > 0) {
-        rc = write_flash_page(ctrl, flash_patches, flash_count,
-                              opts->skip_verify);
-        if (rc) goto restore_run;
-    }
-
-    rc = ALLTRAX_OK;
-
-restore_run:
-    return finish_cal_write(ctrl, cal_attempted, rc);
-}
-
 /* ------------------------------------------------------------------ */
 /* Curve table read/write                                              */
 /* ------------------------------------------------------------------ */
@@ -1203,50 +973,312 @@ alltrax_error alltrax_validate_curve(const alltrax_curve_def* def,
     return encode_curve_data(def, data, x, y);
 }
 
-alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
-    const alltrax_curve_def* def, const alltrax_curve_data* data,
+/* Validate and encode one assignment into the RAM or FLASH patch list,
+ * without device I/O. */
+static alltrax_error encode_assignment(alltrax_controller* ctrl,
+    const alltrax_assignment* item, ram_encoded_t* ram, size_t* ram_count,
+    flash_patch_t* flash, size_t* flash_count)
+{
+    if (!item->var == !item->curve) {
+        set_error_detail(ctrl, "Each assignment needs exactly one variable or curve");
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+
+    if (item->curve) {
+        const alltrax_curve_def* def = item->curve;
+        alltrax_error rc = validate_curve_def(ctrl, def, false);
+        if (rc) return rc;
+        if (!item->curve_data) {
+            set_error_detail(ctrl, "Curve %s requires curve data", def->name);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+        if (*flash_count + 2 > MAX_FLASH_WRITE_VARS) {
+            set_error_detail(ctrl, "Too many FLASH variables (max %d)",
+                             MAX_FLASH_WRITE_VARS);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+        flash_patch_t* x = &flash[*flash_count];
+        flash_patch_t* y = x + 1;
+        x->offset = def->x_address - VARSET_ADDR;
+        y->offset = def->y_address - VARSET_ADDR;
+        x->len = y->len = ALLTRAX_CURVE_POINTS * 2;
+        rc = encode_curve_data(def, item->curve_data, x->data, y->data);
+        if (rc) {
+            set_error_detail(ctrl,
+                "Invalid %s curve: points must be finite and encode within raw "
+                "X [0,%d], Y [0,%d] with finite positive scales",
+                def->name, def->x_raw_max, def->y_raw_max);
+            return rc;
+        }
+        *flash_count += 2;
+        return ALLTRAX_OK;
+    }
+
+    const alltrax_var_def* var = item->var;
+    alltrax_error rc = validate_var_for_io(ctrl, var, true);
+    if (rc) return rc;
+
+    bool is_string = var->type == ALLTRAX_TYPE_STRING;
+    if (is_string != (item->text != NULL)) {
+        set_error_detail(ctrl, is_string
+            ? "Variable %s is a string; it requires a text value"
+            : "Variable %s is not a string; text values are not allowed",
+            var->name);
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+    if (!is_string && alltrax_validate_var_value(var, item->number)) {
+        set_error_detail(ctrl, "Value out of range for %s", var->name);
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+
+    uint8_t* data;
+    int* len;
+    if (var->is_flash) {
+        if (*flash_count >= MAX_FLASH_WRITE_VARS) {
+            set_error_detail(ctrl, "Too many FLASH variables (max %d)",
+                             MAX_FLASH_WRITE_VARS);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+        flash_patch_t* p = &flash[*flash_count];
+        p->offset = var->address - VARSET_ADDR;
+        data = p->data;
+        len = &p->len;
+    } else {
+        if (*ram_count >= MAX_RAM_WRITE_VARS) {
+            set_error_detail(ctrl, "Too many RAM variables (max %d)",
+                             MAX_RAM_WRITE_VARS);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+        ram_encoded_t* r = &ram[*ram_count];
+        r->addr = var->address;
+        data = r->data;
+        len = &r->len;
+    }
+
+    *len = is_string ? alltrax_encode_string(var, item->text, data)
+                     : alltrax_encode_var(var, item->number, data);
+    if (*len <= 0) {
+        if (is_string)
+            set_error_detail(ctrl,
+                "Invalid text for %s: printable ASCII, at most %u characters",
+                var->name, (unsigned)var->size);
+        else
+            set_error_detail(ctrl, "Cannot encode variable %s", var->name);
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+
+    if (var->is_flash) {
+        flash_patch_t* p = &flash[*flash_count];
+        if ((size_t)p->len > sizeof(p->data) ||
+            !span_fits(p->offset, (size_t)p->len, VARSET_SIZE)) {
+            set_error_detail(ctrl,
+                "Variable %s extends beyond VARSET page", var->name);
+            return ALLTRAX_ERR_ADDRESS;
+        }
+        (*flash_count)++;
+    } else {
+        (*ram_count)++;
+    }
+    return ALLTRAX_OK;
+}
+
+/* Numeric (non-string) variable assignment, or NULL for strings and curves. */
+static const alltrax_var_def* numeric_var(const alltrax_assignment* item)
+{
+    return item->var && !item->text ? item->var : NULL;
+}
+
+alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
+    const alltrax_assignment* items, size_t count,
     const alltrax_write_opts* opts)
 {
     alltrax_error gate_rc = require_writable_firmware(ctrl,
         opts && opts->skip_fw_check);
     if (gate_rc) return gate_rc;
-    if (!def || !data)
+    if (!items || count == 0) {
+        set_error_detail(ctrl, "Assignments are required");
         return ALLTRAX_ERR_INVALID_ARG;
-    alltrax_error rc = validate_curve_def(ctrl, def, false);
-    if (rc) return rc;
+    }
 
+    /* Ensure we have opts, use defaults if not passed */
     alltrax_write_opts defaults = {0};
     if (!opts) opts = &defaults;
 
-    /* Validate and encode every point before device I/O or entering CAL. */
-    flash_patch_t patches[2];
-    patches[0].offset = def->x_address - VARSET_ADDR;
-    patches[0].len = ALLTRAX_CURVE_POINTS * 2;
-    patches[1].offset = def->y_address - VARSET_ADDR;
-    patches[1].len = ALLTRAX_CURVE_POINTS * 2;
-    rc = encode_curve_data(def, data, patches[0].data, patches[1].data);
-    if (rc) {
-        set_error_detail(ctrl,
-            "Invalid %s curve: points must be finite and encode within raw "
-            "X [0,%d], Y [0,%d] with finite positive scales",
-            def->name, def->x_raw_max, def->y_raw_max);
-        return rc;
+    /* ---- 1. Validate and encode every assignment ---- */
+
+    ram_encoded_t ram_encoded[MAX_RAM_WRITE_VARS];
+    flash_patch_t flash_patches[MAX_FLASH_WRITE_VARS];
+    size_t ram_count = 0;
+    size_t flash_count = 0;
+    alltrax_error rc;
+
+    for (size_t i = 0; i < count; i++) {
+        rc = encode_assignment(ctrl, &items[i], ram_encoded, &ram_count,
+                               flash_patches, &flash_count);
+        if (rc) return rc;
     }
 
-    /* FLASH pre-checks */
-    rc = flash_prechecks(ctrl, opts);
-    if (rc) return rc;
+    /* ---- 1b. Voltage link validation ---- */
+    /* Enforce KSI < UnderVolt < OverVolt with 1V gaps, plus BMS constraints.
+     * Reads current values for any voltage vars not in the write set. */
 
-    /* Enter CAL */
+    if (!opts->skip_voltage_link) {
+        static const char* vlink_names[4] = {
+            "AnalogInputs_Threshold",   /* KSI */
+            "LoBat_Vlim",               /* UnderVolt */
+            "HiBat_Vlim",               /* OverVolt */
+            "BMS_Missing_HiBat_Vlim",   /* BMS Missing OverVolt */
+        };
+        double vlink_vals[4] = { -1, -1, -1, -1 };
+        bool vlink_touched[4] = { false, false, false, false };
+        bool any_voltage = false;
+
+        for (size_t i = 0; i < count; i++) {
+            const alltrax_var_def* var = numeric_var(&items[i]);
+            for (int v = 0; var && v < 4; v++) {
+                if (strcmp(var->name, vlink_names[v]) == 0) {
+                    vlink_vals[v] = items[i].number;
+                    vlink_touched[v] = true;
+                    any_voltage = true;
+                }
+            }
+        }
+
+        if (any_voltage) {
+            /* Read current values for untouched voltage vars */
+            const alltrax_var_def* to_read[4];
+            int read_idx[4];
+            int n_reads = 0;
+
+            for (int v = 0; v < 4; v++) {
+                if (!vlink_touched[v]) {
+                    to_read[n_reads] = alltrax_find_var(vlink_names[v]);
+                    read_idx[n_reads] = v;
+                    n_reads++;
+                }
+            }
+
+            if (n_reads > 0) {
+                alltrax_var_value read_out[4];
+                rc = alltrax_read_vars(ctrl, to_read, (size_t)n_reads,
+                                       read_out);
+                if (rc) return rc;  /* Preserve the read failure diagnostic. */
+                for (int i = 0; i < n_reads; i++)
+                    vlink_vals[read_idx[i]] = read_out[i].display;
+            }
+
+            char errmsg[256];
+            rc = validate_voltage_link(
+                vlink_vals[0], vlink_vals[1], vlink_vals[2],
+                vlink_vals[3], errmsg, sizeof(errmsg));
+            if (rc) {
+                set_error_detail(ctrl, "%s", errmsg);
+                return ALLTRAX_ERR_INVALID_ARG;
+            }
+        }
+    }
+
+    /* ---- 1c. Throttle type validation ---- */
+    /* If Throttle_Type is being written, check that the value is allowed
+     * by the hardware's throttles_allowed bitmask. */
+
+    for (size_t i = 0; i < count; i++) {
+        const alltrax_var_def* var = numeric_var(&items[i]);
+        if (var && strcmp(var->name, "Throttle_Type") == 0) {
+            /* Use the checked encoder's byte, including descriptor scaling or
+             * offsets, so hardware validation matches what will be written. */
+            uint8_t encoded[4];
+            if (alltrax_encode_var(var, items[i].number, encoded) != 1 ||
+                !alltrax_throttle_type_name(encoded[0])) {
+                set_error_detail(ctrl, "Throttle_Type must encode a defined one-byte enum value");
+                return ALLTRAX_ERR_INVALID_ARG;
+            }
+            uint8_t ttype = encoded[0]; /* A defined enum value in [0,11]. */
+
+            /* Type 0 (None) is always allowed */
+            if (ttype > 0) {
+                /* Read throttles_allowed from hardware config */
+                uint32_t hw_addr = ADDR_HARDWARE_CONFIG + 16;
+                uint8_t ta_buf[4];
+                rc = read_memory(ctrl, hw_addr, 4, ta_buf);
+                if (rc) return rc;
+
+                uint32_t throttles_allowed = get_le32(ta_buf);
+                uint32_t bit = UINT32_C(1) << (ttype - 1);
+
+                if (!(throttles_allowed & bit)) {
+                    const char* name = alltrax_throttle_type_name(ttype);
+                    set_error_detail(ctrl,
+                        "Throttle type %u (%s) is not allowed by hardware "
+                        "(allowed: 0x%04X)",
+                        ttype, name ? name : "unknown", throttles_allowed);
+                    return ALLTRAX_ERR_INVALID_ARG;
+                }
+            }
+        }
+    }
+
+    /* ---- 2. FLASH pre-checks (before entering CAL) ---- */
+
+    if (flash_count > 0) {
+        rc = flash_prechecks(ctrl, opts);
+        if (rc) return rc;
+    }
+
+    /* ---- 3. Enter CAL mode (single bracket for all writes) ---- */
+
     bool cal_attempted = false;
+
     if (!opts->skip_cal) {
         rc = enter_cal(ctrl, &cal_attempted);
         if (rc) return finish_cal_write(ctrl, cal_attempted, rc);
     }
 
-    rc = write_flash_page(ctrl, patches, 2, opts->skip_verify);
+    /* ---- 4. Write RAM variables ---- */
 
+    for (size_t i = 0; i < ram_count; i++) {
+        rc = write_memory(ctrl, ram_encoded[i].addr,
+                          ram_encoded[i].data, (size_t)ram_encoded[i].len);
+        if (rc) goto restore_run;
+    }
+
+    /* ---- 5. FLASH page cycle ---- */
+
+    if (flash_count > 0) {
+        rc = write_flash_page(ctrl, flash_patches, flash_count,
+                              opts->skip_verify);
+        if (rc) goto restore_run;
+    }
+
+    rc = ALLTRAX_OK;
+
+restore_run:
     return finish_cal_write(ctrl, cal_attempted, rc);
+}
+
+alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
+    const alltrax_var_def** vars, const double* values, size_t count,
+    const alltrax_write_opts* opts)
+{
+    alltrax_assignment items[MAX_RAM_WRITE_VARS + MAX_FLASH_WRITE_VARS];
+    if (!vars || !values)
+        count = 0;
+    if (count > sizeof(items) / sizeof(items[0])) {
+        if (ctrl) set_error_detail(ctrl, "Too many variables (max %zu)",
+                                   sizeof(items) / sizeof(items[0]));
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+    for (size_t i = 0; i < count; i++)
+        items[i] = (alltrax_assignment){ .var = vars[i], .number = values[i] };
+    return alltrax_write_assignments(ctrl, items, count, opts);
+}
+
+alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
+    const alltrax_curve_def* def, const alltrax_curve_data* data,
+    const alltrax_write_opts* opts)
+{
+    const alltrax_assignment item = { .curve = def, .curve_data = data };
+    return alltrax_write_assignments(ctrl, &item, 1, opts);
 }
 
 /* ------------------------------------------------------------------ */

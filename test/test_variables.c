@@ -1340,6 +1340,52 @@ static int test_throttle_type_requires_defined_integer(void)
 /* Test runner                                                         */
 /* ------------------------------------------------------------------ */
 
+static int test_string_decode_valid(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("Throttle_Type_Name");
+    const struct { uint8_t raw[17]; const char* text; } cases[] = {  /* 16 bytes used */
+        { "ABC\0\0\0\0\0\0\0\0\0\0\0\0", "ABC" },             /* NUL padding */
+        { "AB\0CD           ", "AB CD" },                        /* embedded NUL */
+        { "                ", "" },                              /* all spaces */
+        { "ABCDEFGHIJKLMNOP", "ABCDEFGHIJKLMNOP" },              /* full length */
+        { "A\tB\x7f\x80       ", "A?B??" },                      /* non-printable */
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        alltrax_var_value out;
+        ASSERT_EQ(alltrax_decode_var(cases[i].raw, 16, var, var->address, &out),
+                  ALLTRAX_OK);
+        ASSERT_STR_EQ(out.raw.str, cases[i].text);
+    }
+
+    uint8_t erased[16];
+    memset(erased, 0xFF, sizeof(erased));
+    alltrax_var_value out;
+    ASSERT_EQ(alltrax_decode_var(erased, 16, var, var->address, &out), ALLTRAX_OK);
+    ASSERT_STR_EQ(out.raw.str, "????????????????");
+    return 0;
+}
+
+static int test_string_encode_valid(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("Throttle_Type_Name");
+    uint8_t buf[16];
+    ASSERT_EQ(alltrax_encode_string(var, "AB  ", buf), 16);
+    ASSERT_MEM_EQ(buf, "AB              ", 16);
+    ASSERT_EQ(alltrax_encode_string(var, "", buf), 16);
+    ASSERT_MEM_EQ(buf, "                ", 16);
+
+    /* Failures leave the buffer unchanged. */
+    memset(buf, 0xAA, sizeof(buf));
+    uint8_t untouched[16];
+    memset(untouched, 0xAA, sizeof(untouched));
+    ASSERT_EQ(alltrax_encode_string(var, "ABCDEFGHIJKLMNOPQ", buf), 0);
+    ASSERT_EQ(alltrax_encode_string(var, "\x01", buf), 0);
+    ASSERT_EQ(alltrax_encode_string(var, NULL, buf), 0);
+    ASSERT_EQ(alltrax_encode_string(alltrax_find_var("HPD"), "1", buf), 0);
+    ASSERT_MEM_EQ(buf, untouched, sizeof(buf));
+    return 0;
+}
+
 void run_variables_tests(void)
 {
     printf("variables:\n");
@@ -1443,6 +1489,8 @@ void run_variables_tests(void)
     RUN_TEST(test_voltage_link_null_msg);
 
     /* format_rev */
+    RUN_TEST(test_string_decode_valid);
+    RUN_TEST(test_string_encode_valid);
     RUN_TEST(test_format_rev_5005);
     RUN_TEST(test_format_rev_zero);
     RUN_TEST(test_format_rev_999);

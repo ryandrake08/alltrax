@@ -105,7 +105,17 @@ alltrax write LoBat_Vlim=28.1 HiBat_Vlim=61.0
 
 # Write a RAM variable (takes effect immediately, not persistent)
 alltrax write Fan_On=1
+
+# Write a string setting together with a number (one FLASH page cycle)
+alltrax write F_Table_Name="MY FIELD MAP" HPD=1
+
+# Clear a string setting (stored as spaces)
+alltrax write F_Table_Name=
 ```
+
+String settings take the text after `=` literally: printable ASCII, at most the
+field size (`Throttle_Type_Name` 16, `F_Table_Name` 32). Trailing spaces are
+ignored.
 
 ### Write flags
 
@@ -144,6 +154,12 @@ are loaded. Read, validity, and encryption failures exit with an error and
 leave an existing file unchanged. If writing the file itself fails (for example,
 a full disk), it exits with an error and removes the partial file; the previous
 contents are not kept.
+
+`config load` restores every writable setting in the file, including the
+`Throttle_Type_Name` and `F_Table_Name` strings, and all curves. Writes
+everything in one batch: one CAL/RUN bracket and one settings page erase.
+Any invalid value, such as a string that is too long or not ASCII, rejects
+the load before the controller is opened.
 
 Config files saved by the Alltrax Toolkit ("Save All Settings") can be loaded
 with `alltrax config load`. Config files saved by the CLI can be loaded by the
@@ -638,9 +654,9 @@ Validation and encoding use the same checked conversion. Finite boolean values
 normalize zero to false and nonzero to true. The CLI also rejects empty numbers
 and numeric parsing overflow or underflow.
 
-Only numeric and boolean assignments are supported. String assignments (including
-`Throttle_Type_Name` and `F_Table_Name`) return `ALLTRAX_ERR_INVALID_ARG` before
-device I/O and reject the entire batch. The CLI also rejects string writes.
+`alltrax_write_vars()` takes numeric and boolean values only; a string variable
+returns `ALLTRAX_ERR_INVALID_ARG` before device I/O. Use
+`alltrax_write_assignments()` for strings.
 
 Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
 `alltrax_write_opts` struct to control individual safety checks:
@@ -673,6 +689,44 @@ const alltrax_var_def* vars[] = {
 };
 double values[] = { 28.1, 61.0, 1.0 };
 alltrax_write_vars(ctrl, vars, values, 3, NULL);
+```
+
+### Batch writes with strings and curves
+
+```c
+typedef struct {
+    const alltrax_var_def* var;            /* a variable, or */
+    double number;                         /*   numeric/bool value */
+    const char* text;                      /*   string value */
+    const alltrax_curve_def* curve;        /* a user curve */
+    const alltrax_curve_data* curve_data;
+} alltrax_assignment;
+
+alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
+    const alltrax_assignment* items, size_t count,
+    const alltrax_write_opts* opts);
+alltrax_error alltrax_validate_var_string(const alltrax_var_def* var,
+    const char* text);
+```
+
+`alltrax_write_assignments()` writes numeric, boolean, and string variables
+and user curves in one call. Each item sets exactly one of `var` or `curve`.
+String variables require `text`; other variables require `text == NULL`. Every
+item is validated before device I/O, and an invalid item rejects the whole
+batch. All writes share one CAL/RUN bracket, and all FLASH items share one
+settings page cycle (one erase). The limits are 16 RAM variables and 96 FLASH
+patches (a curve uses two). `alltrax_write_vars()` and `alltrax_write_curve()`
+are single-kind wrappers around it.
+
+```c
+const alltrax_curve_def* lin = alltrax_find_curve("linearization");
+alltrax_curve_data curve;                 /* filled by the caller */
+alltrax_assignment items[] = {
+    { .var = alltrax_find_var("F_Table_Name"), .text = "MY FIELD MAP" },
+    { .var = alltrax_find_var("HPD"), .number = 1 },
+    { .curve = lin, .curve_data = &curve },
+};
+alltrax_write_assignments(ctrl, items, 3, NULL);  /* one erase */
 ```
 
 ### Curve tables

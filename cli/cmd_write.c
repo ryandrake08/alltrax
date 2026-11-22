@@ -1,9 +1,9 @@
 /*
  * cmd_write.c — alltrax write var=value [...]: Write settings
  *
- * Parses var=value pairs, separates RAM and FLASH variables, and
- * writes them using the appropriate method. FLASH variables are
- * batched into a single page write cycle.
+ * Parses var=value pairs and writes them in one alltrax_write_assignments()
+ * batch: one CAL/RUN bracket and one FLASH page cycle. String variables take
+ * the text after '=' literally; an empty value clears the field.
  */
 
 #include <stdio.h>
@@ -11,12 +11,6 @@
 #include <string.h>
 #include <errno.h>
 #include "cli.h"
-
-/* A parsed assignment */
-typedef struct {
-    const alltrax_var_def* var;
-    double value;
-} assignment;
 
 int cmd_write(int argc, char** argv)
 {
@@ -30,6 +24,9 @@ int cmd_write(int argc, char** argv)
         fprintf(stderr,
             "Usage: alltrax write [flags] var=value ...\n"
             "\n"
+            "String variables take the text after '=' (printable ASCII, up to\n"
+            "the field size); an empty value clears the field.\n"
+            "\n"
             "Flags:\n"
             "  --no-cal           Skip CAL/RUN mode bracket\n"
             "  --no-verify        Skip read-back verification (FLASH)\n"
@@ -42,7 +39,8 @@ int cmd_write(int argc, char** argv)
         return 1;
     }
 
-    assignment* assigns = calloc((size_t)n_assignments, sizeof(assignment));
+    alltrax_assignment* assigns = calloc((size_t)n_assignments,
+                                         sizeof(alltrax_assignment));
     if (!assigns) {
         fprintf(stderr, "Error: out of memory\n");
         return 1;
@@ -69,10 +67,14 @@ int cmd_write(int argc, char** argv)
             return 1;
         }
         if (var->type == ALLTRAX_TYPE_STRING) {
-            fprintf(stderr, "Variable %s is a string; string writes are not supported\n",
-                    name);
-            free(assigns);
-            return 1;
+            if (alltrax_validate_var_string(var, val_str)) {
+                fprintf(stderr, "Error: invalid text for %s: printable ASCII, "
+                        "at most %u characters\n", name, (unsigned)var->size);
+                free(assigns);
+                return 1;
+            }
+            assigns[i] = (alltrax_assignment){ .var = var, .text = val_str };
+            continue;
         }
 
         /* Parse value — bools accept Yes/No/1/0/true/false */
@@ -117,8 +119,7 @@ int cmd_write(int argc, char** argv)
             return 1;
         }
 
-        assigns[i].var = var;
-        assigns[i].value = value;
+        assigns[i] = (alltrax_assignment){ .var = var, .number = value };
     }
 
     /* Open with write access */
@@ -131,21 +132,6 @@ int cmd_write(int argc, char** argv)
 
     int ret = 0;
 
-    /* Build var/value arrays for the library */
-    const alltrax_var_def** var_ptrs = calloc((size_t)n_assignments,
-                                              sizeof(alltrax_var_def*));
-    double* var_values = calloc((size_t)n_assignments, sizeof(double));
-    if (!var_ptrs || !var_values) {
-        fprintf(stderr, "Error: out of memory\n");
-        ret = 1;
-        goto done;
-    }
-
-    for (int i = 0; i < n_assignments; i++) {
-        var_ptrs[i] = assigns[i].var;
-        var_values[i] = assigns[i].value;
-    }
-
     alltrax_write_opts write_opts = {
         .skip_cal = flags.no_cal,
         .skip_verify = flags.no_verify,
@@ -154,8 +140,8 @@ int cmd_write(int argc, char** argv)
         .skip_voltage_link = flags.no_voltage_link,
     };
 
-    err = alltrax_write_vars(ctrl, var_ptrs, var_values,
-                             (size_t)n_assignments, &write_opts);
+    err = alltrax_write_assignments(ctrl, assigns, (size_t)n_assignments,
+                                    &write_opts);
     if (err) {
         cli_error(ctrl, err, "writing variables");
         ret = 1;
@@ -177,8 +163,6 @@ int cmd_write(int argc, char** argv)
     }
 
 done:
-    free(var_ptrs);
-    free(var_values);
     free(assigns);
     alltrax_close(ctrl);
     return ret;

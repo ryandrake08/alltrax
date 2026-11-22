@@ -5,6 +5,7 @@
 
 #include "helpers.h"
 #include "internal.h"
+#include "test_internal.h"
 #include <math.h>
 #include <float.h>
 
@@ -1334,6 +1335,194 @@ static int test_monitor_reads_user_profile_and_inputs(void)
     return 0;
 }
 
+static const alltrax_write_opts batch_opts = { .skip_voltage_link = true };
+
+static int test_string_writes_are_space_padded(void)
+{
+    const struct { const char* name; const char* text; const char* stored; } cases[] = {
+        { "F_Table_Name",       "MY MAP",           "MY MAP" },
+        { "F_Table_Name",       "",                 "" },
+        { "F_Table_Name",       "TRAILING   ",      "TRAILING" },
+        { "Throttle_Type_Name", "ABCDEFGHIJKLMNOP", "ABCDEFGHIJKLMNOP" },
+        { "Throttle_Type_Name", "~ !\"#",           "~ !\"#" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        mock_reset();
+        const alltrax_var_def* var = alltrax_find_var(cases[i].name);
+        size_t offset = var->address - VARSET_ADDR;
+        uint8_t expected[VARSET_SIZE];
+        memcpy(expected, mock.page, sizeof(expected));
+        memset(expected + offset, ' ', var->size);
+        memcpy(expected + offset, cases[i].stored, strlen(cases[i].stored));
+
+        alltrax_assignment item = { .var = var, .text = cases[i].text };
+        ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, &item, 1, &batch_opts),
+                  ALLTRAX_OK);
+        ASSERT_MEM_EQ(mock.page, expected, sizeof(expected));
+        ASSERT_EQ(mock.erases, 1);
+
+        /* Reading back trims the padding. */
+        alltrax_var_value value;
+        ASSERT_EQ(alltrax_read_vars(&mock.ctrl, &var, 1, &value), ALLTRAX_OK);
+        ASSERT_STR_EQ(value.raw.str, cases[i].stored);
+    }
+    return 0;
+}
+
+static int test_invalid_string_writes_rejected_before_io(void)
+{
+    const struct { const char* name; const char* text; } bad[] = {
+        { "Throttle_Type_Name", "ABCDEFGHIJKLMNOPQ" },  /* 17 > 16 */
+        { "F_Table_Name", "caf\xc3\xa9" },              /* UTF-8 */
+        { "F_Table_Name", "tab\there" },
+        { "F_Table_Name", "\x7f" },
+        { "F_Table_Name", NULL },                       /* string without text */
+        { "F_F_Table_Name", "FACTORY" },                /* read-only */
+        { "Model", "XCT" },                             /* read-only */
+        { "HPD", "1" },                                 /* text on a bool */
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        mock_reset();
+        uint8_t original[VARSET_SIZE];
+        memcpy(original, mock.page, sizeof(original));
+        alltrax_assignment items[] = {
+            { .var = alltrax_find_var("HPD"), .number = 1 },
+            { .var = alltrax_find_var(bad[i].name), .text = bad[i].text },
+        };
+        ASSERT_TRUE(items[1].var != NULL);
+        ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 2, &batch_opts),
+                  ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_TRUE(strstr(mock.ctrl.error_detail, bad[i].name) != NULL);
+        ASSERT_EQ(mock.requests, 0);
+        ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+    }
+    ASSERT_EQ(alltrax_validate_var_string(alltrax_find_var("F_Table_Name"), "OK"),
+              ALLTRAX_OK);
+    ASSERT_EQ(alltrax_validate_var_string(alltrax_find_var("HPD"), "1"),
+              ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
+static int test_mixed_batch_uses_one_bracket_and_one_erase(void)
+{
+    mock_reset();
+    const alltrax_var_def* hpd = alltrax_find_var("HPD");
+    const alltrax_var_def* name = alltrax_find_var("F_Table_Name");
+    const alltrax_curve_def* lin = alltrax_find_curve("linearization");
+    const alltrax_curve_def* torque = alltrax_find_curve("torque");
+    alltrax_curve_data lin_data = { .def = lin }, torque_data = { .def = torque };
+    for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++) {
+        lin_data.x[i] = lin_data.y[i] = i * 6.0;
+        torque_data.x[i] = torque_data.y[i] = i * 5.0;
+    }
+    alltrax_assignment items[] = {
+        { .var = alltrax_find_var("Fan_On"), .number = 1 },
+        { .var = hpd, .number = 1 },
+        { .curve = lin, .curve_data = &lin_data },
+        { .var = name, .text = "ROUND TRIP" },
+        { .curve = torque, .curve_data = &torque_data },
+    };
+
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, mock.page, sizeof(expected));
+    expected[hpd->address - VARSET_ADDR] = 1;
+    memset(expected + (name->address - VARSET_ADDR), ' ', name->size);
+    memcpy(expected + (name->address - VARSET_ADDR), "ROUND TRIP", 10);
+    ASSERT_EQ(encode_curve_array(lin_data.x, lin->x_scale, lin->x_raw_max,
+                                 expected + (lin->x_address - VARSET_ADDR)), ALLTRAX_OK);
+    ASSERT_EQ(encode_curve_array(lin_data.y, lin->y_scale, lin->y_raw_max,
+                                 expected + (lin->y_address - VARSET_ADDR)), ALLTRAX_OK);
+    ASSERT_EQ(encode_curve_array(torque_data.x, torque->x_scale, torque->x_raw_max,
+                                 expected + (torque->x_address - VARSET_ADDR)), ALLTRAX_OK);
+    ASSERT_EQ(encode_curve_array(torque_data.y, torque->y_scale, torque->y_raw_max,
+                                 expected + (torque->y_address - VARSET_ADDR)), ALLTRAX_OK);
+
+    ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 5, &batch_opts), ALLTRAX_OK);
+    ASSERT_EQ(mock.erases, 1);
+    ASSERT_EQ(mock.cal_attempts, 1);
+    ASSERT_EQ(mock.run_attempts, 1);
+    ASSERT_EQ(mock.fan_writes, 1);
+    ASSERT_EQ(mock.goodset_clears, 1);
+    ASSERT_MEM_EQ(mock.page, expected, sizeof(expected));
+    ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+    return 0;
+}
+
+static int test_batch_rejects_bad_items_without_io(void)
+{
+    const alltrax_var_def* hpd = alltrax_find_var("HPD");
+    const alltrax_curve_def* lin = alltrax_find_curve("linearization");
+    alltrax_curve_data bad_curve = { .def = lin };
+    bad_curve.x[3] = NAN;
+    const alltrax_assignment bad[] = {
+        { .number = 1 },                                   /* neither */
+        { .var = hpd, .number = 1, .curve = lin },         /* both */
+        { .curve = lin },                                  /* no data */
+        { .curve = lin, .curve_data = &bad_curve },        /* invalid point */
+        { .var = alltrax_find_var("N_Speed_Limit"), .number = 9000 }, /* range */
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        mock_reset();
+        const alltrax_assignment items[] = {
+            { .var = alltrax_find_var("F_Table_Name"), .text = "OK" }, bad[i],
+        };
+        ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 2, &batch_opts),
+                  ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_EQ(mock.requests, 0);
+    }
+    mock_reset();
+    ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, NULL, 1, &batch_opts),
+              ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, bad, 0, &batch_opts),
+              ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(mock.requests, 0);
+    return 0;
+}
+
+static int test_batch_flash_patch_limit(void)
+{
+    alltrax_assignment items[97];
+    for (size_t i = 0; i < 97; i++)
+        items[i] = (alltrax_assignment){ .var = alltrax_find_var("HPD"), .number = 1 };
+    mock_reset();
+    ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 97, &batch_opts),
+              ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(mock.requests, 0);
+    mock_reset();
+    ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 96, &batch_opts), ALLTRAX_OK);
+    ASSERT_EQ(mock.erases, 1);
+
+    /* Each curve uses two patches: 48 curves fit, 49 do not. */
+    const alltrax_curve_def* lin = alltrax_find_curve("linearization");
+    alltrax_curve_data zero = { .def = lin };
+    for (size_t i = 0; i < 49; i++)
+        items[i] = (alltrax_assignment){ .curve = lin, .curve_data = &zero };
+    mock_reset();
+    ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 49, &batch_opts),
+              ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(mock.requests, 0);
+    mock_reset();
+    ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 48, &batch_opts), ALLTRAX_OK);
+    return 0;
+}
+
+static int test_batch_keeps_voltage_link_checks(void)
+{
+    mock_reset();
+    alltrax_assignment items[] = {
+        { .var = alltrax_find_var("F_Table_Name"), .text = "MAP" },
+        { .var = alltrax_find_var("AnalogInputs_Threshold"), .number = 30.0 },
+        { .var = alltrax_find_var("LoBat_Vlim"), .number = 20.0 },
+        { .var = alltrax_find_var("HiBat_Vlim"), .number = 60.0 },
+        { .var = alltrax_find_var("BMS_Missing_HiBat_Vlim"), .number = 55.0 },
+    };
+    ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 5, NULL),
+              ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_TRUE(strstr(mock.ctrl.error_detail, "KSI") != NULL);
+    ASSERT_EQ(mock.requests, 0);
+    return 0;
+}
+
 int main(void)
 {
     printf("controller (simulated transport):\n");
@@ -1377,6 +1566,12 @@ int main(void)
     RUN_TEST(test_unvalidated_write_diagnostic_names_firmware);
     RUN_TEST(test_info_reports_policy_and_refreshes_revisions);
     RUN_TEST(test_monitor_reads_user_profile_and_inputs);
+    RUN_TEST(test_string_writes_are_space_padded);
+    RUN_TEST(test_invalid_string_writes_rejected_before_io);
+    RUN_TEST(test_mixed_batch_uses_one_bracket_and_one_erase);
+    RUN_TEST(test_batch_rejects_bad_items_without_io);
+    RUN_TEST(test_batch_flash_patch_limit);
+    RUN_TEST(test_batch_keeps_voltage_link_checks);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }

@@ -328,7 +328,8 @@ cleanup:
 
 typedef struct {
     const alltrax_var_def* var;
-    double display_value;
+    double display_value;   /* numeric and bool variables */
+    char text[33];          /* string variables (at most 32 characters) */
 } config_entry;
 
 typedef struct {
@@ -419,7 +420,7 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
                     } else {
                         fprintf(stderr, "Error: %s: bad curve data\n", name);
                         xmlFree(xval);
-                        goto invalid_curve;
+                        goto invalid_config;
                     }
                     is_curve = true;
                     break;
@@ -431,7 +432,7 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
                     } else {
                         fprintf(stderr, "Error: %s: bad curve data\n", name);
                         xmlFree(xval);
-                        goto invalid_curve;
+                        goto invalid_config;
                     }
                     is_curve = true;
                     break;
@@ -452,7 +453,32 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
             }
             /* Select restorable fields from a backup that also contains
              * read-only metadata. The library enforces write permissions. */
-            if (!var->writable || var->type == ALLTRAX_TYPE_STRING) {
+            if (!var->writable) {
+                xmlFree(xval);
+                continue;
+            }
+
+            if (count >= cap) {
+                cap *= 2;
+                config_entry* tmp =
+                    realloc(entries, cap * sizeof(config_entry));
+                if (!tmp) { xmlFree(xval); goto invalid_config; }
+                entries = tmp;
+            }
+
+            /* An invalid string fails the load. */
+            if (var->type == ALLTRAX_TYPE_STRING) {
+                if (alltrax_validate_var_string(var, value)) {
+                    fprintf(stderr, "Error: %s: invalid text (printable "
+                            "ASCII, at most %u characters)\n",
+                            name, (unsigned)var->size);
+                    xmlFree(xval);
+                    goto invalid_config;
+                }
+                entries[count] = (config_entry){ .var = var };
+                snprintf(entries[count].text, sizeof(entries[count].text),
+                         "%s", value);
+                count++;
                 xmlFree(xval);
                 continue;
             }
@@ -468,18 +494,10 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
             }
             xmlFree(xval);
 
-            double display = ((double)raw - var->offset) * var->scale;
-
-            if (count >= cap) {
-                cap *= 2;
-                config_entry* tmp =
-                    realloc(entries, cap * sizeof(config_entry));
-                if (!tmp) { free(entries); xmlFreeDoc(doc); return NULL; }
-                entries = tmp;
-            }
-
-            entries[count].var = var;
-            entries[count].display_value = display;
+            entries[count] = (config_entry){
+                .var = var,
+                .display_value = ((double)raw - var->offset) * var->scale,
+            };
             count++;
         }
     }
@@ -491,14 +509,14 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
         if (!curves_out[c].has_x || !curves_out[c].has_y) {
             fprintf(stderr, "Error: incomplete %s curve (X and Y required)\n",
                     curves_out[c].def->name);
-            goto invalid_curve;
+            goto invalid_config;
         }
         alltrax_curve_data data = { .def = curves_out[c].def };
         memcpy(data.x, curves_out[c].x, sizeof(data.x));
         memcpy(data.y, curves_out[c].y, sizeof(data.y));
         if (alltrax_validate_curve(data.def, &data)) {
             fprintf(stderr, "Error: invalid %s curve in config\n", data.def->name);
-            goto invalid_curve;
+            goto invalid_config;
         }
         (*curve_count)++;
     }
@@ -507,7 +525,7 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
     *out_count = count;
     return entries;
 
-invalid_curve:
+invalid_config:
     free(entries);
     xmlFreeDoc(doc);
     return NULL;
@@ -691,33 +709,43 @@ static int do_load(int argc, char** argv)
         printf(" (%zu skipped)", skipped);
     printf("\n");
 
+    /* Settings, strings, and curves go to the device in one batch: one
+     * CAL/RUN bracket and one settings page cycle. */
+    alltrax_curve_data curve_data[NUM_CURVE_XML];
+    alltrax_assignment* items = calloc(count + n_curves, sizeof(*items));
+    if (!items) {
+        fprintf(stderr, "Error: out of memory\n");
+        free(entries);
+        return 1;
+    }
+    size_t n_items = 0;
+    for (size_t i = 0; i < count; i++) {
+        const alltrax_var_def* var = entries[i].var;
+        items[n_items++] = var->type == ALLTRAX_TYPE_STRING
+            ? (alltrax_assignment){ .var = var, .text = entries[i].text }
+            : (alltrax_assignment){ .var = var, .number = entries[i].display_value };
+    }
+    for (size_t c = 0; c < NUM_CURVE_XML; c++) {
+        if (!curves[c].has_x || !curves[c].has_y || !curves[c].def)
+            continue;
+        curve_data[c].def = curves[c].def;
+        memcpy(curve_data[c].x, curves[c].x, sizeof(curve_data[c].x));
+        memcpy(curve_data[c].y, curves[c].y, sizeof(curve_data[c].y));
+        items[n_items++] = (alltrax_assignment){
+            .curve = curves[c].def, .curve_data = &curve_data[c],
+        };
+    }
+
     /* Open device with write access */
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, true);
     if (err) {
+        free(items);
         free(entries);
         return 1;
     }
 
-    /* Build arrays for alltrax_write_vars */
-    const alltrax_var_def** var_ptrs = NULL;
-    double* values = NULL;
     int ret = 0;
-
-    if (count > 0) {
-        var_ptrs = calloc(count, sizeof(alltrax_var_def*));
-        values = calloc(count, sizeof(double));
-        if (!var_ptrs || !values) {
-            fprintf(stderr, "Error: out of memory\n");
-            ret = 1;
-            goto done;
-        }
-        for (size_t i = 0; i < count; i++) {
-            var_ptrs[i] = entries[i].var;
-            values[i] = entries[i].display_value;
-        }
-    }
-
     alltrax_write_opts write_opts = {
         .skip_cal = flags.no_cal,
         .skip_verify = flags.no_verify,
@@ -725,36 +753,18 @@ static int do_load(int argc, char** argv)
         .skip_fw_check = flags.no_fw_version,
     };
 
-    if (count > 0) {
-        err = alltrax_write_vars(ctrl, var_ptrs, values, count, &write_opts);
-        if (err) {
-            cli_error(ctrl, err, "writing variables");
-            ret = 1;
-            goto done;
-        }
-
-        for (size_t i = 0; i < count; i++)
-            printf("  Wrote %s\n", entries[i].var->name);
+    err = alltrax_write_assignments(ctrl, items, n_items, &write_opts);
+    if (err) {
+        cli_error(ctrl, err, "writing settings");
+        ret = 1;
+        goto done;
     }
-
-    /* Write curves */
-    for (size_t c = 0; c < NUM_CURVE_XML; c++) {
-        if (!curves[c].has_x || !curves[c].has_y || !curves[c].def)
-            continue;
-
-        alltrax_curve_data cdata;
-        cdata.def = curves[c].def;
-        memcpy(cdata.x, curves[c].x, sizeof(cdata.x));
-        memcpy(cdata.y, curves[c].y, sizeof(cdata.y));
-
-        err = alltrax_write_curve(ctrl, curves[c].def, &cdata, &write_opts);
-        if (err) {
-            cli_error(ctrl, err, "writing curve");
-            ret = 1;
-            goto done;
-        }
-        printf("  Wrote curve: %s (%d points)\n",
-               curves[c].def->name, ALLTRAX_CURVE_POINTS);
+    for (size_t i = 0; i < n_items; i++) {
+        if (items[i].curve)
+            printf("  Wrote curve: %s (%d points)\n",
+                   items[i].curve->name, ALLTRAX_CURVE_POINTS);
+        else
+            printf("  Wrote %s\n", items[i].var->name);
     }
 
     if (flags.reset) {
@@ -768,8 +778,7 @@ static int do_load(int argc, char** argv)
     }
 
 done:
-    free(var_ptrs);
-    free(values);
+    free(items);
     free(entries);
     alltrax_close(ctrl);
     return ret;

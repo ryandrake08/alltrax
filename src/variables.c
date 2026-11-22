@@ -419,7 +419,7 @@ size_t alltrax_var_byte_size(const alltrax_var_def* var)
     case ALLTRAX_TYPE_INT32:
         return 4;
     case ALLTRAX_TYPE_STRING:
-        return var->size >= 1 && var->size <= 32 ? var->size : 0;
+        return var->size >= 1 && var->size <= MAX_STRING_SIZE ? var->size : 0;
     }
     return 0;
 }
@@ -576,6 +576,37 @@ alltrax_error alltrax_validate_var_value(const alltrax_var_def* var, double valu
 {
     int64_t raw;
     return var_value_to_raw(var, value, &raw);
+}
+
+int alltrax_encode_string(const alltrax_var_def* var, const char* text,
+    uint8_t* buf)
+{
+    if (!var || var->type != ALLTRAX_TYPE_STRING || !text || !buf)
+        return 0;
+    size_t size = alltrax_var_byte_size(var);
+    if (!size)
+        return 0;
+    size_t len = strlen(text);
+    while (len > 0 && text[len - 1] == ' ')
+        len--;
+    if (len > size)
+        return 0;
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)text[i];
+        if (c < 0x20 || c > 0x7E)
+            return 0;
+    }
+    memset(buf, ' ', size);
+    memcpy(buf, text, len);
+    return (int)size;
+}
+
+alltrax_error alltrax_validate_var_string(const alltrax_var_def* var,
+    const char* text)
+{
+    uint8_t buf[MAX_STRING_SIZE];
+    return alltrax_encode_string(var, text, buf) ? ALLTRAX_OK
+                                                 : ALLTRAX_ERR_INVALID_ARG;
 }
 
 void alltrax_var_display_bounds(const alltrax_var_def* var,

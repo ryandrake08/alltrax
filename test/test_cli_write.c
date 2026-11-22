@@ -55,17 +55,28 @@ const char* alltrax_strerror(alltrax_error err)
     return "unexpected error formatting";
 }
 
-/* Simulated read-only device: answers read requests with zero-filled payloads,
- * except the GoodSet markers and the 4 little-endian bytes of `value` at
- * `value_addr`, and fails read reply `fail_read_at` (1-based). Non-read
- * requests are counted as mutations. */
+/* Simulated device. Read requests return zero-filled payloads, except the
+ * GoodSet markers and the 4 little-endian bytes of `value` at `value_addr`;
+ * read reply `fail_read_at` (1-based) fails. Mutations are counted. Without
+ * `writable` they fail; with it, the VARSET page lives in `page` (reads,
+ * writes, erase), RunMode is tracked, other writes are echoed, and resets are
+ * counted. */
 static struct {
-    bool enabled;
+    bool enabled, writable;
     uint8_t request[PACKET_SIZE];
-    unsigned reads, mutations, fail_read_at;
+    unsigned reads, mutations, fail_read_at, erases, resets;
     uint16_t var_goodset, fact_goodset;
     uint32_t value_addr, value;
+    uint8_t page[VARSET_SIZE];
+    uint8_t mode;
 } device;
+
+static uint32_t request_addr(void)
+{
+    const uint8_t* a = device.request + 4;
+    return ((uint32_t)a[0] << 24) | ((uint32_t)a[1] << 16) |
+           ((uint32_t)a[2] << 8) | a[3];
+}
 
 /* Use the real controller implementation; transport calls fail unless the
  * simulated device is enabled. */
@@ -76,11 +87,27 @@ alltrax_error transport_write(alltrax_controller* ctrl,
     transport_calls++;
     if (!device.enabled)
         return ALLTRAX_ERR_USB;
-    if (data[0] != REPORT_ID_READ) {
-        device.mutations++;
-        return ALLTRAX_ERR_USB;
-    }
     memcpy(device.request, data, PACKET_SIZE);
+    if (data[0] == REPORT_ID_READ)
+        return ALLTRAX_OK;
+    device.mutations++;
+    if (!device.writable)
+        return ALLTRAX_ERR_USB;
+
+    uint32_t addr = request_addr();
+    if (data[0] == REPORT_ID_SPECIAL) {
+        if (addr == FUNC_RESET) {
+            device.resets++;
+        } else if (data[11] == VARSET_PAGE) {
+            memset(device.page, 0xFF, sizeof(device.page));
+            device.erases++;
+        }
+        return ALLTRAX_OK;
+    }
+    if (addr == ADDR_RUN_MODE)
+        device.mode = data[8];
+    else if (addr >= VARSET_ADDR && addr - VARSET_ADDR + data[1] <= VARSET_SIZE)
+        memcpy(device.page + (addr - VARSET_ADDR), data + 8, data[1]);
     return ALLTRAX_OK;
 }
 
@@ -90,53 +117,74 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
     transport_calls++;
     if (!device.enabled || ++device.reads == device.fail_read_at)
         return ALLTRAX_ERR_USB;
-    const uint8_t* a = device.request + 4;
-    uint32_t addr = ((uint32_t)a[0] << 24) | ((uint32_t)a[1] << 16) |
-                    ((uint32_t)a[2] << 8) | a[3];
     memset(buf, 0, PACKET_SIZE);
     buf[0] = RESPONSE_ID;
+    if (device.request[0] == REPORT_ID_SPECIAL) {
+        /* Captured successful page-erase reply */
+        const uint8_t erase_reply[] = { 0x04, 0x02, 0, 0, 0x03, 0x01, 0, 0, 0xD4, 0x29 };
+        memcpy(buf, erase_reply, sizeof(erase_reply));
+        return ALLTRAX_OK;
+    }
     buf[1] = device.request[1];
     buf[4] = RESPONSE_TYPE_RW;
-    uint16_t marker = addr == VARSET_ADDR ? device.var_goodset :
-                      addr == FACTSET_ADDR ? device.fact_goodset : 0;
-    buf[8] = (uint8_t)marker;
-    buf[9] = (uint8_t)(marker >> 8);
+    if (device.request[0] == REPORT_ID_WRITE) {
+        memcpy(buf + 8, device.request + 8, buf[1]);  /* Write echo */
+        return ALLTRAX_OK;
+    }
+
+    uint32_t addr = request_addr();
     for (uint32_t i = 0; i < buf[1]; i++) {
-        uint32_t offset = addr + i - device.value_addr;
-        if (device.value_addr && offset < 4)
-            buf[8 + i] = (uint8_t)(device.value >> (offset * 8));
+        uint32_t a = addr + i;
+        if (device.writable && a >= VARSET_ADDR && a - VARSET_ADDR < VARSET_SIZE)
+            buf[8 + i] = device.page[a - VARSET_ADDR];
+        else if (device.writable && a == ADDR_RUN_MODE)
+            buf[8 + i] = device.mode;
+        else if (!device.writable && a < VARSET_ADDR + 2 && a >= VARSET_ADDR)
+            buf[8 + i] = (uint8_t)(device.var_goodset >> ((a - VARSET_ADDR) * 8));
+        else if (a >= FACTSET_ADDR && a < FACTSET_ADDR + 2)
+            buf[8 + i] = (uint8_t)(device.fact_goodset >> ((a - FACTSET_ADDR) * 8));
+        if (device.value_addr && a - device.value_addr < 4)
+            buf[8 + i] = (uint8_t)(device.value >> ((a - device.value_addr) * 8));
     }
     return ALLTRAX_OK;
 }
 
-static int test_strings_rejected_before_open(void)
+static int test_valid_strings_reach_open(void)
 {
     const char* names[] = { "Throttle_Type_Name", "F_Table_Name" };
-    const char* values[] = { "123", "", "Custom name" };
+    const char* values[] = { "123", "", "Custom name", "ABCDEFGHIJKLMNOP" };
     for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
         for (size_t j = 0; j < sizeof(values) / sizeof(values[0]); j++) {
             char arg[80];
             snprintf(arg, sizeof(arg), "%s=%s", names[i], values[j]);
             char* argv[] = { "write", arg };
             open_calls = unexpected_calls = 0;
-            ASSERT_EQ(cmd_write(2, argv), 1);
-            ASSERT_EQ(open_calls, 0);
+            ASSERT_EQ(cmd_write(2, argv), 1); /* The fake open always fails. */
+            ASSERT_EQ(open_calls, 1);
             ASSERT_EQ(unexpected_calls, 0);
         }
     }
     return 0;
 }
 
-static int test_mixed_batch_rejected_before_open(void)
+static int test_invalid_strings_rejected_before_open(void)
 {
-    for (int pos = 0; pos < 2; pos++) {
-        char numeric[] = "HPD=1";
-        char string[] = "F_Table_Name=123";
-        char* argv[] = { "write", pos ? numeric : string, pos ? string : numeric };
-        open_calls = unexpected_calls = 0;
-        ASSERT_EQ(cmd_write(3, argv), 1);
-        ASSERT_EQ(open_calls, 0);
-        ASSERT_EQ(unexpected_calls, 0);
+    const char* bad[] = {
+        "Throttle_Type_Name=ABCDEFGHIJKLMNOPQ",             /* 17 > 16 */
+        "F_Table_Name=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456",   /* 33 > 32 */
+        "F_Table_Name=caf\xc3\xa9",                         /* UTF-8 */
+        "F_Table_Name=tab\there",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        for (int pos = 0; pos < 2; pos++) {
+            char arg[80], numeric[] = "HPD=1";
+            snprintf(arg, sizeof(arg), "%s", bad[i]);
+            char* argv[] = { "write", pos ? numeric : arg, pos ? arg : numeric };
+            open_calls = unexpected_calls = 0;
+            ASSERT_EQ(cmd_write(3, argv), 1);
+            ASSERT_EQ(open_calls, 0);
+            ASSERT_EQ(unexpected_calls, 0);
+        }
     }
     return 0;
 }
@@ -766,7 +814,152 @@ static int test_config_save_write_failure_keeps_device_paths(void)
     ASSERT_TRUE(S_ISCHR(st.st_mode));
     return 0;
 }
+
 #endif
+
+/* Writable simulated device whose settings page holds a valid value for every
+ * VARSET variable (its minimum bound, or 0), consistent voltage limits, and
+ * space-filled strings. */
+static void writable_device_reset(void)
+{
+    memset(&device, 0, sizeof(device));
+    device.writable = true;
+    for (int g = 0; g < ALLTRAX_VARS_GROUP_COUNT; g++) {
+        size_t n;
+        const alltrax_var_def* defs = alltrax_get_var_defs((alltrax_var_group)g, &n);
+        for (size_t i = 0; defs && i < n; i++) {
+            const alltrax_var_def* var = &defs[i];
+            if (!var->is_flash || var->address < VARSET_ADDR ||
+                var->address >= VARSET_ADDR + VARSET_SIZE)
+                continue;
+            uint8_t* dst = device.page + (var->address - VARSET_ADDR);
+            if (var->type == ALLTRAX_TYPE_STRING) {
+                alltrax_encode_string(var, "", dst);
+            } else {
+                double min, max;
+                alltrax_var_display_bounds(var, &min, &max);
+                alltrax_encode_var(var, isnan(min) ? 0 : min, dst);
+            }
+        }
+    }
+    const struct { const char* name; double volts; } limits[] = {
+        { "AnalogInputs_Threshold", 10 }, { "LoBat_Vlim", 20 },
+        { "HiBat_Vlim", 60 }, { "BMS_Missing_HiBat_Vlim", 50 },
+    };
+    for (size_t i = 0; i < sizeof(limits) / sizeof(limits[0]); i++) {
+        const alltrax_var_def* var = alltrax_find_var(limits[i].name);
+        alltrax_encode_var(var, limits[i].volts,
+                           device.page + (var->address - VARSET_ADDR));
+    }
+    device.page[0] = device.page[1] = 0;  /* Var_GoodSet valid */
+}
+
+static int run_writable(int (*cmd)(int, char**), int argc, char** argv)
+{
+    fake_ctrl = (alltrax_controller) {
+        .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
+        .controller_type = ALLTRAX_CONTROLLER_XCT, .allow_writes = true,
+        .boot_rev = 5002, .program_rev = 5005,
+    };
+    open_calls = error_calls = close_calls = transport_calls = 0;
+    device.enabled = true;
+    open_succeeds = true;
+    int rc = cmd(argc, argv);
+    open_succeeds = false;
+    device.enabled = false;
+    return rc;
+}
+
+#ifdef TEST_CONFIG
+static void set_page_string(const char* name, const char* text)
+{
+    const alltrax_var_def* var = alltrax_find_var(name);
+    alltrax_encode_string(var, text, device.page + (var->address - VARSET_ADDR));
+}
+
+static int test_config_round_trip_restores_strings_in_one_erase(void)
+{
+    const struct { const char* field; const char* throttle; } cases[] = {
+        { "MY FIELD MAP", "" },
+        { "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345", "ABCDEFGHIJKLMNOP" },  /* max */
+        { "", "Custom ~!@#" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        writable_device_reset();
+        set_page_string("F_Table_Name", cases[i].field);
+        set_page_string("Throttle_Type_Name", cases[i].throttle);
+        uint8_t original[VARSET_SIZE];
+        memcpy(original, device.page, sizeof(original));
+
+        char path[64];
+        ASSERT_EQ(make_temp_path(path), 0);
+        ASSERT_EQ(run_config_save(path, 5005), 0);
+
+        set_page_string("F_Table_Name", "CHANGED");
+        set_page_string("Throttle_Type_Name", "CHANGED");
+        device.erases = device.mutations = 0;
+        char* argv[] = { "config", "load", "--no-crypt", path };
+        int rc = run_writable(cmd_config, 4, argv);
+        remove(path);
+        ASSERT_EQ(rc, 0);
+        ASSERT_EQ(device.erases, 1);
+        ASSERT_EQ(device.mode, RUN_MODE_RUN);
+        ASSERT_MEM_EQ(device.page, original, sizeof(original));
+    }
+    return 0;
+}
+
+static int test_config_load_rejects_invalid_strings_before_open(void)
+{
+    const char* bad[] = {
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456",  /* 33 > 32 */
+        "caf\xc3\xa9",                         /* UTF-8 */
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char xml[256];
+        snprintf(xml, sizeof(xml),
+                 "<XCT><Field><HPD>1</HPD><F_Table_Name>%s</F_Table_Name>"
+                 "</Field></XCT>", bad[i]);
+        char path[64];
+        ASSERT_EQ(make_temp_path(path), 0);
+        ASSERT_EQ(write_file(path, xml), 0);
+        writable_device_reset();
+        char* argv[] = { "config", "load", "--no-crypt", path };
+        int rc = run_writable(cmd_config, 4, argv);
+        remove(path);
+        ASSERT_EQ(rc, 1);
+        ASSERT_EQ(open_calls, 0);
+        ASSERT_EQ(device.mutations, 0);
+    }
+    return 0;
+}
+
+#endif
+
+static int test_write_command_writes_strings_and_numbers_in_one_batch(void)
+{
+    writable_device_reset();
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, device.page, sizeof(expected));
+    const alltrax_var_def* name = alltrax_find_var("F_Table_Name");
+    const alltrax_var_def* hpd = alltrax_find_var("HPD");
+    alltrax_encode_string(name, "NEW MAP", expected + (name->address - VARSET_ADDR));
+    expected[hpd->address - VARSET_ADDR] = 1;
+
+    char text[] = "F_Table_Name=NEW MAP", number[] = "HPD=1";
+    char* argv[] = { "write", text, number };
+    ASSERT_EQ(run_writable(cmd_write, 3, argv), 0);
+    ASSERT_EQ(device.erases, 1);
+    ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+
+    /* An empty value clears the field to spaces. */
+    char clear[] = "F_Table_Name=";
+    char* argv2[] = { "write", clear };
+    ASSERT_EQ(run_writable(cmd_write, 2, argv2), 0);
+    alltrax_encode_string(name, "", expected + (name->address - VARSET_ADDR));
+    ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+    return 0;
+}
 
 /* Run `get <name>` against the simulated device with `value` at the
  * variable's address, returning its stdout line in `out`. */
@@ -845,8 +1038,8 @@ static int test_get_keeps_scaled_formatting(void)
 int main(void)
 {
     printf("CLI mutation preflight (no USB):\n");
-    RUN_TEST(test_strings_rejected_before_open);
-    RUN_TEST(test_mixed_batch_rejected_before_open);
+    RUN_TEST(test_valid_strings_reach_open);
+    RUN_TEST(test_invalid_strings_rejected_before_open);
     RUN_TEST(test_numeric_and_bool_assignments_reach_open);
     RUN_TEST(test_read_only_assignments_use_library_diagnostics);
     RUN_TEST(test_invalid_numeric_text_rejected_before_open);
@@ -854,6 +1047,7 @@ int main(void)
     RUN_TEST(test_invalid_curve_arguments_rejected_before_open);
     RUN_TEST(test_curve_csv_validation);
     RUN_TEST(test_curve_presets_reach_open);
+    RUN_TEST(test_write_command_writes_strings_and_numbers_in_one_batch);
     RUN_TEST(test_get_prints_full_integer_range);
     RUN_TEST(test_get_keeps_scaled_formatting);
     RUN_TEST(test_options_accepted_before_and_after_positionals);
@@ -872,6 +1066,8 @@ int main(void)
     RUN_TEST(test_config_save_encrypts_before_writing);
     RUN_TEST(test_config_save_write_failure_removes_partial_file);
     RUN_TEST(test_config_save_write_failure_keeps_device_paths);
+    RUN_TEST(test_config_round_trip_restores_strings_in_one_erase);
+    RUN_TEST(test_config_load_rejects_invalid_strings_before_open);
 #endif
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;

@@ -127,6 +127,8 @@ alltrax_error parse_response(const uint8_t data[PACKET_SIZE],
     uint8_t payload[MAX_PAYLOAD]);
 
 /* variables.c */
+#define MAX_STRING_SIZE 32
+
 /* Zero indicates an invalid type or size (strings: 1-32, other sizes: 0). */
 size_t alltrax_var_byte_size(const alltrax_var_def* var);
 alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
@@ -134,6 +136,11 @@ alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
 /* Returns encoded byte count, or 0 for invalid values/unsupported types.
  * On failure the output buffer is unchanged. */
 int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf);
+/* Encode a string variable: trailing spaces trimmed, at most the field size,
+ * printable ASCII (0x20-0x7E), space-padded to the field size. Returns the
+ * field size, or 0 if invalid; on failure the buffer is unchanged. */
+int alltrax_encode_string(const alltrax_var_def* var, const char* text,
+    uint8_t* buf);
 
 /* transport.c */
 /* Success requires a complete 64-byte report. A short write is ERR_USB;
@@ -174,18 +181,20 @@ static inline uint32_t get_le32(const uint8_t* buf)
 }
 
 /* Copy a space/null-padded string from a payload, null-terminate, trim */
+/* Decode a fixed-size device string: NUL becomes a space, other bytes
+ * outside printable ASCII (0x20-0x7E) become '?', and trailing spaces are
+ * trimmed. The result is always printable ASCII. */
 static inline void get_string(const uint8_t* src, size_t src_len,
     char* dst, size_t dst_size)
 {
     size_t n = src_len < dst_size - 1 ? src_len : dst_size - 1;
     memset(dst, 0, dst_size);
-    memcpy(dst, src, n);
-    for (size_t i = n; i > 0; i--) {
-        if (dst[i - 1] == ' ' || dst[i - 1] == '\0')
-            dst[i - 1] = '\0';
-        else
-            break;
+    for (size_t i = 0; i < n; i++) {
+        uint8_t c = src[i];
+        dst[i] = c == 0 ? ' ' : (c < 0x20 || c > 0x7E) ? '?' : (char)c;
     }
+    while (n > 0 && dst[n - 1] == ' ')
+        dst[--n] = '\0';
 }
 
 /* Helper to set error detail */

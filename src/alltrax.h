@@ -250,6 +250,13 @@ const char* alltrax_var_group_name(alltrax_var_group group);
  * Write permissions are enforced separately by alltrax_write_vars(). */
 alltrax_error alltrax_validate_var_value(const alltrax_var_def* var, double value);
 
+/* Validate text for a string variable. Trailing spaces are ignored; the rest
+ * must be printable ASCII (0x20-0x7E) and fit the field size. Values are
+ * stored space-padded, and an empty string stores all spaces.
+ * Returns ALLTRAX_OK if valid, ALLTRAX_ERR_INVALID_ARG otherwise. */
+alltrax_error alltrax_validate_var_string(const alltrax_var_def* var,
+    const char* text);
+
 /* Get effective bounds in display units. Sets *min_out / *max_out to NAN
  * for bools, strings, or unbounded variables. */
 void alltrax_var_display_bounds(const alltrax_var_def* var,
@@ -303,9 +310,10 @@ typedef struct {
     bool skip_voltage_link;  /* Skip voltage link validation */
 } alltrax_write_opts;
 
-/* Write numeric/bool values in display units. Read-only definitions and string
- * assignments return ALLTRAX_ERR_INVALID_ARG before device I/O, rejecting the
- * entire batch. RAM spans must fit [0x20000000,0x20010000); FLASH spans must fit
+/* Write numeric/bool values in display units: alltrax_write_assignments()
+ * with numeric items. Read-only definitions and string variables (which need
+ * alltrax_write_assignments() text items) return ALLTRAX_ERR_INVALID_ARG
+ * before device I/O, rejecting the entire batch. RAM spans must fit [0x20000000,0x20010000); FLASH spans must fit
  * the VARSET page [0x08002000,0x08002800). Invalid spans return ERR_ADDRESS.
  * Write options cannot bypass descriptor checks or variable permissions. */
 alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
@@ -355,9 +363,38 @@ alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
  * on invalid spans. User reads/writes use VARSET; factory reads use FACTSET. */
 alltrax_error alltrax_validate_curve(const alltrax_curve_def* def,
     const alltrax_curve_data* data);
-/* Enforces the same curve validation before device I/O, regardless of opts. */
+/* Write one user curve: alltrax_write_assignments() with a single curve item.
+ * Enforces the same curve validation before device I/O, regardless of opts. */
 alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
     const alltrax_curve_def* def, const alltrax_curve_data* data,
+    const alltrax_write_opts* opts);
+
+/* ------------------------------------------------------------------ */
+/* Batch writes                                                        */
+/* ------------------------------------------------------------------ */
+
+/* One item of a batch write. Set exactly one of `var` or `curve`.
+ * - Numeric and bool variables use `number` (display units) and require
+ *   text == NULL.
+ * - String variables use `text` (see alltrax_validate_var_string()) and
+ *   require it to be non-NULL.
+ * - A user curve uses `curve` and `curve_data`. */
+typedef struct {
+    const alltrax_var_def* var;
+    double number;
+    const char* text;
+    const alltrax_curve_def* curve;
+    const alltrax_curve_data* curve_data;
+} alltrax_assignment;
+
+/* Write a batch of variables, strings, and user curves. Every item is
+ * validated and encoded before device I/O; any invalid item rejects the whole
+ * batch. All writes share one CAL/RUN bracket, and all FLASH items share one
+ * settings page cycle (one erase). Limits: 16 RAM variables and 96 FLASH
+ * patches (each curve uses 2). Permissions, firmware policy, voltage link, and
+ * throttle-type checks apply as for alltrax_write_vars(). */
+alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
+    const alltrax_assignment* items, size_t count,
     const alltrax_write_opts* opts);
 
 /* ------------------------------------------------------------------ */
