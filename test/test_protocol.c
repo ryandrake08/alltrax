@@ -473,21 +473,62 @@ static int test_flash_clear_flags_selective(void)
 /* 6. Special function response parsing                                */
 /* ------------------------------------------------------------------ */
 
-static int test_parse_special_response_success(void)
+static int test_parse_page_erase_responses_match_captures(void)
 {
-    uint8_t response[PACKET_SIZE];
-    memset(response, 0, sizeof(response));
-    response[0] = RESPONSE_ID;
-    response[1] = 0;
-    response[4] = RESPONSE_TYPE_SP;
-    response[6] = 0x00;
+    /* Literal page-erase replies from port2-voltage.pcapng (two erases)
+     * and port2-hpd.pcapng (one erase). Keep the wire type independent
+     * of RESPONSE_TYPE_SP so an incorrect constant fails this test. */
+    const uint8_t responses[][PACKET_SIZE] = {
+        { 0x04, 0x02, 0x00, 0x00, 0x03, 0x01, 0x00, 0x00, 0xD4, 0x29 },
+        { 0x04, 0x02, 0x00, 0x00, 0x03, 0x01, 0x00, 0x00, 0x00, 0x01 },
+        { 0x04, 0x02, 0x00, 0x00, 0x03, 0x01, 0x00, 0x00, 0xF9, 0xFF },
+    };
+
+    for (size_t i = 0; i < sizeof(responses) / sizeof(responses[0]); i++) {
+        uint8_t result, num_bytes;
+        uint8_t payload[MAX_PAYLOAD];
+        alltrax_error err = parse_response(responses[i], RESPONSE_TYPE_SP,
+                                          &result, &num_bytes, payload);
+        ASSERT_EQ(err, ALLTRAX_OK);
+        ASSERT_EQ(result, 0x00);
+        ASSERT_EQ(num_bytes, 2);
+        ASSERT_MEM_EQ(payload, responses[i] + 8, 2);
+    }
+    return 0;
+}
+
+static int test_parse_special_response_rejects_wrong_type(void)
+{
+    /* A read/write reply and the previously assumed special type must
+     * not be accepted as an acknowledgement of page erase. */
+    const uint8_t responses[][PACKET_SIZE] = {
+        { 0x04, 0x02, 0x00, 0x00, 0x01, 0x01, 0x00, 0x00, 0xD4, 0x29 },
+        { 0x04, 0x02, 0x00, 0x00, 0x02, 0x01, 0x00, 0x00, 0xD4, 0x29 },
+    };
+
+    for (size_t i = 0; i < sizeof(responses) / sizeof(responses[0]); i++) {
+        uint8_t result, num_bytes;
+        uint8_t payload[MAX_PAYLOAD];
+        alltrax_error err = parse_response(responses[i], RESPONSE_TYPE_SP,
+                                          &result, &num_bytes, payload);
+        ASSERT_EQ(err, ALLTRAX_ERR_PROTOCOL);
+    }
+    return 0;
+}
+
+static int test_parse_unknown_response_rejects_rw(void)
+{
+    /* Do not interpret its payload as a normal read/write reply. */
+    const uint8_t response[PACKET_SIZE] = {
+        0x04, 0x02, 0x00, 0x00, 0x02, 0x00, 0x00, 0x00, 0x12, 0x34,
+    };
+    ASSERT_EQ(response[4], RESPONSE_TYPE_UNK);
 
     uint8_t result, num_bytes;
     uint8_t payload[MAX_PAYLOAD];
-    alltrax_error err = parse_response(response, RESPONSE_TYPE_SP, &result, &num_bytes, payload);
-    ASSERT_EQ(err, ALLTRAX_OK);
-    ASSERT_EQ(result, 0x00);
-    ASSERT_EQ(num_bytes, 0);
+    alltrax_error err = parse_response(response, RESPONSE_TYPE_RW,
+                                      &result, &num_bytes, payload);
+    ASSERT_EQ(err, ALLTRAX_ERR_PROTOCOL);
     return 0;
 }
 
@@ -583,7 +624,9 @@ void run_protocol_tests(void)
     RUN_TEST(test_flash_clear_flags_selective);
 
     /* Special response parsing */
-    RUN_TEST(test_parse_special_response_success);
+    RUN_TEST(test_parse_page_erase_responses_match_captures);
+    RUN_TEST(test_parse_special_response_rejects_wrong_type);
+    RUN_TEST(test_parse_unknown_response_rejects_rw);
     RUN_TEST(test_parse_special_response_with_data);
     RUN_TEST(test_parse_special_response_failure);
     RUN_TEST(test_parse_special_response_rejects_wrong_id);

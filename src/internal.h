@@ -36,7 +36,8 @@ struct alltrax_controller {
 #define REPORT_ID_SPECIAL 0x03
 #define RESPONSE_ID       0x04
 #define RESPONSE_TYPE_RW  0x01   /* data[4] for read/write responses */
-#define RESPONSE_TYPE_SP  0x02   /* data[4] for special function responses */
+#define RESPONSE_TYPE_UNK 0x02   /* semantics unknown */
+#define RESPONSE_TYPE_SP  0x03   /* data[4] for special function responses */
 #define RESULT_PASS       0x00
 
 /* Special function codes (Report ID 3) */

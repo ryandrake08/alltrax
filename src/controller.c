@@ -33,7 +33,12 @@ static alltrax_error read_memory(alltrax_controller* ctrl, uint32_t addr,
     uint8_t payload[MAX_PAYLOAD];
     rc = parse_response(response, RESPONSE_TYPE_RW, &result, &n, payload);
     if (rc) {
-        set_error_detail(ctrl, "Malformed response reading 0x%08X", addr);
+        set_error_detail(ctrl,
+            "Malformed response reading 0x%08X: type=0x%02X%s, "
+            "function=0x%02X, expected type=0x%02X",
+            addr, response[4],
+            response[4] == RESPONSE_TYPE_UNK ? " (unknown semantics)" : "",
+            response[5], RESPONSE_TYPE_RW);
         return rc;
     }
 
@@ -88,7 +93,12 @@ static alltrax_error write_memory(alltrax_controller* ctrl, uint32_t addr,
     uint8_t echo[MAX_PAYLOAD];
     rc = parse_response(response, RESPONSE_TYPE_RW, &result, &n, echo);
     if (rc) {
-        set_error_detail(ctrl, "Malformed write response at 0x%08X", addr);
+        set_error_detail(ctrl,
+            "Malformed write response at 0x%08X: type=0x%02X%s, "
+            "function=0x%02X, expected type=0x%02X",
+            addr, response[4],
+            response[4] == RESPONSE_TYPE_UNK ? " (unknown semantics)" : "",
+            response[5], RESPONSE_TYPE_RW);
         return rc;
     }
 
@@ -480,7 +490,15 @@ static alltrax_error page_erase(alltrax_controller* ctrl, uint8_t page)
     uint8_t result, n;
     uint8_t payload[MAX_PAYLOAD];
     rc = parse_response(response, RESPONSE_TYPE_SP, &result, &n, payload);
-    if (rc) return rc;
+    if (rc) {
+        set_error_detail(ctrl,
+            "Malformed page erase response for page %u: type=0x%02X%s, "
+            "function=0x%02X, expected type=0x%02X",
+            (unsigned)page, response[4],
+            response[4] == RESPONSE_TYPE_UNK ? " (unknown semantics)" : "",
+            response[5], RESPONSE_TYPE_SP);
+        return rc;
+    }
 
     if (result != RESULT_PASS) {
         set_error_detail(ctrl, "Page erase failed for page %d: result=0x%02X",
@@ -784,12 +802,7 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
                 alltrax_var_value read_out[4];
                 rc = alltrax_read_vars(ctrl, to_read, (size_t)n_reads,
                                        read_out);
-                if (rc) {
-                    set_error_detail(ctrl,
-                        "Failed to read current voltage settings for "
-                        "link validation");
-                    return rc;
-                }
+                if (rc) return rc;  /* Preserve the read failure diagnostic. */
                 for (int i = 0; i < n_reads; i++)
                     vlink_vals[read_idx[i]] = read_out[i].display;
             }

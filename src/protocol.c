@@ -4,7 +4,8 @@
  * Packet format (64 bytes):
  *   Request:  [ReportID][numBytes][route_lo][route_hi][addr_BE_4][data...]
  *   Response: [0x04][numBytes][route_lo][route_hi][type][func][result][0x00][data...]
- *   type: 1=read/write, 2=special.  func: 0 for read/write, function# for special.
+ *   type: 1=read/write, 2=unknown, 3=special.
+ *   func: 0 for read/write, function# for special.
  *
  * Addresses are big-endian in packets; data payload is little-endian.
  */
