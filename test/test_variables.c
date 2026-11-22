@@ -7,6 +7,7 @@
 #include "internal.h"
 #include "test_internal.h"
 #include <float.h>
+#include <math.h>
 
 /* ------------------------------------------------------------------ */
 /* 1. Variable lookup                                                  */
@@ -474,20 +475,21 @@ static int test_numeric_api_rejects_strings(void)
     return 0;
 }
 
-/* Check the public validator and direct encoder against the same expected raw
- * value. Rejected inputs must leave the caller's output buffer untouched. */
+/* Check internal conversion against the expected raw value. For library entries,
+ * also check the public validator. Rejection must leave output untouched. */
 static int check_numeric_conversion(const alltrax_var_def* var, double value,
     bool valid, int64_t expected_raw)
 {
     uint8_t buf[4], original[4];
     memset(buf, 0xA5, sizeof(buf));
     memcpy(original, buf, sizeof(original));
+    if (catalog_has_var(var))
+        ASSERT_EQ(alltrax_validate_var_value(var, value),
+                  valid ? ALLTRAX_OK : ALLTRAX_ERR_INVALID_ARG);
     if (!valid) {
-        ASSERT_EQ(alltrax_validate_var_value(var, value), ALLTRAX_ERR_INVALID_ARG);
         ASSERT_EQ(alltrax_encode_var(var, value, buf), 0);
         ASSERT_MEM_EQ(buf, original, sizeof(buf));
     } else {
-        ASSERT_EQ(alltrax_validate_var_value(var, value), ALLTRAX_OK);
         int len = alltrax_encode_var(var, value, buf);
         ASSERT_EQ(len, alltrax_var_byte_size(var));
         alltrax_var_value decoded;
@@ -661,6 +663,55 @@ static int test_decode_out_of_bounds(void)
 /* ------------------------------------------------------------------ */
 /* 13. Bounds validation                                               */
 /* ------------------------------------------------------------------ */
+
+static int test_numeric_validator_requires_library_entries(void)
+{
+    const char* names[] = { "LoBat_Vlim", "HPD", "Avg_Temp" };
+    const double values[] = { 28.1, 1, 0 };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        const alltrax_var_def* var = alltrax_find_var(names[i]);
+        ASSERT_EQ(alltrax_validate_var_value(var, values[i]), ALLTRAX_OK);
+        alltrax_var_def copy = *var;
+        ASSERT_EQ(alltrax_validate_var_value(&copy, values[i]), ALLTRAX_ERR_INVALID_ARG);
+        uint8_t buf[4];
+        ASSERT_TRUE(alltrax_encode_var(&copy, values[i], buf) > 0);
+        copy.name = NULL;
+        copy.address = 0;
+        ASSERT_EQ(alltrax_validate_var_value(&copy, values[i]), ALLTRAX_ERR_INVALID_ARG);
+    }
+    ASSERT_EQ(alltrax_validate_var_value(NULL, 1), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
+static int test_string_validator_requires_library_entries(void)
+{
+    const char* names[] = { "Throttle_Type_Name", "F_Table_Name", "Model" };
+    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+        const alltrax_var_def* var = alltrax_find_var(names[i]);
+        ASSERT_EQ(alltrax_validate_var_string(var, "OK  "), ALLTRAX_OK);
+        ASSERT_EQ(alltrax_validate_var_string(var, ""), ALLTRAX_OK);
+        ASSERT_EQ(alltrax_validate_var_string(var, "\x01"), ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_EQ(alltrax_validate_var_string(var, NULL), ALLTRAX_ERR_INVALID_ARG);
+        char text[33];
+        ASSERT_TRUE(var->size < sizeof(text));
+        memset(text, 'A', var->size);
+        text[var->size] = '\0';
+        ASSERT_EQ(alltrax_validate_var_string(var, text), ALLTRAX_OK);
+        ASSERT_EQ(alltrax_validate_var_string(var, "ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567"),
+                  ALLTRAX_ERR_INVALID_ARG);
+        alltrax_var_def copy = *var;
+        ASSERT_EQ(alltrax_validate_var_string(&copy, "OK"), ALLTRAX_ERR_INVALID_ARG);
+        uint8_t buf[32];
+        ASSERT_EQ(alltrax_encode_string(&copy, "OK", buf), var->size);
+        copy.name = NULL;
+        copy.address = 0;
+        ASSERT_EQ(alltrax_validate_var_string(&copy, "OK"), ALLTRAX_ERR_INVALID_ARG);
+    }
+    ASSERT_EQ(alltrax_validate_var_string(NULL, "OK"), ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(alltrax_validate_var_string(alltrax_find_var("HPD"), "1"),
+              ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
 
 static int test_validate_speed_limit_in_range(void)
 {
@@ -1386,6 +1437,55 @@ static int test_string_encode_valid(void)
     return 0;
 }
 
+/* Device operations accept only catalog entries and rely on these invariants
+ * in place of runtime shape and span checks. */
+static int test_catalog_invariants(void)
+{
+    for (int g = 0; g < ALLTRAX_VARS_GROUP_COUNT; g++) {
+        size_t n;
+        const alltrax_var_def* defs = alltrax_get_var_defs((alltrax_var_group)g, &n);
+        for (size_t i = 0; defs && i < n; i++) {
+            const alltrax_var_def* var = &defs[i];
+            ASSERT_TRUE(catalog_has_var(var));
+            ASSERT_TRUE(var->name && var->name[0]);
+            size_t len = alltrax_var_byte_size(var);
+            ASSERT_TRUE(len > 0);
+            if (var->is_flash) {
+                ASSERT_TRUE(address_span_fits(var->address, len, FLASH_BASE,
+                                              FLASH_END - FLASH_BASE));
+                if (var->writable)
+                    ASSERT_TRUE(address_span_fits(var->address, len, VARSET_ADDR,
+                                                  VARSET_SIZE));
+            } else {
+                ASSERT_TRUE(address_span_fits(var->address, len, RAM_BASE,
+                                              RAM_END - RAM_BASE));
+            }
+            alltrax_var_def copy = *var;
+            ASSERT_FALSE(catalog_has_var(&copy));
+        }
+    }
+    for (size_t c = 0; c < alltrax_curve_count(); c++) {
+        const alltrax_curve_def* def = alltrax_curve_by_index(c);
+        ASSERT_TRUE(catalog_has_curve(def));
+        ASSERT_TRUE(def->name && def->name[0]);
+        ASSERT_TRUE(isfinite(def->x_scale) && def->x_scale > 0);
+        ASSERT_TRUE(isfinite(def->y_scale) && def->y_scale > 0);
+        ASSERT_TRUE(def->x_raw_max >= 0 && def->y_raw_max >= 0);
+        const size_t len = ALLTRAX_CURVE_POINTS * 2;
+        ASSERT_TRUE(address_span_fits(def->x_address, len, VARSET_ADDR, VARSET_SIZE));
+        ASSERT_TRUE(address_span_fits(def->y_address, len, VARSET_ADDR, VARSET_SIZE));
+        ASSERT_TRUE(address_span_fits(def->factory_x_address, len, FACTSET_ADDR,
+                                      FLASH_PAGE_SIZE));
+        ASSERT_TRUE(address_span_fits(def->factory_y_address, len, FACTSET_ADDR,
+                                      FLASH_PAGE_SIZE));
+        alltrax_curve_def copy = *def;
+        ASSERT_FALSE(catalog_has_curve(&copy));
+    }
+    ASSERT_FALSE(catalog_has_var(NULL));
+    ASSERT_FALSE(catalog_has_curve(NULL));
+    return 0;
+}
+
 void run_variables_tests(void)
 {
     printf("variables:\n");
@@ -1489,6 +1589,9 @@ void run_variables_tests(void)
     RUN_TEST(test_voltage_link_null_msg);
 
     /* format_rev */
+    RUN_TEST(test_catalog_invariants);
+    RUN_TEST(test_numeric_validator_requires_library_entries);
+    RUN_TEST(test_string_validator_requires_library_entries);
     RUN_TEST(test_string_decode_valid);
     RUN_TEST(test_string_encode_valid);
     RUN_TEST(test_format_rev_5005);

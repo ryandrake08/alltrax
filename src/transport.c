@@ -165,7 +165,6 @@ const char* alltrax_strerror(alltrax_error err)
     case ALLTRAX_ERR_FLASH:       return "FLASH operation failed";
     case ALLTRAX_ERR_NOT_RUN:     return "Controller not in RUN mode";
     case ALLTRAX_ERR_INVALID_ARG: return "Invalid argument";
-    case ALLTRAX_ERR_ADDRESS:     return "Address out of range";
     case ALLTRAX_ERR_NO_DEVICE:   return "No Alltrax device found";
     case ALLTRAX_ERR_BLOCKED:     return "Write blocked (read-only mode)";
     case ALLTRAX_ERR_NO_MEMORY:   return "Memory allocation failed";

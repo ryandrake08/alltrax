@@ -51,11 +51,10 @@ typedef enum {
     ALLTRAX_ERR_FLASH       =  -7,  /* FLASH operation failed */
     ALLTRAX_ERR_NOT_RUN     =  -8,  /* Not in RUN mode */
     ALLTRAX_ERR_INVALID_ARG =  -9,  /* Bad argument */
-    ALLTRAX_ERR_ADDRESS     = -10,  /* Address out of range */
-    ALLTRAX_ERR_NO_DEVICE   = -11,  /* No Alltrax device found */
-    ALLTRAX_ERR_BLOCKED     = -12,  /* Write blocked (allow_writes=false) */
-    ALLTRAX_ERR_NO_MEMORY   = -13,  /* Memory allocation failed */
-    ALLTRAX_ERR_UNSUPPORTED = -14,  /* Unsupported USB identity or controller family */
+    ALLTRAX_ERR_NO_DEVICE   = -10,  /* No Alltrax device found */
+    ALLTRAX_ERR_BLOCKED     = -11,  /* Write blocked (allow_writes=false) */
+    ALLTRAX_ERR_NO_MEMORY   = -12,  /* Memory allocation failed */
+    ALLTRAX_ERR_UNSUPPORTED = -13,  /* Unsupported USB identity or controller family */
 } alltrax_error;
 
 const char* alltrax_strerror(alltrax_error err);
@@ -200,8 +199,10 @@ typedef enum {
 #define ALLTRAX_NO_MIN INT64_MIN
 #define ALLTRAX_NO_MAX INT64_MAX
 
-/* Device operations require a nonempty name, a valid type/size, and a complete
- * span in the selected memory region. Prefer the library's canonical definitions. */
+/* Variable metadata. Device operations accept only the library's entries,
+ * as returned by alltrax_find_var() and alltrax_get_var_defs(); any other
+ * pointer, including a copy of an entry, returns ALLTRAX_ERR_INVALID_ARG
+ * before device I/O. Entries stay valid for the life of the program. */
 typedef struct {
     const char*      name;
     const char*      description;
@@ -241,7 +242,9 @@ const alltrax_var_def* alltrax_find_var(const char* name);
 /* Get Group name (e.g. "Normal_User"). Returns NULL if group is out of range. */
 const char* alltrax_var_group_name(alltrax_var_group group);
 
-/* Validate using the same checked conversion as encoding. Values must be finite.
+/* Validate a library variable entry using the same checked conversion as encoding.
+ * NULL and non-library entries, including copies, return ALLTRAX_ERR_INVALID_ARG.
+ * Values must be finite.
  * Integer raw = round(value / scale) + offset must fit the type and explicit
  * bounds; scale must be finite and nonzero. Halfway values round away from zero.
  * Throttle_Type requires a defined integral enum value (0-11), without rounding.
@@ -250,8 +253,10 @@ const char* alltrax_var_group_name(alltrax_var_group group);
  * Write permissions are enforced separately by alltrax_write_vars(). */
 alltrax_error alltrax_validate_var_value(const alltrax_var_def* var, double value);
 
-/* Validate text for a string variable. Trailing spaces are ignored; the rest
- * must be printable ASCII (0x20-0x7E) and fit the field size. Values are
+/* Validate text for a library string variable entry. NULL and non-library
+ * entries, including copies, return ALLTRAX_ERR_INVALID_ARG.
+ * Trailing spaces are ignored; the rest must be printable ASCII (0x20-0x7E)
+ * and fit the field size. Values are
  * stored space-padded, and an empty string stores all spaces.
  * Returns ALLTRAX_OK if valid, ALLTRAX_ERR_INVALID_ARG otherwise. */
 alltrax_error alltrax_validate_var_string(const alltrax_var_def* var,
@@ -288,9 +293,9 @@ int64_t alltrax_var_raw_int64(const alltrax_var_value* val);
 /* Read operations                                                     */
 /* ------------------------------------------------------------------ */
 
-/* Entire batch is checked before I/O: RAM spans must fit [0x20000000,0x20010000),
- * FLASH spans [0x08000000,0x08020000). Bad shapes return ERR_INVALID_ARG;
- * invalid spans return ERR_ADDRESS. */
+/* Read up to 256 library variables, coalescing nearby addresses. The entire
+ * batch is checked before I/O; a NULL or non-library entry returns
+ * ALLTRAX_ERR_INVALID_ARG. */
 alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, size_t count, alltrax_var_value* out);
 
@@ -313,9 +318,8 @@ typedef struct {
 /* Write numeric/bool values in display units: alltrax_write_assignments()
  * with numeric items. Read-only definitions and string variables (which need
  * alltrax_write_assignments() text items) return ALLTRAX_ERR_INVALID_ARG
- * before device I/O, rejecting the entire batch. RAM spans must fit [0x20000000,0x20010000); FLASH spans must fit
- * the VARSET page [0x08002000,0x08002800). Invalid spans return ERR_ADDRESS.
- * Write options cannot bypass descriptor checks or variable permissions. */
+ * before device I/O, rejecting the entire batch, as do non-library entries.
+ * Write options cannot bypass these checks or variable permissions. */
 alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, const double* values, size_t count,
     const alltrax_write_opts* opts);
@@ -326,6 +330,8 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
 
 #define ALLTRAX_CURVE_POINTS 16
 
+/* Curve metadata. As with variables, curve operations accept only the
+ * library's entries (alltrax_find_curve(), alltrax_curve_by_index()). */
 typedef struct {
     const char* name;           /* "linearization", "speed", etc. */
     const char* description;
@@ -355,12 +361,11 @@ alltrax_error alltrax_read_curve(alltrax_controller* ctrl,
     const alltrax_curve_def* def, alltrax_curve_data* out);
 alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
     const alltrax_curve_def* def, alltrax_curve_data* out);
-/* Validate descriptor and all 16 points without device I/O. Name must be nonempty,
- * and both user arrays must fit wholly in VARSET. Scales must be finite and positive;
- * points must be finite and round to raw [0, axis_raw_max]. Zero padding and
- * repeated points are permitted; no ordering constraint is imposed.
- * Returns ALLTRAX_ERR_INVALID_ARG on invalid shape/data, ALLTRAX_ERR_ADDRESS
- * on invalid spans. User reads/writes use VARSET; factory reads use FACTSET. */
+/* Validate all 16 points without device I/O. `def` must be a library curve
+ * entry (alltrax_find_curve() or alltrax_curve_by_index()); curve reads and
+ * writes require the same. Points must be finite and round to raw
+ * [0, axis_raw_max]. Zero padding and repeated points are permitted; no
+ * ordering constraint is imposed. Returns ALLTRAX_ERR_INVALID_ARG otherwise. */
 alltrax_error alltrax_validate_curve(const alltrax_curve_def* def,
     const alltrax_curve_data* data);
 /* Write one user curve: alltrax_write_assignments() with a single curve item.

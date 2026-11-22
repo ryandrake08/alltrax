@@ -308,27 +308,21 @@ static int test_all_presets_pass_shared_validation(void)
 static int test_curve_validation_bounds_and_scales(void)
 {
     for (size_t c = 0; c < alltrax_curve_count(); c++) {
-        alltrax_curve_def def = *alltrax_curve_by_index(c);
-        alltrax_curve_data data = { .def = &def };
-        data.x[0] = def.x_raw_max * def.x_scale;
-        data.y[0] = def.y_raw_max * def.y_scale;
+        const alltrax_curve_def* def = alltrax_curve_by_index(c);
+        alltrax_curve_data data = { .def = def };
+        data.x[0] = def->x_raw_max * def->x_scale;
+        data.y[0] = def->y_raw_max * def->y_scale;
         data.x[1] = data.x[0]; /* Repeated points and trailing zeroes are valid. */
-        ASSERT_EQ(alltrax_validate_curve(&def, &data), ALLTRAX_OK);
-        data.x[15] = (def.x_raw_max + 1) * def.x_scale;
-        ASSERT_EQ(alltrax_validate_curve(&def, &data), ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_EQ(alltrax_validate_curve(def, &data), ALLTRAX_OK);
+        data.x[15] = (def->x_raw_max + 1) * def->x_scale;
+        ASSERT_EQ(alltrax_validate_curve(def, &data), ALLTRAX_ERR_INVALID_ARG);
         data.x[15] = 0;
-        data.y[15] = (def.y_raw_max + 1) * def.y_scale;
-        ASSERT_EQ(alltrax_validate_curve(&def, &data), ALLTRAX_ERR_INVALID_ARG);
+        data.y[15] = (def->y_raw_max + 1) * def->y_scale;
+        ASSERT_EQ(alltrax_validate_curve(def, &data), ALLTRAX_ERR_INVALID_ARG);
         data.y[15] = 0;
-        const double bad[] = { 0, -1, NAN, INFINITY };
-        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
-            alltrax_curve_def invalid = def;
-            invalid.x_scale = bad[i];
-            ASSERT_EQ(alltrax_validate_curve(&invalid, &data), ALLTRAX_ERR_INVALID_ARG);
-            invalid = def;
-            invalid.y_scale = bad[i];
-            ASSERT_EQ(alltrax_validate_curve(&invalid, &data), ALLTRAX_ERR_INVALID_ARG);
-        }
+        /* Only library entries are accepted, even unmodified copies are not. */
+        alltrax_curve_def copy = *def;
+        ASSERT_EQ(alltrax_validate_curve(&copy, &data), ALLTRAX_ERR_INVALID_ARG);
     }
     return 0;
 }

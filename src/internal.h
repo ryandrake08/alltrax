@@ -131,6 +131,12 @@ alltrax_error parse_response(const uint8_t data[PACKET_SIZE],
 
 /* Zero indicates an invalid type or size (strings: 1-32, other sizes: 0). */
 size_t alltrax_var_byte_size(const alltrax_var_def* var);
+
+/* True only for entries of the library's variable and curve tables. Device
+ * operations accept only these. Their shapes and spans are checked by
+ * test_catalog_invariants. */
+bool catalog_has_var(const alltrax_var_def* var);
+bool catalog_has_curve(const alltrax_curve_def* def);
 alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
     const alltrax_var_def* var, uint32_t base_address, alltrax_var_value* out);
 /* Returns encoded byte count, or 0 for invalid values/unsupported types.

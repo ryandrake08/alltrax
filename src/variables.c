@@ -380,6 +380,17 @@ int64_t alltrax_var_raw_int64(const alltrax_var_value* val)
     return 0;
 }
 
+bool catalog_has_var(const alltrax_var_def* var)
+{
+    for (size_t g = 0; g < GROUP_TABLE_SIZE; g++) {
+        for (size_t i = 0; i < group_table[g].count; i++) {
+            if (&group_table[g].vars[i] == var)
+                return true;
+        }
+    }
+    return false;
+}
+
 const alltrax_var_def* alltrax_get_var_defs(alltrax_var_group group, size_t* count)
 {
     if ((size_t)group >= GROUP_TABLE_SIZE) {
@@ -574,6 +585,8 @@ int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf)
 
 alltrax_error alltrax_validate_var_value(const alltrax_var_def* var, double value)
 {
+    if (!catalog_has_var(var))
+        return ALLTRAX_ERR_INVALID_ARG;
     int64_t raw;
     return var_value_to_raw(var, value, &raw);
 }
@@ -604,6 +617,8 @@ int alltrax_encode_string(const alltrax_var_def* var, const char* text,
 alltrax_error alltrax_validate_var_string(const alltrax_var_def* var,
     const char* text)
 {
+    if (!catalog_has_var(var))
+        return ALLTRAX_ERR_INVALID_ARG;
     uint8_t buf[MAX_STRING_SIZE];
     return alltrax_encode_string(var, text, buf) ? ALLTRAX_OK
                                                  : ALLTRAX_ERR_INVALID_ARG;
@@ -715,6 +730,15 @@ const alltrax_curve_def* alltrax_find_curve(const char* name)
 size_t alltrax_curve_count(void)
 {
     return CURVE_DEF_COUNT;
+}
+
+bool catalog_has_curve(const alltrax_curve_def* def)
+{
+    for (size_t i = 0; i < CURVE_DEF_COUNT; i++) {
+        if (&curve_defs[i] == def)
+            return true;
+    }
+    return false;
 }
 
 const alltrax_curve_def* alltrax_curve_by_index(size_t index)

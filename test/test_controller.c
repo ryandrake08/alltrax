@@ -642,224 +642,17 @@ static int test_every_throttle_assignment_is_checked(void)
 
 static int test_throttle_mask_uses_encoded_value(void)
 {
-    /* Address-bearing descriptors are still public. Even a modified descriptor
-     * must check the byte it will encode, and reject undefined encoded types. */
-    alltrax_var_def shifted = *alltrax_find_var("Throttle_Type");
-    shifted.offset = 1;
-    const alltrax_var_def* var = &shifted;
-    double value = 1; /* This descriptor encodes type 2. */
+    const alltrax_var_def* var = alltrax_find_var("Throttle_Type");
+    double value = 2;
     mock_reset();
-    mock.throttles_allowed = 0x001;
+    mock.throttles_allowed = 0x001;  /* Only type 1 */
     ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, &value, 1, NULL), ALLTRAX_ERR_INVALID_ARG);
     ASSERT_EQ(mock.mode_writes, 0);
     ASSERT_EQ(mock.erases, 0);
     mock_reset();
-    mock.throttles_allowed = 0x002;
+    mock.throttles_allowed = 0x002;  /* Type 2 maps to bit 1 */
     ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, &value, 1, NULL), ALLTRAX_OK);
-    ASSERT_EQ(mock.page[0xA0], 2);
-    mock_reset();
-    shifted.offset = 32;
-    shifted.raw_max = 255; /* Encoded 33 must never reach the shift. */
-    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, &value, 1, NULL), ALLTRAX_ERR_INVALID_ARG);
-    ASSERT_EQ(mock.requests, 0);
-    return 0;
-}
-
-static int test_variable_spans_rejected_before_io(void)
-{
-    const alltrax_var_type types[] = { ALLTRAX_TYPE_UINT16, ALLTRAX_TYPE_UINT32 };
-    for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
-        for (int flash = 0; flash < 2; flash++) {
-            mock_reset();
-            alltrax_var_def bad = *alltrax_find_var("Fan_On");
-            bad.name = "crossing_span";
-            bad.type = types[t];
-            bad.is_flash = flash != 0;
-            bad.address = flash ? VARSET_ADDR + VARSET_SIZE - 1 : RAM_END - 1;
-            const alltrax_var_def* vars[] = { alltrax_find_var("HPD"), &bad };
-            const double values[] = { 1, 1 };
-            uint8_t original[VARSET_SIZE];
-            memcpy(original, mock.page, sizeof(original));
-            ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values, 2, NULL), ALLTRAX_ERR_ADDRESS);
-            ASSERT_EQ(mock.requests, 0);
-            ASSERT_MEM_EQ(mock.page, original, sizeof(original));
-            ASSERT_EQ(mock.mode_writes, 0);
-        }
-    }
-    return 0;
-}
-
-static int test_curve_spans_rejected_before_io(void)
-{
-    const uint32_t bad_addresses[] = {
-        UINT32_MAX, UINT32_MAX - 15, UINT32_MAX - 31,
-        VARSET_ADDR - 1, VARSET_ADDR + VARSET_SIZE - 31,
-        VARSET_ADDR + VARSET_SIZE,
-    };
-    const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
-        .skip_fw_check = true, .skip_voltage_link = true,
-    };
-    const alltrax_write_opts* options[] = { NULL, &unchecked };
-    for (size_t a = 0; a < sizeof(bad_addresses) / sizeof(bad_addresses[0]); a++) {
-        for (int axis = 0; axis < 2; axis++) {
-            for (size_t o = 0; o < sizeof(options) / sizeof(options[0]); o++) {
-                mock_reset();
-                /* Stop the old implementation before it reaches an unsafe
-                 * patch. Correct preflight must reject before even this read. */
-                mock_fault(VARSET_ADDR, MAX_PAYLOAD, 0, 1);
-                alltrax_curve_def bad = *alltrax_find_curve("linearization");
-                if (axis) bad.y_address = bad_addresses[a];
-                else bad.x_address = bad_addresses[a];
-                alltrax_curve_data data = { .def = &bad };
-                ASSERT_EQ(alltrax_write_curve(&mock.ctrl, &bad, &data, options[o]), ALLTRAX_ERR_ADDRESS);
-                ASSERT_EQ(mock.requests, 0);
-                ASSERT_EQ(mock.mode_writes, 0);
-                ASSERT_EQ(mock.erases, 0);
-            }
-        }
-    }
-    return 0;
-}
-
-static int test_malformed_variable_descriptors_reject_read_and_write_batches(void)
-{
-    const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
-        .skip_fw_check = true, .skip_voltage_link = true,
-    };
-    const alltrax_write_opts* options[] = { NULL, &unchecked };
-    for (int bad = 0; bad < 11; bad++) {
-        mock_reset();
-        alltrax_var_def var = *alltrax_find_var("Fan_On");
-        var.name = "bad_descriptor";
-        if (bad == 0) var.name = NULL;
-        if (bad == 1) var.name = "";
-        if (bad == 2) var.type = (alltrax_var_type)-1;
-        if (bad == 3) var.type = (alltrax_var_type)99;
-        if (bad == 4) var.size = 1; /* Non-string types require size=0. */
-        if (bad >= 5 && bad <= 7) {
-            var.type = ALLTRAX_TYPE_STRING;
-            var.size = bad == 5 ? 0 : bad == 6 ? 33 : 255;
-        }
-        if (bad >= 8) {
-            var.type = ALLTRAX_TYPE_UINT32;
-            var.is_flash = bad != 8;
-            var.address = bad == 8 ? RAM_END - 1 : bad == 9 ? FLASH_END - 1 : UINT32_MAX - 1;
-        }
-        const alltrax_var_def* vars[] = { alltrax_find_var("HPD"), bad == 0 ? NULL : &var };
-        /* Exercise a NULL entry and a descriptor with a NULL name separately. */
-        const double values[] = { 1, 1 };
-        alltrax_error expected = bad >= 8 ? ALLTRAX_ERR_ADDRESS : ALLTRAX_ERR_INVALID_ARG;
-        uint8_t original[VARSET_SIZE];
-        memcpy(original, mock.page, sizeof(original));
-        for (size_t o = 0; o < sizeof(options) / sizeof(options[0]); o++)
-            ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values, 2, options[o]), expected);
-        alltrax_var_value out[2] = {{0}}, before[2];
-        memcpy(before, out, sizeof(out));
-        ASSERT_EQ(alltrax_read_vars(&mock.ctrl, vars, 2, out), expected);
-        ASSERT_MEM_EQ(out, before, sizeof(out));
-        vars[1] = &var;
-        if (bad == 0) {
-            ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values, 2, NULL), ALLTRAX_ERR_INVALID_ARG);
-            ASSERT_EQ(alltrax_read_vars(&mock.ctrl, vars, 2, out), ALLTRAX_ERR_INVALID_ARG);
-        }
-        ASSERT_EQ(mock.requests, 0);
-        ASSERT_EQ(mock.mode_writes, 0);
-        ASSERT_MEM_EQ(mock.page, original, sizeof(original));
-    }
-    mock_reset();
-    const alltrax_var_def* var = alltrax_find_var("HPD");
-    double value = 1;
-    alltrax_var_value out;
-    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, NULL, &value, 1, NULL), ALLTRAX_ERR_INVALID_ARG);
-    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, NULL, 1, NULL), ALLTRAX_ERR_INVALID_ARG);
-    ASSERT_EQ(alltrax_read_vars(&mock.ctrl, NULL, 1, &out), ALLTRAX_ERR_INVALID_ARG);
-    ASSERT_EQ(alltrax_read_vars(&mock.ctrl, &var, 1, NULL), ALLTRAX_ERR_INVALID_ARG);
-    ASSERT_EQ(mock.requests, 0);
-    return 0;
-}
-
-static int test_exact_region_end_variable_writes_and_reads(void)
-{
-    const alltrax_var_type types[] = { ALLTRAX_TYPE_UINT8, ALLTRAX_TYPE_UINT16, ALLTRAX_TYPE_UINT32 };
-    const size_t widths[] = { 1, 2, 4 };
-    for (size_t t = 0; t < 3; t++) {
-        for (int flash = 0; flash < 2; flash++) {
-            mock_reset();
-            alltrax_var_def def = *alltrax_find_var("Fan_On");
-            def.name = "exact_end";
-            def.type = types[t];
-            def.is_flash = flash != 0;
-            def.address = (flash ? VARSET_ADDR + VARSET_SIZE : RAM_END) - (uint32_t)widths[t];
-            const alltrax_var_def* var = &def;
-            double value = 1;
-            uint8_t expected[VARSET_SIZE];
-            memcpy(expected, mock.page, sizeof(expected));
-            if (flash) {
-                memset(expected + VARSET_SIZE - widths[t], 0, widths[t]);
-                expected[VARSET_SIZE - widths[t]] = 1;
-            }
-            ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, &value, 1, NULL), ALLTRAX_OK);
-            alltrax_var_value out;
-            ASSERT_EQ(alltrax_read_vars(&mock.ctrl, &var, 1, &out), ALLTRAX_OK);
-            ASSERT_EQ(alltrax_var_raw_int64(&out), 1);
-            ASSERT_MEM_EQ(mock.page, expected, sizeof(expected));
-            ASSERT_EQ(mock.erases, flash);
-            ASSERT_EQ(mock.mode, RUN_MODE_RUN);
-        }
-    }
-    return 0;
-}
-
-static int test_curve_read_spans_and_shapes_reject_before_io(void)
-{
-    for (int bad = 0; bad < 5; bad++) {
-        mock_reset();
-        alltrax_curve_def def = *alltrax_find_curve("linearization");
-        if (bad == 0) { def.x_address = UINT32_MAX - 15; def.factory_x_address = UINT32_MAX - 15; }
-        if (bad == 1) {
-            def.y_address = VARSET_ADDR + VARSET_SIZE - 31;
-            def.factory_y_address = FACTSET_ADDR + FLASH_PAGE_SIZE - 31;
-        }
-        if (bad == 2) def.name = NULL;
-        if (bad == 3) def.x_scale = 0;
-        if (bad == 4) def.y_raw_max = -1;
-        alltrax_curve_data data = {0}, before;
-        memcpy(&before, &data, sizeof(data));
-        alltrax_error expected = bad < 2 ? ALLTRAX_ERR_ADDRESS : ALLTRAX_ERR_INVALID_ARG;
-        ASSERT_EQ(alltrax_read_curve(&mock.ctrl, &def, &data), expected);
-        ASSERT_EQ(alltrax_read_curve_factory(&mock.ctrl, &def, &data), expected);
-        ASSERT_EQ(alltrax_validate_curve(&def, &data), expected);
-        ASSERT_EQ(alltrax_write_curve(&mock.ctrl, &def, &data, NULL), expected);
-        ASSERT_MEM_EQ(&data, &before, sizeof(data));
-        ASSERT_EQ(mock.requests, 0);
-    }
-    return 0;
-}
-
-static int test_curve_patches_ending_at_page_limit_preserve_neighbors(void)
-{
-    mock_reset();
-    alltrax_curve_def def = *alltrax_find_curve("linearization");
-    def.x_address = VARSET_ADDR + VARSET_SIZE - 64;
-    def.y_address = VARSET_ADDR + VARSET_SIZE - 32;
-    alltrax_curve_data data = { .def = &def };
-    uint8_t expected[VARSET_SIZE];
-    memcpy(expected, mock.page, sizeof(expected));
-    for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++) {
-        data.x[i] = i * def.x_scale;
-        data.y[i] = (i + 16) * def.y_scale;
-        expected[VARSET_SIZE - 64 + i * 2] = (uint8_t)i;
-        expected[VARSET_SIZE - 63 + i * 2] = 0;
-        expected[VARSET_SIZE - 32 + i * 2] = (uint8_t)(i + 16);
-        expected[VARSET_SIZE - 31 + i * 2] = 0;
-    }
-    ASSERT_EQ(alltrax_write_curve(&mock.ctrl, &def, &data, NULL), ALLTRAX_OK);
-    ASSERT_MEM_EQ(mock.page, expected, sizeof(expected));
-    ASSERT_EQ(mock.erases, 1);
-    ASSERT_EQ(mock.goodset_clears, 1);
-    ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+    ASSERT_EQ(mock.page[var->address - VARSET_ADDR], 2);
     return 0;
 }
 
@@ -1577,6 +1370,85 @@ static int test_invalid_goodset_blocks_writes_before_cal(void)
     return 0;
 }
 
+/* Caller-built descriptors, including unmodified copies of library entries,
+ * never reach the device. */
+static int test_non_catalog_variables_rejected_before_io(void)
+{
+    alltrax_var_def copies[8];
+    for (size_t i = 0; i < 8; i++)
+        copies[i] = *alltrax_find_var(i % 2 ? "HPD" : "Fan_On");
+    copies[1].address = VARSET_ADDR + 0x7F0;                 /* no variable */
+    copies[2].address = 0x20000100;                          /* arbitrary RAM */
+    copies[3] = *alltrax_find_var("Global_Shutdown");
+    copies[3].writable = true;                               /* read-only */
+    copies[4].type = ALLTRAX_TYPE_UINT32;
+    copies[4].address = RAM_END - 1;                         /* crosses RAM end */
+    copies[5].name = NULL;
+    copies[6].type = (alltrax_var_type)99;
+    copies[7].is_flash = true;
+    copies[7].address = 0x08004000;                          /* firmware area */
+    const alltrax_write_opts unchecked = {
+        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_fw_check = true, .skip_voltage_link = true,
+    };
+    for (size_t i = 0; i <= 8; i++) {
+        const alltrax_var_def* bad = i < 8 ? &copies[i] : NULL;
+        const alltrax_var_def* vars[] = { alltrax_find_var("HPD"), bad };
+        const double values[] = { 1, 1 };
+        mock_reset();
+        uint8_t original[VARSET_SIZE];
+        memcpy(original, mock.page, sizeof(original));
+        ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values, 2, NULL), ALLTRAX_ERR_INVALID_ARG);
+        if (bad)  /* A NULL entry reports a missing variable instead. */
+            ASSERT_TRUE(strstr(mock.ctrl.error_detail, "Not a library variable") != NULL);
+        ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values, 2, &unchecked), ALLTRAX_ERR_INVALID_ARG);
+        const alltrax_assignment item = { .var = bad, .number = 1 };
+        ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, &item, 1, &unchecked), ALLTRAX_ERR_INVALID_ARG);
+        alltrax_var_value out[2] = {{0}}, before[2];
+        memcpy(before, out, sizeof(out));
+        ASSERT_EQ(alltrax_read_vars(&mock.ctrl, vars, 2, out), ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_MEM_EQ(out, before, sizeof(out));
+        ASSERT_EQ(mock.requests, 0);
+        ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+    }
+
+    mock_reset();
+    const alltrax_var_def* var = alltrax_find_var("HPD");
+    double value = 1;
+    alltrax_var_value out;
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, NULL, &value, 1, NULL), ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, NULL, 1, NULL), ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(alltrax_read_vars(&mock.ctrl, NULL, 1, &out), ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(alltrax_read_vars(&mock.ctrl, &var, 1, NULL), ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(mock.requests, 0);
+    return 0;
+}
+
+static int test_non_catalog_curves_rejected_before_io(void)
+{
+    const alltrax_curve_def* lin = alltrax_find_curve("linearization");
+    alltrax_curve_def copies[4] = { *lin, *lin, *lin, *lin };
+    copies[1].x_address = UINT32_MAX - 15;            /* wraps */
+    copies[2].y_address = VARSET_ADDR + VARSET_SIZE - 31;
+    copies[3].x_scale = 0;
+    for (size_t i = 0; i <= 4; i++) {
+        const alltrax_curve_def* bad = i < 4 ? &copies[i] : NULL;
+        mock_reset();
+        alltrax_curve_data data = { .def = lin }, before;
+        memcpy(&before, &data, sizeof(data));
+        ASSERT_EQ(alltrax_read_curve(&mock.ctrl, bad, &data), ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_EQ(alltrax_read_curve_factory(&mock.ctrl, bad, &data), ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_MEM_EQ(&data, &before, sizeof(data));
+        ASSERT_EQ(alltrax_validate_curve(bad, &data), ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_EQ(alltrax_write_curve(&mock.ctrl, bad, &data, NULL), ALLTRAX_ERR_INVALID_ARG);
+        const alltrax_assignment item = { .curve = bad, .curve_data = &data };
+        ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, &item, 1, NULL), ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_EQ(mock.requests, 0);
+        ASSERT_EQ(mock.erases, 0);
+    }
+    return 0;
+}
+
 int main(void)
 {
     printf("controller (simulated transport):\n");
@@ -1602,12 +1474,8 @@ int main(void)
     RUN_TEST(test_throttle_none_bypasses_hardware_mask);
     RUN_TEST(test_every_throttle_assignment_is_checked);
     RUN_TEST(test_throttle_mask_uses_encoded_value);
-    RUN_TEST(test_variable_spans_rejected_before_io);
-    RUN_TEST(test_curve_spans_rejected_before_io);
-    RUN_TEST(test_malformed_variable_descriptors_reject_read_and_write_batches);
-    RUN_TEST(test_exact_region_end_variable_writes_and_reads);
-    RUN_TEST(test_curve_read_spans_and_shapes_reject_before_io);
-    RUN_TEST(test_curve_patches_ending_at_page_limit_preserve_neighbors);
+    RUN_TEST(test_non_catalog_variables_rejected_before_io);
+    RUN_TEST(test_non_catalog_curves_rejected_before_io);
     RUN_TEST(test_all_canonical_variable_groups_remain_readable);
     RUN_TEST(test_failed_cal_entry_attempts_run_and_skips_requested_writes);
     RUN_TEST(test_failures_before_cal_attempt_do_not_write_run);

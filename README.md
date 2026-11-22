@@ -443,7 +443,6 @@ All functions that can fail return `alltrax_error`:
 | `ALLTRAX_ERR_FLASH` | FLASH operation failed |
 | `ALLTRAX_ERR_NOT_RUN` | Controller not in RUN mode |
 | `ALLTRAX_ERR_INVALID_ARG` | Bad argument |
-| `ALLTRAX_ERR_ADDRESS` | Address out of range |
 | `ALLTRAX_ERR_NO_DEVICE` | No Alltrax device found |
 | `ALLTRAX_ERR_UNSUPPORTED` | Unsupported USB identity or controller family |
 | `ALLTRAX_ERR_BLOCKED` | Write blocked (`allow_writes=false`) |
@@ -568,14 +567,17 @@ in a group.
 | `writable` | `bool` | Whether this variable can be written |
 | `is_flash` | `bool` | `true` = FLASH (persistent), `false` = RAM |
 
-Device operations validate every descriptor before I/O. Names must be nonempty,
-types must be recognized, and sizes must follow the rules above. Full RAM spans
-must fit in `[0x20000000, 0x20010000)`. FLASH reads must fit in
-`[0x08000000, 0x08020000)`; FLASH writes must fit wholly in VARSET,
-`[0x08002000, 0x08002800)`. Invalid shapes return `ALLTRAX_ERR_INVALID_ARG`,
-and invalid spans return `ALLTRAX_ERR_ADDRESS`, rejecting the entire batch.
-Prefer definitions returned by the library: span checks do not establish the
-meaning of a caller-supplied address.
+Device operations accept only the library's variable entries: the pointers
+returned by `alltrax_find_var()` and `alltrax_get_var_defs()`. Any other
+pointer, including a copy of an entry, returns `ALLTRAX_ERR_INVALID_ARG`
+before device I/O and rejects the entire batch, so the API cannot read or
+write arbitrary memory. Entries are static and stay valid for the life of the
+program. Their fields are for inspection.
+
+The public validators `alltrax_validate_var_value()` and
+`alltrax_validate_var_string()` require the same library entries and reject
+NULL or copied definitions with `ALLTRAX_ERR_INVALID_ARG`. They validate
+values without device I/O; write permissions are checked by the write functions.
 
 **Variable types** (`alltrax_var_type`): `ALLTRAX_TYPE_BOOL`, `ALLTRAX_TYPE_UINT8`,
 `ALLTRAX_TYPE_INT8`, `ALLTRAX_TYPE_UINT16`, `ALLTRAX_TYPE_INT16`,
@@ -824,16 +826,15 @@ arrays, erase, write, verify). Uses the same `alltrax_write_opts` as
 `alltrax_write_vars()` — pass `NULL` for safe defaults. Requires
 `allow_writes=true`.
 
-`alltrax_validate_curve()` checks the descriptor and all 16 points without device I/O.
-The name must be nonempty and both 32-byte user arrays must fit in VARSET;
-factory reads check the selected arrays against FACTSET instead. Both scales
-must be finite and positive, and each finite point must round into
-`[0, x_raw_max]` or `[0, y_raw_max]` using the existing rounding policy.
-Zero padding and repeated points are accepted; no ordering constraint is
-imposed. The writer enforces this same validation before any device request,
-regardless of write options, and returns `ALLTRAX_ERR_INVALID_ARG` for invalid
-data, or `ALLTRAX_ERR_ADDRESS` for an invalid span. CLI and config inputs use
-the same library validation.
+`alltrax_validate_curve()` checks all 16 points without device I/O. As with
+variables, the curve must be a library entry, from `alltrax_find_curve()` or
+`alltrax_curve_by_index()`; curve reads and writes require the same. Each
+finite point must round into `[0, x_raw_max]` or `[0, y_raw_max]` using the
+existing rounding policy. Zero padding and repeated points are accepted; no
+ordering constraint is imposed. The writer enforces this same validation
+before any device request, regardless of write options, and returns
+`ALLTRAX_ERR_INVALID_ARG` for invalid data. CLI and config inputs use the same
+library validation.
 
 Example — copy factory curve to user:
 
