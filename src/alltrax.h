@@ -5,17 +5,23 @@
  * USB HID. Reads/writes settings and monitors real-time status.
  *
  * Usage:
- *   alltrax_init();
- *
- *   alltrax_controller* ctrl;
- *   alltrax_error err = alltrax_open(&ctrl, NULL, false);
+ *   alltrax_error err = alltrax_init();
  *   if (err) { fprintf(stderr, "%s\n", alltrax_strerror(err)); return 1; }
  *
- *   alltrax_info info;
- *   err = alltrax_get_info(ctrl, &info);
+ *   alltrax_controller* ctrl = NULL;  // alltrax_open() requires NULL
+ *   err = alltrax_open(&ctrl, NULL, false);
+ *   if (!err) {
+ *       alltrax_info info;
+ *       err = alltrax_get_info(ctrl, &info);
+ *       if (!err)
+ *           printf("Model: %s\n", info.model);
+ *       alltrax_close(ctrl);
+ *   }
+ *   if (err)
+ *       fprintf(stderr, "%s\n", alltrax_strerror(err));
  *
- *   alltrax_close(ctrl);
  *   alltrax_exit();
+ *   return err ? 1 : 0;
  */
 
 #ifndef ALLTRAX_H

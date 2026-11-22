@@ -341,17 +341,23 @@ thin wrapper around it. Link with `-lalltrax-usb -lhidapi-hidraw -lm`.
 ```c
 #include "alltrax.h"
 
-alltrax_init();
+alltrax_error err = alltrax_init();
+if (err) { fprintf(stderr, "%s\n", alltrax_strerror(err)); return 1; }
 
-alltrax_controller* ctrl = NULL;
-alltrax_error err = alltrax_open(&ctrl, NULL, false);
+alltrax_controller* ctrl = NULL;  /* alltrax_open() requires NULL */
+err = alltrax_open(&ctrl, NULL, false);
+if (!err) {
+    alltrax_info info;
+    err = alltrax_get_info(ctrl, &info);
+    if (!err)
+        printf("Model: %s, Firmware: %s\n", info.model, info.program_rev_str);
+    alltrax_close(ctrl);
+}
+if (err)
+    fprintf(stderr, "%s\n", alltrax_strerror(err));
 
-alltrax_info info;
-alltrax_get_info(ctrl, &info);
-printf("Model: %s, Firmware: %s\n", info.model, info.program_rev_str);
-
-alltrax_close(ctrl);
 alltrax_exit();
+return err ? 1 : 0;
 ```
 
 ### Lifecycle
