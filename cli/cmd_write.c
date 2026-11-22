@@ -65,11 +65,6 @@ int cmd_write(int argc, char** argv)
             free(assigns);
             return 1;
         }
-        if (!var->writable) {
-            fprintf(stderr, "Variable is read-only: %s\n", name);
-            free(assigns);
-            return 1;
-        }
         if (var->type == ALLTRAX_TYPE_STRING) {
             fprintf(stderr, "Variable %s is a string; string writes are not supported\n",
                     name);

@@ -270,8 +270,9 @@ typedef struct {
     bool skip_voltage_link;  /* Skip voltage link validation */
 } alltrax_write_opts;
 
-/* Write numeric/bool values in display units. String assignments return
- * ALLTRAX_ERR_INVALID_ARG before device I/O, rejecting the entire batch. */
+/* Write numeric/bool values in display units. Read-only definitions and string
+ * assignments return ALLTRAX_ERR_INVALID_ARG before device I/O, rejecting the
+ * entire batch. Write options cannot bypass variable permissions. */
 alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, const double* values, size_t count,
     const alltrax_write_opts* opts);

@@ -394,6 +394,8 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
                 xmlFree(xval);
                 continue;
             }
+            /* Select restorable fields from a backup that also contains
+             * read-only metadata. The library enforces write permissions. */
             if (!var->writable || var->type == ALLTRAX_TYPE_STRING) {
                 xmlFree(xval);
                 continue;

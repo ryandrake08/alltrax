@@ -91,8 +91,8 @@ $(TEST_BIN): $(TEST_OBJ) $(LIB)
 $(CONTROLLER_TEST_BIN): $(BUILD)/test_controller.o $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
 	$(CC) $(LDFLAGS) -o $@ $^ -lm
 
-# Write-command tests replace device operations and cannot open hardware.
-$(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(BUILD)/cmd_write.o $(BUILD)/variables.o
+# Write-command tests use real controller validation with a fake transport/open.
+$(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(BUILD)/cmd_write.o $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
 	$(CC) $(LDFLAGS) -o $@ $^ -lm
 
 # Transport tests supply hidapi symbols; never link the real USB library.

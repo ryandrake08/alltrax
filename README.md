@@ -549,6 +549,12 @@ variables can be mixed freely — the library separates them internally and uses
 a single CAL/RUN bracket wrapping all writes. Values are automatically
 converted from display units to raw device format.
 
+The library enforces each definition's `writable` permission. A read-only
+variable anywhere in a batch returns `ALLTRAX_ERR_INVALID_ARG` before device
+I/O, rejecting the entire batch. Write options cannot bypass this check.
+The CLI's `write` command relies on this library check and reports its diagnostic.
+It opens the controller before reporting permission errors.
+
 Only numeric and boolean assignments are supported. String assignments (including
 `Throttle_Type_Name` and `F_Table_Name`) return `ALLTRAX_ERR_INVALID_ARG` before
 device I/O and reject the entire batch. The CLI also rejects string writes.

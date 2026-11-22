@@ -248,6 +248,54 @@ static int test_unsupported_identity_blocks_all_operations(void)
     return 0;
 }
 
+static int test_read_only_variables_reject_entire_batch_before_io(void)
+{
+    const char* names[] = {
+        "Global_Shutdown", "Var_GoodSet", "F_Reverse_Field_Weaken_Percent",
+        "SerialNum", "Model",
+    };
+    const alltrax_write_opts unchecked = {
+        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_fw_check = true, .skip_voltage_link = true,
+    };
+    const alltrax_write_opts* options[] = { NULL, &unchecked };
+
+    for (size_t n = 0; n < sizeof(names) / sizeof(names[0]); n++) {
+        const alltrax_var_def* read_only = alltrax_find_var(names[n]);
+        ASSERT_TRUE(read_only != NULL);
+        ASSERT_FALSE(read_only->writable);
+        for (size_t o = 0; o < sizeof(options) / sizeof(options[0]); o++) {
+            /* Alone, or at every position among valid RAM/FLASH assignments. */
+            for (size_t pos = 0; pos < 4; pos++) {
+                mock_reset();
+                uint8_t original[VARSET_SIZE];
+                memcpy(original, mock.page, sizeof(original));
+                const alltrax_var_def* vars[3] = {
+                    alltrax_find_var("Fan_On"), alltrax_find_var("HPD"), NULL,
+                };
+                const double values[] = { 1, 1, 1 };
+                size_t count = pos == 3 ? 1 : 3;
+                size_t read_only_pos = pos == 3 ? 0 : pos;
+                for (size_t i = 2; i > read_only_pos; i--)
+                    vars[i] = vars[i - 1];
+                vars[read_only_pos] = read_only;
+
+                ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values, count,
+                                             options[o]), ALLTRAX_ERR_INVALID_ARG);
+                ASSERT_EQ(mock.requests, 0);
+                ASSERT_TRUE(strstr(mock.ctrl.error_detail, names[n]) != NULL);
+                ASSERT_TRUE(strstr(mock.ctrl.error_detail, "read-only") != NULL);
+                ASSERT_EQ(mock.erases, 0);
+                ASSERT_EQ(mock.settings_writes, 0);
+                ASSERT_EQ(mock.goodset_clears, 0);
+                ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+                ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+            }
+        }
+    }
+    return 0;
+}
+
 static int test_info_exact_read_lengths(void)
 {
     mock_reset();
@@ -392,6 +440,7 @@ int main(void)
     RUN_TEST(test_flash_write_rejects_final_verification_length_mismatch);
     RUN_TEST(test_string_assignments_rejected_before_device_access);
     RUN_TEST(test_unsupported_identity_blocks_all_operations);
+    RUN_TEST(test_read_only_variables_reject_entire_batch_before_io);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }
