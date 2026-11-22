@@ -60,7 +60,7 @@ const char* alltrax_strerror(alltrax_error err)
  * read reply `fail_read_at` (1-based) fails. Mutations are counted. Without
  * `writable` they fail; with it, the VARSET page lives in `page` (reads,
  * writes, erase), RunMode is tracked, other writes are echoed, and resets are
- * counted. */
+ * counted. FACTSET reads come from `factory` (GoodSet from fact_goodset). */
 static struct {
     bool enabled, writable;
     uint8_t request[PACKET_SIZE];
@@ -68,6 +68,7 @@ static struct {
     uint16_t var_goodset, fact_goodset;
     uint32_t value_addr, value;
     uint8_t page[VARSET_SIZE];
+    uint8_t factory[FLASH_PAGE_SIZE];
     uint8_t mode;
 } device;
 
@@ -143,6 +144,8 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
             buf[8 + i] = (uint8_t)(device.var_goodset >> ((a - VARSET_ADDR) * 8));
         else if (a >= FACTSET_ADDR && a < FACTSET_ADDR + 2)
             buf[8 + i] = (uint8_t)(device.fact_goodset >> ((a - FACTSET_ADDR) * 8));
+        else if (a >= FACTSET_ADDR && a - FACTSET_ADDR < FLASH_PAGE_SIZE)
+            buf[8 + i] = device.factory[a - FACTSET_ADDR];
         if (device.value_addr && a - device.value_addr < 4)
             buf[8 + i] = (uint8_t)(device.value >> ((a - device.value_addr) * 8));
     }
@@ -961,6 +964,71 @@ static int test_write_command_writes_strings_and_numbers_in_one_batch(void)
     return 0;
 }
 
+/* Give every factory curve distinct valid points and return the user page
+ * expected after restoring the selected curve (NULL: all). */
+static void prepare_factory_curves(const char* only, uint8_t expected[VARSET_SIZE])
+{
+    memcpy(expected, device.page, VARSET_SIZE);
+    for (size_t c = 0; c < alltrax_curve_count(); c++) {
+        const alltrax_curve_def* def = alltrax_curve_by_index(c);
+        for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++) {
+            uint16_t x = (uint16_t)(c * 100 + i * 7), y = (uint16_t)(c * 100 + i * 9);
+            uint8_t* fx = device.factory + (def->factory_x_address - FACTSET_ADDR) + i * 2;
+            uint8_t* fy = device.factory + (def->factory_y_address - FACTSET_ADDR) + i * 2;
+            fx[0] = (uint8_t)x; fx[1] = (uint8_t)(x >> 8);
+            fy[0] = (uint8_t)y; fy[1] = (uint8_t)(y >> 8);
+        }
+        if (only && strcmp(def->name, only) != 0)
+            continue;
+        memcpy(expected + (def->x_address - VARSET_ADDR),
+               device.factory + (def->factory_x_address - FACTSET_ADDR),
+               ALLTRAX_CURVE_POINTS * 2);
+        memcpy(expected + (def->y_address - VARSET_ADDR),
+               device.factory + (def->factory_y_address - FACTSET_ADDR),
+               ALLTRAX_CURVE_POINTS * 2);
+    }
+}
+
+static int test_curve_reset_restores_in_one_erase(void)
+{
+    const char* types[] = { "all", "torque" };
+    for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
+        writable_device_reset();
+        uint8_t expected[VARSET_SIZE];
+        prepare_factory_curves(strcmp(types[t], "all") ? types[t] : NULL, expected);
+        char type[16];
+        snprintf(type, sizeof(type), "%s", types[t]);
+        char* argv[] = { "curve", "reset", type };
+        ASSERT_EQ(run_writable(cmd_curve, 3, argv), 0);
+        ASSERT_EQ(device.erases, 1);
+        ASSERT_EQ(device.mode, RUN_MODE_RUN);
+        ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+    }
+    return 0;
+}
+
+static int test_curve_reset_read_failure_writes_nothing(void)
+{
+    /* curve reset all reads 2 factory arrays for each of the 5 curves. */
+    for (unsigned n = 1; n <= 10; n++) {
+        writable_device_reset();
+        uint8_t expected[VARSET_SIZE];
+        prepare_factory_curves(NULL, expected);
+        uint8_t original[VARSET_SIZE];
+        memcpy(original, device.page, sizeof(original));
+        device.fail_read_at = n;
+        char* argv[] = { "curve", "reset", "all" };
+        ASSERT_EQ(run_writable(cmd_curve, 3, argv), 1);
+        ASSERT_EQ(device.reads, n);
+        ASSERT_EQ(device.mutations, 0);
+        ASSERT_MEM_EQ(device.page, original, sizeof(original));
+    }
+    char* bogus[] = { "curve", "reset", "bogus" };
+    ASSERT_EQ(run_writable(cmd_curve, 3, bogus), 1);
+    ASSERT_EQ(open_calls, 0);
+    return 0;
+}
+
 /* Run `get <name>` against the simulated device with `value` at the
  * variable's address, returning its stdout line in `out`. */
 static int run_get(const char* name, uint32_t value, char* out, size_t out_size)
@@ -1048,6 +1116,8 @@ int main(void)
     RUN_TEST(test_curve_csv_validation);
     RUN_TEST(test_curve_presets_reach_open);
     RUN_TEST(test_write_command_writes_strings_and_numbers_in_one_batch);
+    RUN_TEST(test_curve_reset_restores_in_one_erase);
+    RUN_TEST(test_curve_reset_read_failure_writes_nothing);
     RUN_TEST(test_get_prints_full_integer_range);
     RUN_TEST(test_get_keeps_scaled_formatting);
     RUN_TEST(test_options_accepted_before_and_after_positionals);

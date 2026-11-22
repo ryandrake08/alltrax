@@ -502,10 +502,28 @@ static int do_curve_reset(int argc, char** argv)
 
     const char* type = argv[1];
     bool all = strcmp(type, "all") == 0;
+    if (!all && !alltrax_find_curve(type)) {
+        fprintf(stderr, "Unknown curve type: %s\n", type);
+        return 1;
+    }
+
+    size_t ncurves = alltrax_curve_count();
+    alltrax_curve_data* factory = calloc(ncurves, sizeof(*factory));
+    alltrax_assignment* items = calloc(ncurves, sizeof(*items));
+    if (!factory || !items) {
+        fprintf(stderr, "Error: out of memory\n");
+        free(factory);
+        free(items);
+        return 1;
+    }
 
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, true);
-    if (err) return 1;
+    if (err) {
+        free(factory);
+        free(items);
+        return 1;
+    }
 
     alltrax_write_opts opts = {
         .skip_cal = flags.no_cal,
@@ -513,50 +531,46 @@ static int do_curve_reset(int argc, char** argv)
         .skip_fw_check = flags.no_fw_version,
     };
 
+    /* Read every selected factory curve first, then restore them in one batch
+     * (one CAL bracket, one page cycle), so a failed read writes nothing. */
     int ret = 0;
-    bool found = false;
-    size_t ncurves = alltrax_curve_count();
-
+    size_t n = 0;
     for (size_t i = 0; i < ncurves; i++) {
         const alltrax_curve_def* def = alltrax_curve_by_index(i);
         if (!all && strcmp(def->name, type) != 0)
             continue;
-        found = true;
-
-        alltrax_curve_data factory;
-        err = alltrax_read_curve_factory(ctrl, def, &factory);
+        err = alltrax_read_curve_factory(ctrl, def, &factory[n]);
         if (err) {
             cli_error(ctrl, err, def->name);
             ret = 1;
-            break;
+            goto done;
         }
-
-        err = alltrax_write_curve(ctrl, def, &factory, &opts);
-        if (err) {
-            cli_error(ctrl, err, def->name);
-            ret = 1;
-            break;
-        }
-
-        printf("Reset %s curve to factory defaults\n", def->name);
-        if (!all) break;
+        items[n] = (alltrax_assignment){ .curve = def, .curve_data = &factory[n] };
+        n++;
     }
 
-    if (!found && !all) {
-        fprintf(stderr, "Unknown curve type: %s\n", type);
+    err = alltrax_write_assignments(ctrl, items, n, &opts);
+    if (err) {
+        cli_error(ctrl, err, "resetting curves");
         ret = 1;
+        goto done;
     }
+    for (size_t i = 0; i < n; i++)
+        printf("Reset %s curve to factory defaults\n", items[i].curve->name);
 
-    if (ret == 0 && flags.reset) {
+    if (flags.reset) {
         err = alltrax_reset_device(ctrl, &opts);
         if (err) {
             cli_error(ctrl, err, "resetting device");
-            alltrax_close(ctrl);
-            return 1;
+            ret = 1;
+            goto done;
         }
         printf("Device reset sent (controller will reboot)\n");
     }
 
+done:
+    free(items);
+    free(factory);
     alltrax_close(ctrl);
     return ret;
 }

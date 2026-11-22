@@ -249,6 +249,9 @@ alltrax curve reset linearization
 alltrax curve reset all --reset
 ```
 
+`curve reset` reads every selected factory curve first, then writes them all
+in one batch (one settings page erase), so a failed read changes nothing.
+
 **CSV format:** One `x, y` pair per line. Lines starting with `#` are comments.
 Blank lines are ignored. Up to 16 points; if fewer are provided, the remaining
 points are set to 0,0.
