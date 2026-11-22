@@ -4,6 +4,15 @@
  * Communicates with Alltrax XCT-family motor controllers via
  * USB HID. Reads/writes settings and monitors real-time status.
  *
+ * API conventions:
+ * - Names, definitions, and presets returned by lookup helpers, and strings
+ *   returned by alltrax_strerror(), use static library-owned storage valid for
+ *   the life of the program. Do not modify or free them.
+ * - Device operations are synchronous. Callers own read output storage; use
+ *   its contents only on ALLTRAX_OK, as failures may leave partial results.
+ * - Write opts may be NULL to use zero-initialized defaults (all safeguards
+ *   enabled). alltrax_reset_device() uses only skip_fw_check.
+ *
  * Usage:
  *   alltrax_error err = alltrax_init();
  *   if (err) { fprintf(stderr, "%s\n", alltrax_strerror(err)); return 1; }
@@ -78,14 +87,24 @@ const char* alltrax_controller_type_name(alltrax_controller_type type);
 /* Opaque controller handle                                            */
 /* ------------------------------------------------------------------ */
 
+/* Initialize USB HID once before opening controllers.
+ * Returns ALLTRAX_ERR_USB on failure. */
 alltrax_error alltrax_init(void);
+/* Release USB HID resources after closing all controller handles. */
 void alltrax_exit(void);
 
 typedef struct alltrax_controller alltrax_controller;
 
+/* Get handle-owned diagnostics after a failed operation. Copy before another
+ * operation or close; the text may be empty or stale if no detail was set.
+ * Returns an empty string for NULL. Do not modify or free the returned text. */
 const char* alltrax_last_error_detail(const alltrax_controller* ctrl);
 
-/* *out must be NULL on entry; returns ALLTRAX_ERR_INVALID_ARG otherwise.
+/* out must be non-NULL and *out must be NULL on entry; returns
+ * ALLTRAX_ERR_INVALID_ARG otherwise. On success the caller owns *out and must
+ * release it with alltrax_close(). Given valid arguments, failure leaves *out NULL.
+ * allow_writes=true permits writes/reset subject to safety checks; false
+ * blocks them.
  * device_path: OS-level HID path (e.g. "/dev/hidraw0"), or NULL to
  * auto-detect. Only enumerated VID 0x23D4 / PID 0x0002 devices with an
  * XCT-family model prefix (XCT, SRX, NCT) are accepted. Opening reads the
@@ -94,6 +113,7 @@ const char* alltrax_last_error_detail(const alltrax_controller* ctrl);
  * Firmware overrides do not bypass device-family checks. */
 alltrax_error alltrax_open(alltrax_controller** out,
     const char* device_path, bool allow_writes);
+/* Close and free a controller handle. NULL is a no-op; a freed handle is invalid. */
 void alltrax_close(alltrax_controller* ctrl);
 
 /* Firmware policy. alltrax_open() reads the boot and program revisions.
@@ -165,6 +185,8 @@ typedef struct {
     bool     is_stock_mode;
 } alltrax_info;
 
+/* Read identity, hardware capabilities, and firmware into caller-owned out
+ * (required, non-NULL). Works on any firmware of an accepted device family. */
 alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out);
 
 typedef enum {
@@ -181,7 +203,7 @@ typedef enum {
 bool alltrax_has_feature(const alltrax_info* info, alltrax_feature feat);
 
 /* ------------------------------------------------------------------ */
-/* Variable system                                                     */
+/* Variable system                                                    */
 /* ------------------------------------------------------------------ */
 
 typedef enum {
@@ -236,7 +258,10 @@ typedef enum {
     ALLTRAX_VARS_GROUP_COUNT,
 } alltrax_var_group;
 
+/* Return the static group array and write its length to required, non-NULL
+ * count. An invalid group returns NULL and sets *count to zero. */
 const alltrax_var_def* alltrax_get_var_defs(alltrax_var_group group, size_t* count);
+/* Find an exact, case-sensitive name (required, non-NULL); NULL if unknown. */
 const alltrax_var_def* alltrax_find_var(const char* name);
 
 /* Get Group name (e.g. "Normal_User"). Returns NULL if group is out of range. */
@@ -293,8 +318,10 @@ int64_t alltrax_var_raw_int64(const alltrax_var_value* val);
 /* Read operations                                                     */
 /* ------------------------------------------------------------------ */
 
-/* Read up to 256 library variables, coalescing nearby addresses. The entire
- * batch is checked before I/O; a NULL or non-library entry returns
+/* Read up to 256 library variables, coalescing nearby addresses. For nonzero
+ * count, vars and out must be non-NULL; out needs room for count results,
+ * returned in the same order as vars. The entire batch is checked before I/O;
+ * a NULL or non-library entry returns
  * ALLTRAX_ERR_INVALID_ARG. */
 alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, size_t count, alltrax_var_value* out);
@@ -353,12 +380,18 @@ typedef struct {
     double y[ALLTRAX_CURVE_POINTS];   /* display units */
 } alltrax_curve_data;
 
+/* Find an exact, case-sensitive name (required, non-NULL); NULL if unknown. */
 const alltrax_curve_def* alltrax_find_curve(const char* name);
 size_t alltrax_curve_count(void);
+/* Return the zero-based entry, or NULL if index >= alltrax_curve_count(). */
 const alltrax_curve_def* alltrax_curve_by_index(size_t index);
 
+/* Read user X/Y points in display units into required, non-NULL out.
+ * def must be a library curve entry. */
 alltrax_error alltrax_read_curve(alltrax_controller* ctrl,
     const alltrax_curve_def* def, alltrax_curve_data* out);
+/* Read factory X/Y points in display units into required, non-NULL out.
+ * def must be a library curve entry. */
 alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
     const alltrax_curve_def* def, alltrax_curve_data* out);
 /* Validate all 16 points without device I/O. `def` must be a library curve
@@ -415,7 +448,10 @@ typedef struct {
 } alltrax_curve_preset;
 
 size_t alltrax_curve_preset_count(void);
+/* Return the zero-based preset, or NULL if index >= alltrax_curve_preset_count(). */
 const alltrax_curve_preset* alltrax_curve_preset_by_index(size_t index);
+/* Match both curve_type and name exactly (case-sensitive, both non-NULL).
+ * Returns the static preset, or NULL if no pair matches. */
 const alltrax_curve_preset* alltrax_find_curve_preset(
     const char* curve_type, const char* name);
 
@@ -460,10 +496,14 @@ typedef struct {
     int16_t user1_input_percent, user2_input_percent;
 } alltrax_monitor_data;
 
+/* Read one monitoring sample into required, non-NULL caller-owned out.
+ * The sample spans several USB reads; the caller controls polling frequency. */
 alltrax_error alltrax_read_monitor(alltrax_controller* ctrl,
     alltrax_monitor_data* out);
 
+/* Name of error slot 0-16; returns NULL for any other index. */
 const char* alltrax_error_flag_name(int index);
+/* Name of throttle enum value 0-11; returns NULL for any other value. */
 const char* alltrax_throttle_type_name(uint8_t type);
 
 /* ------------------------------------------------------------------ */
@@ -471,7 +511,9 @@ const char* alltrax_throttle_type_name(uint8_t type);
 /* ------------------------------------------------------------------ */
 
 /* Reboot the controller. Follows the write firmware policy; opts may be NULL
- * and only skip_fw_check is used. */
+ * and only skip_fw_check is used. ALLTRAX_OK confirms the command was sent;
+ * no acknowledgement or reboot completion is awaited. The device disconnects:
+ * close the handle and open a new one after USB re-enumeration. */
 alltrax_error alltrax_reset_device(alltrax_controller* ctrl,
     const alltrax_write_opts* opts);
 
