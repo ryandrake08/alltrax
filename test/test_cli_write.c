@@ -4,6 +4,7 @@
 #include "internal.h"
 #include "../cli/cli.h"
 #include <errno.h>
+#include <math.h>
 #include <stdlib.h>
 #include <unistd.h>
 
@@ -51,14 +52,16 @@ const char* alltrax_strerror(alltrax_error err)
     return "unexpected error formatting";
 }
 
-/* Simulated device for config save: answers read requests with zero-filled
- * payloads (except the GoodSet markers) and fails read reply `fail_read_at`
- * (1-based). Non-read requests are counted as mutations. */
+/* Simulated read-only device: answers read requests with zero-filled payloads,
+ * except the GoodSet markers and the 4 little-endian bytes of `value` at
+ * `value_addr`, and fails read reply `fail_read_at` (1-based). Non-read
+ * requests are counted as mutations. */
 static struct {
     bool enabled;
     uint8_t request[PACKET_SIZE];
     unsigned reads, mutations, fail_read_at;
     uint16_t var_goodset, fact_goodset;
+    uint32_t value_addr, value;
 } device;
 
 /* Use the real controller implementation; transport calls fail unless the
@@ -95,6 +98,11 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
                       addr == FACTSET_ADDR ? device.fact_goodset : 0;
     buf[8] = (uint8_t)marker;
     buf[9] = (uint8_t)(marker >> 8);
+    for (uint32_t i = 0; i < buf[1]; i++) {
+        uint32_t offset = addr + i - device.value_addr;
+        if (device.value_addr && offset < 4)
+            buf[8 + i] = (uint8_t)(device.value >> (offset * 8));
+    }
     return ALLTRAX_OK;
 }
 
@@ -682,6 +690,80 @@ static int test_config_save_on_unreadable_firmware_preserves_destination(void)
 }
 #endif
 
+/* Run `get <name>` against the simulated device with `value` at the
+ * variable's address, returning its stdout line in `out`. */
+static int run_get(const char* name, uint32_t value, char* out, size_t out_size)
+{
+    const alltrax_var_def* var = alltrax_find_var(name);
+    if (!var) return -1;
+    char arg[64];
+    snprintf(arg, sizeof(arg), "%s", name);
+    char* argv[] = { "get", arg };
+    fake_ctrl = (alltrax_controller) {
+        .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
+        .controller_type = ALLTRAX_CONTROLLER_XCT,
+        .boot_rev = 5002, .program_rev = 5005,
+    };
+    memset(&device, 0, sizeof(device));
+    device.enabled = true;
+    device.value_addr = var->address;
+    device.value = value;
+    open_succeeds = true;
+
+    char path[] = "/tmp/alltrax-get-test-XXXXXX";
+    int fd = mkstemp(path);
+    if (fd < 0) return -1;
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    dup2(fd, STDOUT_FILENO);
+    int rc = cmd_get(2, argv);
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+
+    open_succeeds = false;
+    device.enabled = false;
+    lseek(fd, 0, SEEK_SET);
+    ssize_t n = read(fd, out, out_size - 1);
+    close(fd);
+    remove(path);
+    out[n > 0 ? n : 0] = '\0';
+    return rc;
+}
+
+static int test_get_prints_full_integer_range(void)
+{
+    const struct { const char* name; uint32_t raw; const char* text; } cases[] = {
+        { "SerialNum",         0,           " 0 " },
+        { "SerialNum",         2147483647u, " 2147483647 " },
+        { "SerialNum",         2147483648u, " 2147483648 " },
+        { "SerialNum",         4294967295u, " 4294967295 " },
+        { "N_Speed_Limit_Max", 0xFFFF,      " -1 RPM" },
+        { "N_Speed_Limit_Max", 0x8000,      " -32768 RPM" },
+        { "N_Speed_Limit",     4000,        " 4000 RPM" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char out[256];
+        ASSERT_EQ(run_get(cases[i].name, cases[i].raw, out, sizeof(out)), 0);
+        ASSERT_TRUE(strncmp(out, cases[i].name, strlen(cases[i].name)) == 0);
+        ASSERT_TRUE(strstr(out, cases[i].text) != NULL);
+    }
+    return 0;
+}
+
+static int test_get_keeps_scaled_formatting(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("LoBat_Vlim");
+    ASSERT_TRUE(var != NULL);
+    ASSERT_TRUE(var->scale != 1.0);
+    /* Raw value for 28.0 V in this variable's scale and offset. */
+    uint32_t raw = (uint32_t)lround(28.0 / var->scale) + (uint32_t)var->offset;
+    char out[256];
+    ASSERT_EQ(run_get("LoBat_Vlim", raw, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, " 28.0 ") != NULL);
+    return 0;
+}
+
 int main(void)
 {
     printf("CLI mutation preflight (no USB):\n");
@@ -694,6 +776,8 @@ int main(void)
     RUN_TEST(test_invalid_curve_arguments_rejected_before_open);
     RUN_TEST(test_curve_csv_validation);
     RUN_TEST(test_curve_presets_reach_open);
+    RUN_TEST(test_get_prints_full_integer_range);
+    RUN_TEST(test_get_keeps_scaled_formatting);
     RUN_TEST(test_options_accepted_before_and_after_positionals);
     RUN_TEST(test_invalid_options_and_argument_counts_rejected);
     RUN_TEST(test_global_fw_override_sets_command_flag);

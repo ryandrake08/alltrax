@@ -2,6 +2,7 @@
  * cmd_get.c — alltrax get [var...]: Read settings
  */
 
+#include <inttypes.h>
 #include <stdio.h>
 #include <string.h>
 #include "cli.h"
@@ -18,8 +19,8 @@ static void print_var(const alltrax_var_value* val)
         printf("%-30s %.1f %s\n", def->name, val->display,
                def->unit ? def->unit : "");
     } else {
-        printf("%-30s %d %s\n", def->name, (int)val->display,
-               def->unit ? def->unit : "");
+        printf("%-30s %" PRId64 " %s\n", def->name,
+               alltrax_var_raw_int64(val), def->unit ? def->unit : "");
     }
 }
 
