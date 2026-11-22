@@ -18,6 +18,8 @@ static struct {
     uint8_t mode;
     unsigned erases, settings_writes, goodset_clears;
     unsigned requests;
+    uint32_t throttles_allowed;
+    unsigned throttle_mask_reads, mode_writes;
     bool fault_enabled;
     uint32_t fault_addr;
     uint8_t fault_request_len, fault_reply_len;
@@ -38,6 +40,7 @@ static void mock_reset(void)
     mock.ctrl.pid = ALLTRAX_PID_XCT;
     mock.ctrl.controller_type = ALLTRAX_CONTROLLER_XCT;
     mock.ctrl.allow_writes = true;
+    mock.throttles_allowed = 0x7FF;
     for (size_t i = 0; i < sizeof(mock.page); i++)
         mock.page[i] = (uint8_t)(i * 37 + 11);
     mock.page[0] = mock.page[1] = 0;
@@ -72,6 +75,8 @@ static uint8_t mock_read_byte(uint32_t addr)
         return program_rev[addr - ADDR_PRGM_REV];
     if (addr == ADDR_RUN_MODE)
         return mock.mode;
+    if (addr >= ADDR_HARDWARE_CONFIG + 16 && addr < ADDR_HARDWARE_CONFIG + 20)
+        return (uint8_t)(mock.throttles_allowed >> ((addr - ADDR_HARDWARE_CONFIG - 16) * 8));
     return 0;
 }
 
@@ -85,10 +90,14 @@ alltrax_error transport_write(alltrax_controller* ctrl,
     memcpy(mock.request, data, PACKET_SIZE);
     uint32_t addr = request_address();
 
-    if (data[0] == 0x01)
+    if (data[0] == 0x01) {
+        if (addr == ADDR_HARDWARE_CONFIG + 16)
+            mock.throttle_mask_reads++;
         return ALLTRAX_OK;
+    }
     if (data[0] == 0x02) {
         if (addr == ADDR_RUN_MODE && data[1] == 1) {
+            mock.mode_writes++;
             mock.mode = data[8];
             return ALLTRAX_OK;
         }
@@ -455,6 +464,135 @@ static int test_factory_curves_round_trip_within_declared_bounds(void)
     return 0;
 }
 
+static int test_invalid_throttle_types_reject_batch_before_io(void)
+{
+    const double invalid[] = { 33, 12, 32, 255, -1, -0.1, 0.49, 0.5, 1.9, 10.9, 11.1 };
+    const alltrax_write_opts unchecked = {
+        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_fw_check = true, .skip_voltage_link = true,
+    };
+    const alltrax_write_opts* options[] = { NULL, &unchecked };
+    for (size_t v = 0; v < sizeof(invalid) / sizeof(invalid[0]); v++) {
+        for (size_t o = 0; o < sizeof(options) / sizeof(options[0]); o++) {
+            for (size_t pos = 0; pos < 4; pos++) {
+                mock_reset();
+                uint8_t original[VARSET_SIZE];
+                memcpy(original, mock.page, sizeof(original));
+                const alltrax_var_def* vars[3] = {
+                    alltrax_find_var("Fan_On"), alltrax_find_var("HPD"), NULL,
+                };
+                double values[] = { 1, 1, 1 };
+                size_t count = pos == 3 ? 1 : 3;
+                size_t bad_pos = pos == 3 ? 0 : pos;
+                for (size_t i = 2; i > bad_pos; i--) vars[i] = vars[i - 1];
+                vars[bad_pos] = alltrax_find_var("Throttle_Type");
+                values[bad_pos] = invalid[v];
+                ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values, count, options[o]),
+                          ALLTRAX_ERR_INVALID_ARG);
+                ASSERT_EQ(mock.requests, 0);
+                ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+                ASSERT_EQ(mock.mode_writes, 0);
+                ASSERT_EQ(mock.erases, 0);
+                ASSERT_TRUE(strstr(mock.ctrl.error_detail, "Throttle_Type") != NULL);
+            }
+        }
+    }
+    return 0;
+}
+
+static int test_nonzero_throttle_types_require_their_exact_hardware_bit(void)
+{
+    const uint32_t bits[] = { 0x001,0x002,0x004,0x008,0x010,0x020,0x040,0x080,0x100,0x200,0x400 };
+    const alltrax_var_def* var = alltrax_find_var("Throttle_Type");
+    const alltrax_write_opts unchecked = {
+        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_fw_check = true, .skip_voltage_link = true,
+    };
+    const alltrax_write_opts* options[] = { NULL, &unchecked };
+    for (size_t t = 0; t < sizeof(bits) / sizeof(bits[0]); t++) {
+        for (int allowed = 0; allowed < 2; allowed++) {
+            for (size_t o = 0; o < sizeof(options) / sizeof(options[0]); o++) {
+                mock_reset();
+                mock.throttles_allowed = allowed ? bits[t] : ~bits[t];
+                uint8_t expected[VARSET_SIZE];
+                memcpy(expected, mock.page, sizeof(expected));
+                double value = (double)t + 1;
+                ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, &value, 1, options[o]),
+                          allowed ? ALLTRAX_OK : ALLTRAX_ERR_INVALID_ARG);
+                ASSERT_EQ(mock.throttle_mask_reads, 1);
+                if (allowed) expected[0xA0] = (uint8_t)(t + 1);
+                ASSERT_MEM_EQ(mock.page, expected, sizeof(expected));
+                ASSERT_EQ(mock.erases, allowed);
+                ASSERT_EQ(mock.goodset_clears, allowed);
+                ASSERT_EQ(mock.mode_writes, allowed && o == 0 ? 2 : 0);
+                ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+            }
+        }
+    }
+    return 0;
+}
+
+static int test_throttle_none_bypasses_hardware_mask(void)
+{
+    mock_reset();
+    mock.throttles_allowed = 0;
+    mock_fault(ADDR_HARDWARE_CONFIG + 16, 4, 0, 1);
+    const alltrax_var_def* var = alltrax_find_var("Throttle_Type");
+    double value = 0;
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, &value, 1, NULL), ALLTRAX_OK);
+    ASSERT_EQ(mock.throttle_mask_reads, 0);
+    ASSERT_EQ(mock.page[0xA0], 0);
+    ASSERT_EQ(mock.erases, 1);
+    ASSERT_EQ(mock.mode_writes, 2);
+    ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+    return 0;
+}
+
+static int test_every_throttle_assignment_is_checked(void)
+{
+    const alltrax_var_def* vars[] = {
+        alltrax_find_var("Throttle_Type"), alltrax_find_var("Throttle_Type"),
+    };
+    const double values[][2] = { {0,1}, {1,2} };
+    for (size_t i = 0; i < 2; i++) {
+        mock_reset();
+        mock.throttles_allowed = i == 0 ? 0x002 : 0x001;
+        uint8_t original[VARSET_SIZE];
+        memcpy(original, mock.page, sizeof(original));
+        ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values[i], 2, NULL), ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_EQ(mock.throttle_mask_reads, i + 1);
+        ASSERT_EQ(mock.mode_writes, 0);
+        ASSERT_EQ(mock.erases, 0);
+        ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+    }
+    return 0;
+}
+
+static int test_throttle_mask_uses_encoded_value(void)
+{
+    /* Address-bearing descriptors are still public. Even a modified descriptor
+     * must check the byte it will encode, and reject undefined encoded types. */
+    alltrax_var_def shifted = *alltrax_find_var("Throttle_Type");
+    shifted.offset = 1;
+    const alltrax_var_def* var = &shifted;
+    double value = 1; /* This descriptor encodes type 2. */
+    mock_reset();
+    mock.throttles_allowed = 0x001;
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, &value, 1, NULL), ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(mock.mode_writes, 0);
+    ASSERT_EQ(mock.erases, 0);
+    mock_reset();
+    mock.throttles_allowed = 0x002;
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, &value, 1, NULL), ALLTRAX_OK);
+    ASSERT_EQ(mock.page[0xA0], 2);
+    mock_reset();
+    shifted.offset = 32;
+    shifted.raw_max = 255; /* Encoded 33 must never reach the shift. */
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, &value, 1, NULL), ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(mock.requests, 0);
+    return 0;
+}
+
 static int test_info_exact_read_lengths(void)
 {
     mock_reset();
@@ -605,6 +743,11 @@ int main(void)
     RUN_TEST(test_invalid_curve_points_reject_before_io);
     RUN_TEST(test_curve_write_preserves_padding_and_neighbors);
     RUN_TEST(test_factory_curves_round_trip_within_declared_bounds);
+    RUN_TEST(test_invalid_throttle_types_reject_batch_before_io);
+    RUN_TEST(test_nonzero_throttle_types_require_their_exact_hardware_bit);
+    RUN_TEST(test_throttle_none_bypasses_hardware_mask);
+    RUN_TEST(test_every_throttle_assignment_is_checked);
+    RUN_TEST(test_throttle_mask_uses_encoded_value);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }

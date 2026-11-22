@@ -221,6 +221,7 @@ const char* alltrax_var_group_name(alltrax_var_group group);
 /* Validate using the same checked conversion as encoding. Values must be finite.
  * Integer raw = round(value / scale) + offset must fit the type and explicit
  * bounds; scale must be finite and nonzero. Halfway values round away from zero.
+ * Throttle_Type requires a defined integral enum value (0-11), without rounding.
  * Finite bools normalize zero to false and nonzero to true. Strings are rejected.
  * Returns ALLTRAX_OK if valid, ALLTRAX_ERR_INVALID_ARG otherwise.
  * Write permissions are enforced separately by alltrax_write_vars(). */

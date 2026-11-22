@@ -857,7 +857,15 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
 
     for (size_t i = 0; i < count; i++) {
         if (strcmp(vars[i]->name, "Throttle_Type") == 0) {
-            uint8_t ttype = (uint8_t)values[i];
+            /* Use the checked encoder's byte, including descriptor scaling or
+             * offsets, so hardware validation matches what will be written. */
+            uint8_t encoded[4];
+            if (alltrax_encode_var(vars[i], values[i], encoded) != 1 ||
+                !alltrax_throttle_type_name(encoded[0])) {
+                set_error_detail(ctrl, "Throttle_Type must encode a defined one-byte enum value");
+                return ALLTRAX_ERR_INVALID_ARG;
+            }
+            uint8_t ttype = encoded[0]; /* A defined enum value in [0,11]. */
 
             /* Type 0 (None) is always allowed */
             if (ttype > 0) {
@@ -868,7 +876,7 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
                 if (rc) return rc;
 
                 uint32_t throttles_allowed = get_le32(ta_buf);
-                uint32_t bit = (uint32_t)1 << (ttype - 1);
+                uint32_t bit = UINT32_C(1) << (ttype - 1);
 
                 if (!(throttles_allowed & bit)) {
                     const char* name = alltrax_throttle_type_name(ttype);
@@ -879,7 +887,6 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
                     return ALLTRAX_ERR_INVALID_ARG;
                 }
             }
-            break;
         }
     }
 

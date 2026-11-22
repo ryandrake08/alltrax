@@ -181,6 +181,29 @@ static int test_invalid_numeric_text_rejected_before_open(void)
     return 0;
 }
 
+static int test_throttle_enum_assignments_use_shared_validation(void)
+{
+    const char* invalid[] = { "12", "33", "255", "0.49", "1.5", "11.01", "-0.1" };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        char arg[80], good[] = "HPD=Yes";
+        snprintf(arg, sizeof(arg), "Throttle_Type=%s", invalid[i]);
+        char* argv[] = { "write", good, arg };
+        open_calls = transport_calls = 0;
+        ASSERT_EQ(cmd_write(3, argv), 1);
+        ASSERT_EQ(open_calls, 0);
+        ASSERT_EQ(transport_calls, 0);
+    }
+    for (int type = 0; type <= 11; type++) {
+        char arg[80];
+        snprintf(arg, sizeof(arg), "Throttle_Type=%d.0", type);
+        char* argv[] = { "write", arg };
+        open_calls = 0;
+        ASSERT_EQ(cmd_write(2, argv), 1); /* Valid input reaches the failing fake open. */
+        ASSERT_EQ(open_calls, 1);
+    }
+    return 0;
+}
+
 static int test_invalid_curve_arguments_rejected_before_open(void)
 {
     const char* bad[] = {
@@ -311,6 +334,29 @@ static int test_valid_curve_config_reaches_open(void)
     ASSERT_EQ(open_calls, 1);
     return 0;
 }
+
+static int test_invalid_throttle_config_rejected_before_transport(void)
+{
+    const char* xml = "<XCT><Settings><HPD>1</HPD>"
+                      "<Throttle_Type>33</Throttle_Type></Settings></XCT>";
+    fake_ctrl = (alltrax_controller) {
+        .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
+        .controller_type = ALLTRAX_CONTROLLER_XCT, .allow_writes = true,
+    };
+    open_calls = transport_calls = error_calls = close_calls = unexpected_calls = 0;
+    open_succeeds = true;
+    int rc = run_curve_file(xml, true);
+    open_succeeds = false;
+    ASSERT_EQ(rc, 1);
+    ASSERT_EQ(open_calls, 1);
+    ASSERT_EQ(transport_calls, 0);
+    ASSERT_EQ(error_calls, 1);
+    ASSERT_EQ(close_calls, 1);
+    ASSERT_EQ(reported_error, ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_TRUE(strstr(reported_detail, "Throttle_Type") != NULL);
+    ASSERT_EQ(unexpected_calls, 0);
+    return 0;
+}
 #endif
 
 int main(void)
@@ -321,12 +367,14 @@ int main(void)
     RUN_TEST(test_numeric_and_bool_assignments_reach_open);
     RUN_TEST(test_read_only_assignments_use_library_diagnostics);
     RUN_TEST(test_invalid_numeric_text_rejected_before_open);
+    RUN_TEST(test_throttle_enum_assignments_use_shared_validation);
     RUN_TEST(test_invalid_curve_arguments_rejected_before_open);
     RUN_TEST(test_curve_csv_validation);
     RUN_TEST(test_curve_presets_reach_open);
 #ifdef TEST_CONFIG
     RUN_TEST(test_config_curves_rejected_before_any_settings_write);
     RUN_TEST(test_valid_curve_config_reaches_open);
+    RUN_TEST(test_invalid_throttle_config_rejected_before_transport);
 #endif
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;

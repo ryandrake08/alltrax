@@ -858,6 +858,11 @@ Throttle type selection, calibration values, and related settings.
 
 `Throttle_Type` selects the throttle hardware:
 
+Assignments must be integral values from 0 through 11; fractions and undefined
+types are rejected. Each nonzero type must be allowed by the controller's
+hardware mask. Type 0 (None) is always allowed and does not require a mask
+read. Write options cannot bypass these checks.
+
 | Value | Type |
 |-------|------|
 | 0 | None |
@@ -875,7 +880,7 @@ Throttle type selection, calibration values, and related settings.
 
 | Variable | Description | Unit | Bounds |
 |----------|-------------|------|--------|
-| `Throttle_Type` | Throttle hardware type (see table above) | | |
+| `Throttle_Type` | Throttle hardware type (see table above) | | 0–11, integer |
 | `HPD` | High Pedal Disable — block drive if throttle is pressed at key-on | bool | |
 | `Relay_Off_At_Zero` | Turn off main contactor at zero throttle input | bool | |
 | `Speed_Limit_On` | Enable speed limiting (uses `N_Speed_Limit` etc.) | bool | |

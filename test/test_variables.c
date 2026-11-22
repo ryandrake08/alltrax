@@ -1252,6 +1252,28 @@ static int test_throttle_type_name_out_of_range(void)
     return 0;
 }
 
+static int test_throttle_type_requires_defined_integer(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("Throttle_Type");
+    const double invalid[] = {
+        33, 12, 32, 255, 256, -1, -0.1, -0.49, 0.1, 0.49, 0.5,
+        0.999999, 1.5, 10.9, 11.01, NAN, INFINITY, -INFINITY, 1e100,
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++)
+        ASSERT_EQ(check_numeric_conversion(var, invalid[i], false, 0), 0);
+    for (int i = 0; i <= 11; i++)
+        ASSERT_EQ(check_numeric_conversion(var, i, true, i), 0);
+    double lo, hi;
+    alltrax_var_display_bounds(var, &lo, &hi);
+    ASSERT_NEAR(lo, 0, 0.001);
+    ASSERT_NEAR(hi, 11, 0.001);
+    /* Ordinary numeric variables retain their existing rounding behavior. */
+    alltrax_var_def numeric = *var;
+    numeric.name = "ordinary_uint8";
+    ASSERT_EQ(check_numeric_conversion(&numeric, 1.5, true, 2), 0);
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* Test runner                                                         */
 /* ------------------------------------------------------------------ */
@@ -1391,4 +1413,5 @@ void run_variables_tests(void)
     RUN_TEST(test_throttle_type_name_none);
     RUN_TEST(test_throttle_type_name_all);
     RUN_TEST(test_throttle_type_name_out_of_range);
+    RUN_TEST(test_throttle_type_requires_defined_integer);
 }

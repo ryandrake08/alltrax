@@ -5,6 +5,9 @@
 #include "internal.h"
 #include <math.h>
 
+/* Defined throttle enum values are contiguous, 0 (None) through 11 (Absolute). */
+#define THROTTLE_TYPE_COUNT 12
+
 /* Scale factors */
 #define SCALE_VOLTS         0.1
 #define SCALE_AMPS_PCT      (20.0 / 819.0)
@@ -106,7 +109,7 @@ static const alltrax_var_def user2_vars[] = {
 
 /* --- THROTTLE --- */
 static const alltrax_var_def throttle_vars[] = {
-    VAR_RW("Throttle_Type", "Throttle type selector", 0x080020A0, ALLTRAX_TYPE_UINT8, 1.0, 0, ""),
+    VAR_RW_B("Throttle_Type", "Throttle type selector", 0x080020A0, ALLTRAX_TYPE_UINT8, 1.0, 0, "", 0, THROTTLE_TYPE_COUNT - 1),
     VAR_BOOL_RW("HPD", "High Pedal Disable", 0x080020A4),
     VAR_BOOL_RW("Relay_Off_At_Zero", "Turn off relay at zero throttle", 0x080020A6),
     VAR_BOOL_RW("Speed_Limit_On", "Speed limiting enabled", 0x080020A7),
@@ -513,6 +516,11 @@ static alltrax_error var_value_to_raw(const alltrax_var_def* var, double value,
     if (!var || !isfinite(value))
         return ALLTRAX_ERR_INVALID_ARG;
 
+    /* Enum assignments must not be rounded into a different throttle type. */
+    if (var->name && strcmp(var->name, "Throttle_Type") == 0 &&
+        (value < 0 || value >= THROTTLE_TYPE_COUNT || value != trunc(value)))
+        return ALLTRAX_ERR_INVALID_ARG;
+
     switch (var->type) {
     case ALLTRAX_TYPE_BOOL:
         *out = value != 0.0 ? 1 : 0;
@@ -608,7 +616,8 @@ static const char* throttle_type_names[] = {
     "USB",
     "Absolute",
 };
-#define THROTTLE_TYPE_COUNT 12
+_Static_assert(sizeof(throttle_type_names) / sizeof(throttle_type_names[0]) ==
+               THROTTLE_TYPE_COUNT, "Throttle enum bounds and names must agree");
 
 const char* alltrax_throttle_type_name(uint8_t type)
 {
