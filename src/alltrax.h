@@ -218,10 +218,12 @@ const alltrax_var_def* alltrax_find_var(const char* name);
 /* Get Group name (e.g. "Normal_User"). Returns NULL if group is out of range. */
 const char* alltrax_var_group_name(alltrax_var_group group);
 
-/* Validate a display-unit value against the variable's bounds.
- * Returns ALLTRAX_OK if in range, ALLTRAX_ERR_INVALID_ARG if out of range.
- * Bools always pass. Strings return ALLTRAX_ERR_INVALID_ARG because this
- * numeric API cannot represent string payloads. */
+/* Validate using the same checked conversion as encoding. Values must be finite.
+ * Integer raw = round(value / scale) + offset must fit the type and explicit
+ * bounds; scale must be finite and nonzero. Halfway values round away from zero.
+ * Finite bools normalize zero to false and nonzero to true. Strings are rejected.
+ * Returns ALLTRAX_OK if valid, ALLTRAX_ERR_INVALID_ARG otherwise.
+ * Write permissions are enforced separately by alltrax_write_vars(). */
 alltrax_error alltrax_validate_var_value(const alltrax_var_def* var, double value);
 
 /* Get effective bounds in display units. Sets *min_out / *max_out to NAN

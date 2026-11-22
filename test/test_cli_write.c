@@ -2,6 +2,7 @@
 #include "helpers.h"
 #include "internal.h"
 #include "../cli/cli.h"
+#include <errno.h>
 
 int test_pass_count;
 int test_fail_count;
@@ -103,6 +104,7 @@ static int test_numeric_and_bool_assignments_reach_open(void)
     char boolean[] = "HPD=Yes";
     char* argv[] = { "write", numeric, boolean };
     open_calls = unexpected_calls = 0;
+    errno = ERANGE; /* A prior conversion must not poison a valid parse. */
     ASSERT_EQ(cmd_write(3, argv), 1); /* The fake open always fails. */
     ASSERT_EQ(open_calls, 1);
     ASSERT_EQ(unexpected_calls, 0);
@@ -143,6 +145,27 @@ static int test_read_only_assignments_use_library_diagnostics(void)
     return 0;
 }
 
+static int test_invalid_numeric_text_rejected_before_open(void)
+{
+    const char* invalid[] = {
+        "", " ", "nan", "inf", "-inf", "1e100", "-1e100", "1e9999",
+        "-1e9999", "1e-9999", "1e-320", "0x1p-99999", "28.1junk", "6553.55", "-0.1",
+    };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++) {
+        for (int pos = 0; pos < 3; pos++) {
+            char bad[80];
+            snprintf(bad, sizeof(bad), "LoBat_Vlim=%s", invalid[i]);
+            char good[] = "HPD=Yes";
+            char* argv[] = { "write", pos == 1 ? good : bad, pos == 1 ? bad : good };
+            open_calls = transport_calls = 0;
+            ASSERT_EQ(cmd_write(pos == 2 ? 2 : 3, argv), 1);
+            ASSERT_EQ(open_calls, 0);
+            ASSERT_EQ(transport_calls, 0);
+        }
+    }
+    return 0;
+}
+
 int main(void)
 {
     printf("CLI write preflight (no USB):\n");
@@ -150,6 +173,7 @@ int main(void)
     RUN_TEST(test_mixed_batch_rejected_before_open);
     RUN_TEST(test_numeric_and_bool_assignments_reach_open);
     RUN_TEST(test_read_only_assignments_use_library_diagnostics);
+    RUN_TEST(test_invalid_numeric_text_rejected_before_open);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }

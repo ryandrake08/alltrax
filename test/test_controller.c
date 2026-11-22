@@ -5,6 +5,7 @@
 
 #include "helpers.h"
 #include "internal.h"
+#include <float.h>
 
 int test_pass_count;
 int test_fail_count;
@@ -296,6 +297,73 @@ static int test_read_only_variables_reject_entire_batch_before_io(void)
     return 0;
 }
 
+static int test_invalid_numeric_batches_reject_before_io(void)
+{
+    const double invalid[] = {
+        NAN, INFINITY, -INFINITY, DBL_MAX, -DBL_MAX, 1e100, -1e100,
+        0x1p63, -0x1p63, 999.49, 8000.5,
+    };
+    const alltrax_write_opts unchecked = {
+        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_fw_check = true, .skip_voltage_link = true,
+    };
+    const alltrax_write_opts* options[] = { NULL, &unchecked };
+    for (size_t v = 0; v < sizeof(invalid) / sizeof(invalid[0]); v++) {
+        for (size_t o = 0; o < sizeof(options) / sizeof(options[0]); o++) {
+            for (size_t pos = 0; pos < 4; pos++) {
+                mock_reset();
+                uint8_t original[VARSET_SIZE];
+                memcpy(original, mock.page, sizeof(original));
+                const alltrax_var_def* vars[3] = {
+                    alltrax_find_var("Fan_On"), alltrax_find_var("HPD"), NULL,
+                };
+                double values[] = { 1, 1, 1 };
+                size_t count = pos == 3 ? 1 : 3;
+                size_t bad_pos = pos == 3 ? 0 : pos;
+                for (size_t i = 2; i > bad_pos; i--)
+                    vars[i] = vars[i - 1];
+                vars[bad_pos] = alltrax_find_var("N_Speed_Limit");
+                values[bad_pos] = invalid[v];
+                ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values, count,
+                                             options[o]), ALLTRAX_ERR_INVALID_ARG);
+                ASSERT_EQ(mock.requests, 0);
+                ASSERT_TRUE(strstr(mock.ctrl.error_detail, "N_Speed_Limit") != NULL);
+                ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+                ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+            }
+        }
+    }
+    /* Boolean RAM writes must reject nonfinite values as well. */
+    for (size_t v = 0; v < 3; v++) {
+        mock_reset();
+        const alltrax_var_def* fan = alltrax_find_var("Fan_On");
+        ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &fan, invalid + v, 1, NULL),
+                  ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_EQ(mock.requests, 0);
+    }
+    return 0;
+}
+
+static int test_scaled_flash_batch_preserves_values_and_neighbors(void)
+{
+    mock_reset();
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, mock.page, sizeof(expected));
+    expected[0x20] = 0x19; expected[0x21] = 0x01; /* 28.1V -> 281 */
+    expected[0x44] = 0x00; expected[0x45] = 0xF8; /* -50% -> -2048 */
+    const alltrax_var_def* vars[] = {
+        alltrax_find_var("LoBat_Vlim"), alltrax_find_var("N_Max_Batt_Regen_Amps"),
+    };
+    const double values[] = { 28.1, -50 };
+    const alltrax_write_opts opts = { .skip_voltage_link = true };
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values, 2, &opts), ALLTRAX_OK);
+    ASSERT_MEM_EQ(mock.page, expected, sizeof(expected));
+    ASSERT_EQ(mock.erases, 1);
+    ASSERT_EQ(mock.goodset_clears, 1);
+    ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+    return 0;
+}
+
 static int test_info_exact_read_lengths(void)
 {
     mock_reset();
@@ -441,6 +509,8 @@ int main(void)
     RUN_TEST(test_string_assignments_rejected_before_device_access);
     RUN_TEST(test_unsupported_identity_blocks_all_operations);
     RUN_TEST(test_read_only_variables_reject_entire_batch_before_io);
+    RUN_TEST(test_invalid_numeric_batches_reject_before_io);
+    RUN_TEST(test_scaled_flash_batch_preserves_values_and_neighbors);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }

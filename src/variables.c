@@ -478,52 +478,6 @@ alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
     return ALLTRAX_ERR_INVALID_ARG;
 }
 
-int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf)
-{
-    /* Inverse of decode: raw = value / scale + offset */
-    switch (var->type) {
-    case ALLTRAX_TYPE_BOOL:
-        buf[0] = value != 0.0 ? 1 : 0;
-        return 1;
-
-    case ALLTRAX_TYPE_UINT8: {
-        int32_t raw = (int32_t)round(value / var->scale) + var->offset;
-        buf[0] = (uint8_t)(raw & 0xFF);
-        return 1;
-    }
-
-    case ALLTRAX_TYPE_INT8: {
-        int32_t raw = (int32_t)round(value / var->scale) + var->offset;
-        buf[0] = (uint8_t)(raw & 0xFF);
-        return 1;
-    }
-
-    case ALLTRAX_TYPE_UINT16:
-    case ALLTRAX_TYPE_INT16: {
-        int32_t raw = (int32_t)round(value / var->scale) + var->offset;
-        buf[0] = (uint8_t)(raw & 0xFF);
-        buf[1] = (uint8_t)((raw >> 8) & 0xFF);
-        return 2;
-    }
-
-    case ALLTRAX_TYPE_UINT32:
-    case ALLTRAX_TYPE_INT32: {
-        int64_t raw = (int64_t)round(value / var->scale) + var->offset;
-        buf[0] = (uint8_t)(raw & 0xFF);
-        buf[1] = (uint8_t)((raw >> 8) & 0xFF);
-        buf[2] = (uint8_t)((raw >> 16) & 0xFF);
-        buf[3] = (uint8_t)((raw >> 24) & 0xFF);
-        return 4;
-    }
-
-    case ALLTRAX_TYPE_STRING:
-        /* A double cannot supply string bytes. Never claim an encoded payload. */
-        return 0;
-    }
-
-    return 0;
-}
-
 /* ------------------------------------------------------------------ */
 /* Type range helpers                                                   */
 /* ------------------------------------------------------------------ */
@@ -551,26 +505,66 @@ void effective_bounds(const alltrax_var_def* var, int64_t* lo, int64_t* hi)
     *hi = var->raw_max < type_hi ? var->raw_max : type_hi;
 }
 
-alltrax_error alltrax_validate_var_value(const alltrax_var_def* var, double value)
+/* Shared conversion for validation and encoding. Do not convert to an integer
+ * until bounds prove that both the conversion and offset addition are safe. */
+static alltrax_error var_value_to_raw(const alltrax_var_def* var, double value,
+    int64_t* out)
 {
-    /* This numeric API cannot represent a string assignment. */
-    if (var->type == ALLTRAX_TYPE_STRING)
+    if (!var || !isfinite(value))
         return ALLTRAX_ERR_INVALID_ARG;
 
-    /* Bools skip bounds checking */
-    if (var->type == ALLTRAX_TYPE_BOOL)
+    switch (var->type) {
+    case ALLTRAX_TYPE_BOOL:
+        *out = value != 0.0 ? 1 : 0;
         return ALLTRAX_OK;
-
-    /* Convert display value to raw */
-    int64_t raw = (int64_t)round(value / var->scale) + var->offset;
+    case ALLTRAX_TYPE_UINT8:
+    case ALLTRAX_TYPE_INT8:
+    case ALLTRAX_TYPE_UINT16:
+    case ALLTRAX_TYPE_INT16:
+    case ALLTRAX_TYPE_UINT32:
+    case ALLTRAX_TYPE_INT32:
+        break;
+    default:
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+    if (!isfinite(var->scale) || var->scale == 0.0)
+        return ALLTRAX_ERR_INVALID_ARG;
 
     int64_t lo, hi;
     effective_bounds(var, &lo, &hi);
-
-    if (raw < lo || raw > hi)
+    if (lo > hi)
         return ALLTRAX_ERR_INVALID_ARG;
 
+    double rounded = round(value / var->scale);
+    /* Numeric types and offsets are at most 32 bits, so these shifted bounds
+     * are exact in double and comfortably fit int64_t. Checking them first
+     * also permits valid offset cancellation beyond the int32_t range. */
+    if (!isfinite(rounded) ||
+        rounded < (double)lo - var->offset ||
+        rounded > (double)hi - var->offset)
+        return ALLTRAX_ERR_INVALID_ARG;
+
+    *out = (int64_t)rounded + var->offset;
     return ALLTRAX_OK;
+}
+
+int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf)
+{
+    int64_t raw;
+    if (var_value_to_raw(var, value, &raw))
+        return 0;
+
+    size_t len = alltrax_var_byte_size(var);
+    uint32_t bits = (uint32_t)raw;
+    for (size_t i = 0; i < len; i++)
+        buf[i] = (uint8_t)(bits >> (i * 8));
+    return (int)len;
+}
+
+alltrax_error alltrax_validate_var_value(const alltrax_var_def* var, double value)
+{
+    int64_t raw;
+    return var_value_to_raw(var, value, &raw);
 }
 
 void alltrax_var_display_bounds(const alltrax_var_def* var,

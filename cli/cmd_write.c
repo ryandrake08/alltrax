@@ -9,6 +9,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include "cli.h"
 
 /* A parsed assignment */
@@ -89,8 +90,9 @@ int cmd_write(int argc, char** argv)
             }
         } else {
             char* endptr;
+            errno = 0;
             value = strtod(val_str, &endptr);
-            if (*endptr != '\0') {
+            if (endptr == val_str || *endptr != '\0' || errno == ERANGE) {
                 fprintf(stderr, "Invalid number for %s: %s\n", name, val_str);
                 free(assigns);
                 return 1;

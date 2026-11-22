@@ -6,6 +6,7 @@
 #include "alltrax.h"
 #include "internal.h"
 #include "test_internal.h"
+#include <float.h>
 
 /* ------------------------------------------------------------------ */
 /* 1. Variable lookup                                                  */
@@ -408,6 +409,160 @@ static int test_numeric_api_rejects_strings(void)
                       ALLTRAX_ERR_INVALID_ARG);
         }
     }
+    return 0;
+}
+
+/* Check the public validator and direct encoder against the same expected raw
+ * value. Rejected inputs must leave the caller's output buffer untouched. */
+static int check_numeric_conversion(const alltrax_var_def* var, double value,
+    bool valid, int64_t expected_raw)
+{
+    uint8_t buf[4], original[4];
+    memset(buf, 0xA5, sizeof(buf));
+    memcpy(original, buf, sizeof(original));
+    if (!valid) {
+        ASSERT_EQ(alltrax_validate_var_value(var, value), ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_EQ(alltrax_encode_var(var, value, buf), 0);
+        ASSERT_MEM_EQ(buf, original, sizeof(buf));
+    } else {
+        ASSERT_EQ(alltrax_validate_var_value(var, value), ALLTRAX_OK);
+        int len = alltrax_encode_var(var, value, buf);
+        ASSERT_EQ(len, alltrax_var_byte_size(var));
+        alltrax_var_value decoded;
+        ASSERT_EQ(alltrax_decode_var(buf, (size_t)len, var, var->address, &decoded), ALLTRAX_OK);
+        ASSERT_EQ(alltrax_var_raw_int64(&decoded), expected_raw);
+    }
+    return 0;
+}
+
+static int test_numeric_nonfinite_and_extreme_values(void)
+{
+    const alltrax_var_type types[] = {
+        ALLTRAX_TYPE_UINT8, ALLTRAX_TYPE_INT8, ALLTRAX_TYPE_UINT16,
+        ALLTRAX_TYPE_INT16, ALLTRAX_TYPE_UINT32, ALLTRAX_TYPE_INT32,
+    };
+    const double values[] = {
+        NAN, INFINITY, -INFINITY, DBL_MAX, -DBL_MAX, 1e100, -1e100,
+        0x1p63, -0x1p63, nextafter(0x1p63, 0), nextafter(-0x1p63, -INFINITY),
+    };
+    for (size_t t = 0; t < sizeof(types) / sizeof(types[0]); t++) {
+        alltrax_var_def var = *alltrax_find_var("LoBat_Vlim");
+        var.type = types[t];
+        var.scale = 1;
+        for (size_t v = 0; v < sizeof(values) / sizeof(values[0]); v++)
+            ASSERT_EQ(check_numeric_conversion(&var, values[v], false, 0), 0);
+    }
+    return 0;
+}
+
+static int test_numeric_type_boundaries_and_rounding(void)
+{
+    const struct {
+        alltrax_var_type type;
+        int64_t lo, hi;
+    } cases[] = {
+        { ALLTRAX_TYPE_UINT8, 0, UINT8_MAX },
+        { ALLTRAX_TYPE_INT8, INT8_MIN, INT8_MAX },
+        { ALLTRAX_TYPE_UINT16, 0, UINT16_MAX },
+        { ALLTRAX_TYPE_INT16, INT16_MIN, INT16_MAX },
+        { ALLTRAX_TYPE_UINT32, 0, UINT32_MAX },
+        { ALLTRAX_TYPE_INT32, INT32_MIN, INT32_MAX },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        alltrax_var_def var = *alltrax_find_var("LoBat_Vlim");
+        var.type = cases[i].type;
+        var.scale = 1;
+        double below = (double)cases[i].lo - 0.5;
+        double above = (double)cases[i].hi + 0.5;
+        ASSERT_EQ(check_numeric_conversion(&var, (double)cases[i].lo, true, cases[i].lo), 0);
+        ASSERT_EQ(check_numeric_conversion(&var, (double)cases[i].hi, true, cases[i].hi), 0);
+        ASSERT_EQ(check_numeric_conversion(&var, nextafter(below, INFINITY), true, cases[i].lo), 0);
+        ASSERT_EQ(check_numeric_conversion(&var, nextafter(above, -INFINITY), true, cases[i].hi), 0);
+        ASSERT_EQ(check_numeric_conversion(&var, below, false, 0), 0);
+        ASSERT_EQ(check_numeric_conversion(&var, above, false, 0), 0);
+    }
+    return 0;
+}
+
+static int test_numeric_explicit_bounds_intersect_type(void)
+{
+    alltrax_var_def var = *alltrax_find_var("N_Speed_Limit");
+    ASSERT_EQ(check_numeric_conversion(&var, 999.49, false, 0), 0);
+    ASSERT_EQ(check_numeric_conversion(&var, 999.5, true, 1000), 0);
+    ASSERT_EQ(check_numeric_conversion(&var, 8000.49, true, 8000), 0);
+    ASSERT_EQ(check_numeric_conversion(&var, 8000.5, false, 0), 0);
+    var.type = ALLTRAX_TYPE_UINT8; /* Explicit [1000,8000] has no intersection. */
+    ASSERT_EQ(check_numeric_conversion(&var, 1000, false, 0), 0);
+    var = *alltrax_find_var("LoBat_Vlim");
+    var.raw_min = INT64_MAX;
+    ASSERT_EQ(check_numeric_conversion(&var, 0, false, 0), 0);
+    var.raw_min = ALLTRAX_NO_MIN;
+    var.raw_max = INT64_MIN;
+    ASSERT_EQ(check_numeric_conversion(&var, 0, false, 0), 0);
+    return 0;
+}
+
+static int test_numeric_offset_arithmetic(void)
+{
+    const struct {
+        alltrax_var_type type;
+        int32_t offset;
+        double value;
+        bool valid;
+        int64_t raw;
+    } cases[] = {
+        { ALLTRAX_TYPE_INT16, INT32_MIN, 2147483648.0, true, 0 },
+        { ALLTRAX_TYPE_UINT8, INT32_MIN, 2147483903.0, true, 255 },
+        { ALLTRAX_TYPE_UINT8, INT32_MIN, 2147483904.0, false, 0 },
+        { ALLTRAX_TYPE_INT16, INT32_MAX, -2147483649.0, true, -2 },
+        { ALLTRAX_TYPE_INT32, INT32_MAX, -4294967295.0, true, INT32_MIN },
+        { ALLTRAX_TYPE_INT32, INT32_MAX, 1, false, 0 },
+        { ALLTRAX_TYPE_UINT32, INT32_MIN, 6442450943.0, true, UINT32_MAX },
+        { ALLTRAX_TYPE_UINT32, INT32_MIN, 6442450944.0, false, 0 },
+        { ALLTRAX_TYPE_UINT16, INT32_MAX, 0x1p63, false, 0 },
+        { ALLTRAX_TYPE_UINT16, INT32_MIN, -0x1p63, false, 0 },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        alltrax_var_def var = *alltrax_find_var("LoBat_Vlim");
+        var.type = cases[i].type;
+        var.scale = 1;
+        var.offset = cases[i].offset;
+        ASSERT_EQ(check_numeric_conversion(&var, cases[i].value, cases[i].valid, cases[i].raw), 0);
+    }
+    return 0;
+}
+
+static int test_numeric_scale_checks_and_round_trips(void)
+{
+    alltrax_var_def var = *alltrax_find_var("LoBat_Vlim");
+    const double bad_scales[] = { 0, -0.0, NAN, INFINITY, -INFINITY };
+    for (size_t i = 0; i < sizeof(bad_scales) / sizeof(bad_scales[0]); i++) {
+        var.scale = bad_scales[i];
+        ASSERT_EQ(check_numeric_conversion(&var, 1, false, 0), 0);
+    }
+    var.scale = DBL_MIN;
+    ASSERT_EQ(check_numeric_conversion(&var, DBL_MAX, false, 0), 0);
+    var.scale = DBL_MAX;
+    ASSERT_EQ(check_numeric_conversion(&var, DBL_MAX, true, 1), 0);
+    var.type = ALLTRAX_TYPE_INT16;
+    var.scale = -0.5;
+    ASSERT_EQ(check_numeric_conversion(&var, 1, true, -2), 0);
+    ASSERT_EQ(check_numeric_conversion(alltrax_find_var("LoBat_Vlim"), 28.1, true, 281), 0);
+    ASSERT_EQ(check_numeric_conversion(alltrax_find_var("N_Max_Batt_Regen_Amps"), -50, true, -2048), 0);
+    ASSERT_EQ(check_numeric_conversion(alltrax_find_var("Avg_Temp"), 0, true, 527), 0);
+    return 0;
+}
+
+static int test_bool_requires_finite_value(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("HPD");
+    const double invalid[] = { NAN, INFINITY, -INFINITY };
+    for (size_t i = 0; i < sizeof(invalid) / sizeof(invalid[0]); i++)
+        ASSERT_EQ(check_numeric_conversion(var, invalid[i], false, 0), 0);
+    ASSERT_EQ(check_numeric_conversion(var, -0.0, true, 0), 0);
+    ASSERT_EQ(check_numeric_conversion(var, 0.25, true, 1), 0);
+    ASSERT_EQ(check_numeric_conversion(var, -2, true, 1), 0);
+    ASSERT_EQ(check_numeric_conversion(var, DBL_MAX, true, 1), 0);
     return 0;
 }
 
@@ -1148,6 +1303,12 @@ void run_variables_tests(void)
     RUN_TEST(test_encode_decode_round_trip);
     RUN_TEST(test_encode_bool);
     RUN_TEST(test_numeric_api_rejects_strings);
+    RUN_TEST(test_numeric_nonfinite_and_extreme_values);
+    RUN_TEST(test_numeric_type_boundaries_and_rounding);
+    RUN_TEST(test_numeric_explicit_bounds_intersect_type);
+    RUN_TEST(test_numeric_offset_arithmetic);
+    RUN_TEST(test_numeric_scale_checks_and_round_trips);
+    RUN_TEST(test_bool_requires_finite_value);
 
     /* Error flag names */
     RUN_TEST(test_error_flag_names);

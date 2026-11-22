@@ -555,6 +555,13 @@ I/O, rejecting the entire batch. Write options cannot bypass this check.
 The CLI's `write` command relies on this library check and reports its diagnostic.
 It opens the controller before reporting permission errors.
 
+Numeric values must be finite. Integer encoding uses
+`raw = round(value / scale) + offset`, rounding halfway values away from zero,
+and requires the result to fit both the storage type and the variable's bounds.
+Validation and encoding use the same checked conversion. Finite boolean values
+normalize zero to false and nonzero to true. The CLI also rejects empty numbers
+and numeric parsing overflow or underflow.
+
 Only numeric and boolean assignments are supported. String assignments (including
 `Throttle_Type_Name` and `F_Table_Name`) return `ALLTRAX_ERR_INVALID_ARG` before
 device I/O and reject the entire batch. The CLI also rejects string writes.
