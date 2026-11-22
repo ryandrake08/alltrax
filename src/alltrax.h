@@ -179,12 +179,14 @@ typedef enum {
 #define ALLTRAX_NO_MIN INT64_MIN
 #define ALLTRAX_NO_MAX INT64_MAX
 
+/* Device operations require a nonempty name, a valid type/size, and a complete
+ * span in the selected memory region. Prefer the library's canonical definitions. */
 typedef struct {
     const char*      name;
     const char*      description;
     uint32_t         address;
     alltrax_var_type type;
-    uint8_t          size;      /* string length; 0 for non-string */
+    uint8_t          size;      /* string length 1-32; 0 for non-string */
     double           scale;     /* display = (raw - offset) * scale */
     int32_t          offset;    /* MachineOffset */
     const char*      unit;
@@ -258,6 +260,9 @@ int64_t alltrax_var_raw_int64(const alltrax_var_value* val);
 /* Read operations                                                     */
 /* ------------------------------------------------------------------ */
 
+/* Entire batch is checked before I/O: RAM spans must fit [0x20000000,0x20010000),
+ * FLASH spans [0x08000000,0x08020000). Bad shapes return ERR_INVALID_ARG;
+ * invalid spans return ERR_ADDRESS. */
 alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, size_t count, alltrax_var_value* out);
 
@@ -275,7 +280,9 @@ typedef struct {
 
 /* Write numeric/bool values in display units. Read-only definitions and string
  * assignments return ALLTRAX_ERR_INVALID_ARG before device I/O, rejecting the
- * entire batch. Write options cannot bypass variable permissions. */
+ * entire batch. RAM spans must fit [0x20000000,0x20010000); FLASH spans must fit
+ * the VARSET page [0x08002000,0x08002800). Invalid spans return ERR_ADDRESS.
+ * Write options cannot bypass descriptor checks or variable permissions. */
 alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, const double* values, size_t count,
     const alltrax_write_opts* opts);
@@ -315,10 +322,12 @@ alltrax_error alltrax_read_curve(alltrax_controller* ctrl,
     const alltrax_curve_def* def, alltrax_curve_data* out);
 alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
     const alltrax_curve_def* def, alltrax_curve_data* out);
-/* Validate all 16 points without device I/O. Scales must be finite and positive;
+/* Validate descriptor and all 16 points without device I/O. Name must be nonempty,
+ * and both user arrays must fit wholly in VARSET. Scales must be finite and positive;
  * points must be finite and round to raw [0, axis_raw_max]. Zero padding and
  * repeated points are permitted; no ordering constraint is imposed.
- * Returns ALLTRAX_ERR_INVALID_ARG on invalid data. */
+ * Returns ALLTRAX_ERR_INVALID_ARG on invalid shape/data, ALLTRAX_ERR_ADDRESS
+ * on invalid spans. User reads/writes use VARSET; factory reads use FACTSET. */
 alltrax_error alltrax_validate_curve(const alltrax_curve_def* def,
     const alltrax_curve_data* data);
 /* Enforces the same curve validation before device I/O, regardless of opts. */

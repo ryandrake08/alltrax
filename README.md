@@ -489,12 +489,21 @@ in a group.
 | `description` | `const char*` | Human-readable description |
 | `address` | `uint32_t` | Memory address on controller |
 | `type` | `alltrax_var_type` | Data type (see below) |
-| `size` | `uint8_t` | String length (0 for non-string types) |
+| `size` | `uint8_t` | String length 1–32 (0 for non-string types) |
 | `scale` | `double` | Display scaling: `display = (raw - offset) * scale` |
 | `offset` | `int32_t` | Raw value offset before scaling |
 | `unit` | `const char*` | Display unit (e.g. `"V"`, `"A"`, `"%"`) or `NULL` |
 | `writable` | `bool` | Whether this variable can be written |
 | `is_flash` | `bool` | `true` = FLASH (persistent), `false` = RAM |
+
+Device operations validate every descriptor before I/O. Names must be nonempty,
+types must be recognized, and sizes must follow the rules above. Full RAM spans
+must fit in `[0x20000000, 0x20010000)`. FLASH reads must fit in
+`[0x08000000, 0x08020000)`; FLASH writes must fit wholly in VARSET,
+`[0x08002000, 0x08002800)`. Invalid shapes return `ALLTRAX_ERR_INVALID_ARG`,
+and invalid spans return `ALLTRAX_ERR_ADDRESS`, rejecting the entire batch.
+Prefer definitions returned by the library: span checks do not establish the
+meaning of a caller-supplied address.
 
 **Variable types** (`alltrax_var_type`): `ALLTRAX_TYPE_BOOL`, `ALLTRAX_TYPE_UINT8`,
 `ALLTRAX_TYPE_INT8`, `ALLTRAX_TYPE_UINT16`, `ALLTRAX_TYPE_INT16`,
@@ -697,13 +706,16 @@ arrays, erase, write, verify). Uses the same `alltrax_write_opts` as
 `alltrax_write_vars()` — pass `NULL` for safe defaults. Requires
 `allow_writes=true`.
 
-`alltrax_validate_curve()` checks all 16 points without device I/O. Both scales
+`alltrax_validate_curve()` checks the descriptor and all 16 points without device I/O.
+The name must be nonempty and both 32-byte user arrays must fit in VARSET;
+factory reads check the selected arrays against FACTSET instead. Both scales
 must be finite and positive, and each finite point must round into
 `[0, x_raw_max]` or `[0, y_raw_max]` using the existing rounding policy.
 Zero padding and repeated points are accepted; no ordering constraint is
 imposed. The writer enforces this same validation before any device request,
 regardless of write options, and returns `ALLTRAX_ERR_INVALID_ARG` for invalid
-data. CLI and config inputs use the same library validation.
+data, or `ALLTRAX_ERR_ADDRESS` for an invalid span. CLI and config inputs use
+the same library validation.
 
 Example — copy factory curve to user:
 

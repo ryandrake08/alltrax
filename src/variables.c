@@ -405,6 +405,8 @@ const alltrax_var_def* alltrax_find_var(const char* name)
 
 size_t alltrax_var_byte_size(const alltrax_var_def* var)
 {
+    if (!var || (var->type != ALLTRAX_TYPE_STRING && var->size != 0))
+        return 0;
     switch (var->type) {
     case ALLTRAX_TYPE_BOOL:
     case ALLTRAX_TYPE_UINT8:
@@ -417,7 +419,7 @@ size_t alltrax_var_byte_size(const alltrax_var_def* var)
     case ALLTRAX_TYPE_INT32:
         return 4;
     case ALLTRAX_TYPE_STRING:
-        return var->size;
+        return var->size >= 1 && var->size <= 32 ? var->size : 0;
     }
     return 0;
 }
@@ -425,10 +427,11 @@ size_t alltrax_var_byte_size(const alltrax_var_def* var)
 alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
     const alltrax_var_def* var, uint32_t base_address, alltrax_var_value* out)
 {
-    size_t offset = var->address - base_address;
     size_t var_size = alltrax_var_byte_size(var);
-
-    if (offset + var_size > data_len)
+    if (!data || !out || !var_size || var->address < base_address)
+        return ALLTRAX_ERR_INVALID_ARG;
+    size_t offset = var->address - base_address;
+    if (!span_fits(offset, var_size, data_len))
         return ALLTRAX_ERR_INVALID_ARG;
 
     out->def = var;
@@ -513,7 +516,7 @@ void effective_bounds(const alltrax_var_def* var, int64_t* lo, int64_t* hi)
 static alltrax_error var_value_to_raw(const alltrax_var_def* var, double value,
     int64_t* out)
 {
-    if (!var || !isfinite(value))
+    if (!alltrax_var_byte_size(var) || !isfinite(value))
         return ALLTRAX_ERR_INVALID_ARG;
 
     /* Enum assignments must not be rounded into a different throttle type. */
@@ -559,7 +562,7 @@ static alltrax_error var_value_to_raw(const alltrax_var_def* var, double value,
 int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf)
 {
     int64_t raw;
-    if (var_value_to_raw(var, value, &raw))
+    if (!buf || var_value_to_raw(var, value, &raw))
         return 0;
 
     size_t len = alltrax_var_byte_size(var);

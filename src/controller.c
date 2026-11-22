@@ -410,6 +410,38 @@ bool alltrax_has_feature(const alltrax_info* info, alltrax_feature feat)
 /* Maximum variables in a single alltrax_read_vars() call */
 #define MAX_READ_VARS 256
 
+static alltrax_error validate_var_for_io(alltrax_controller* ctrl,
+    const alltrax_var_def* var, bool writing)
+{
+    size_t len = alltrax_var_byte_size(var);
+    if (!var || !len || !var->name || !var->name[0]) {
+        set_error_detail(ctrl, "Invalid variable descriptor (type, size, or name)");
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+    if (writing) {
+        if (!var->writable) {
+            set_error_detail(ctrl, "Variable is read-only: %s", var->name);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+        if (var->type == ALLTRAX_TYPE_STRING) {
+            set_error_detail(ctrl,
+                "Variable %s is a string; numeric writes do not support strings",
+                var->name);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+    }
+    uint32_t base = var->is_flash ? (writing ? VARSET_ADDR : FLASH_BASE) : RAM_BASE;
+    size_t capacity = var->is_flash ? (writing ? VARSET_SIZE : FLASH_END - FLASH_BASE) :
+                                     RAM_END - RAM_BASE;
+    if (!address_span_fits(var->address, len, base, capacity)) {
+        set_error_detail(ctrl, "Variable %s at 0x%08X (%zu bytes) extends outside %s range",
+                         var->name, var->address, len,
+                         var->is_flash ? (writing ? "VARSET" : "FLASH") : "RAM");
+        return ALLTRAX_ERR_ADDRESS;
+    }
+    return ALLTRAX_OK;
+}
+
 alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, size_t count, alltrax_var_value* out)
 {
@@ -422,6 +454,12 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
         set_error_detail(ctrl, "Too many variables to read (%zu, max %d)",
                          count, MAX_READ_VARS);
         return ALLTRAX_ERR_INVALID_ARG;
+    }
+    if (!vars || !out)
+        return ALLTRAX_ERR_INVALID_ARG;
+    for (size_t i = 0; i < count; i++) {
+        alltrax_error rc = validate_var_for_io(ctrl, vars[i], false);
+        if (rc) return rc;
     }
 
     /* Build sorted index array (indices into vars[]/out[]) */
@@ -550,6 +588,16 @@ typedef struct { uint8_t data[MAX_PAYLOAD]; int len; uint32_t addr; } ram_encode
 static alltrax_error write_flash_page(alltrax_controller* ctrl,
     const flash_patch_t* patches, size_t count, bool skip_verify)
 {
+    if (!patches || count == 0)
+        return ALLTRAX_ERR_INVALID_ARG;
+    for (size_t i = 0; i < count; i++) {
+        if (patches[i].len <= 0 || (size_t)patches[i].len > sizeof(patches[i].data) ||
+            !span_fits(patches[i].offset, (size_t)patches[i].len, VARSET_SIZE)) {
+            set_error_detail(ctrl, "Invalid FLASH patch %zu: offset %zu, length %d",
+                             i, patches[i].offset, patches[i].len);
+            return ALLTRAX_ERR_ADDRESS;
+        }
+    }
     uint8_t page_data[VARSET_SIZE];
 
     /* Read full VARSET page (2048 bytes) */
@@ -723,8 +771,8 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
 {
     alltrax_error family_rc = require_xct_controller(ctrl);
     if (family_rc) return family_rc;
-    if (count == 0) {
-        set_error_detail(ctrl, "No variables to write");
+    if (!vars || !values || count == 0) {
+        set_error_detail(ctrl, "Variables and values are required");
         return ALLTRAX_ERR_INVALID_ARG;
     }
 
@@ -739,18 +787,8 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
 
     for (size_t i = 0; i < count; i++) {
         const alltrax_var_def* var = vars[i];
-
-        if (!var->writable) {
-            set_error_detail(ctrl, "Variable is read-only: %s", var->name);
-            return ALLTRAX_ERR_INVALID_ARG;
-        }
-
-        if (var->type == ALLTRAX_TYPE_STRING) {
-            set_error_detail(ctrl,
-                "Variable %s is a string; numeric writes do not support strings",
-                var->name);
-            return ALLTRAX_ERR_INVALID_ARG;
-        }
+        alltrax_error rc = validate_var_for_io(ctrl, var, true);
+        if (rc) return rc;
 
         if (alltrax_validate_var_value(var, values[i])) {
             set_error_detail(ctrl, "Value out of range for %s", var->name);
@@ -758,23 +796,8 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
         }
 
         if (var->is_flash) {
-            if (var->address < VARSET_ADDR ||
-                var->address >= VARSET_ADDR + VARSET_SIZE) {
-                set_error_detail(ctrl,
-                    "Variable %s at 0x%08X is not in VARSET page "
-                    "(0x%08X-0x%08X)",
-                    var->name, var->address, VARSET_ADDR,
-                    VARSET_ADDR + VARSET_SIZE);
-                return ALLTRAX_ERR_ADDRESS;
-            }
             flash_total++;
         } else {
-            if (var->address < RAM_BASE || var->address >= RAM_END) {
-                set_error_detail(ctrl,
-                    "Address 0x%08X is outside RAM range (0x%08X-0x%08X)",
-                    var->address, RAM_BASE, RAM_END);
-                return ALLTRAX_ERR_ADDRESS;
-            }
             ram_total++;
         }
     }
@@ -908,7 +931,8 @@ alltrax_error alltrax_write_vars(alltrax_controller* ctrl,
                 set_error_detail(ctrl, "Cannot encode variable %s", var->name);
                 return ALLTRAX_ERR_INVALID_ARG;
             }
-            if (p->offset + (size_t)p->len > VARSET_SIZE) {
+            if ((size_t)p->len > sizeof(p->data) ||
+                !span_fits(p->offset, (size_t)p->len, VARSET_SIZE)) {
                 set_error_detail(ctrl,
                     "Variable %s extends beyond VARSET page", var->name);
                 return ALLTRAX_ERR_ADDRESS;
@@ -972,6 +996,28 @@ restore_run:
 /* Curve table read/write                                              */
 /* ------------------------------------------------------------------ */
 
+static alltrax_error validate_curve_def(alltrax_controller* ctrl,
+    const alltrax_curve_def* def, bool factory)
+{
+    if (!def || !def->name || !def->name[0] ||
+        !isfinite(def->x_scale) || def->x_scale <= 0 ||
+        !isfinite(def->y_scale) || def->y_scale <= 0 ||
+        def->x_raw_max < 0 || def->y_raw_max < 0) {
+        if (ctrl) set_error_detail(ctrl, "Invalid curve descriptor (name, scales, or bounds)");
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+    uint32_t base = factory ? FACTSET_ADDR : VARSET_ADDR;
+    uint32_t x = factory ? def->factory_x_address : def->x_address;
+    uint32_t y = factory ? def->factory_y_address : def->y_address;
+    if (!address_span_fits(x, ALLTRAX_CURVE_POINTS * 2, base, FLASH_PAGE_SIZE) ||
+        !address_span_fits(y, ALLTRAX_CURVE_POINTS * 2, base, FLASH_PAGE_SIZE)) {
+        if (ctrl) set_error_detail(ctrl, "Curve %s spans extend outside %s page",
+                                   def->name, factory ? "FACTSET" : "VARSET");
+        return ALLTRAX_ERR_ADDRESS;
+    }
+    return ALLTRAX_OK;
+}
+
 /* Read a 16-point int16 array from FLASH, scale to display units */
 static alltrax_error read_curve_array(alltrax_controller* ctrl,
     uint32_t addr, double scale, double* out)
@@ -992,13 +1038,14 @@ alltrax_error alltrax_read_curve(alltrax_controller* ctrl,
 {
     alltrax_error family_rc = require_xct_controller(ctrl);
     if (family_rc) return family_rc;
-    if (!def || !out)
+    if (!out)
         return ALLTRAX_ERR_INVALID_ARG;
+    alltrax_error rc = validate_curve_def(ctrl, def, false);
+    if (rc) return rc;
 
     out->def = def;
 
-    alltrax_error rc = read_curve_array(ctrl, def->x_address,
-                                        def->x_scale, out->x);
+    rc = read_curve_array(ctrl, def->x_address, def->x_scale, out->x);
     if (rc) return rc;
 
     return read_curve_array(ctrl, def->y_address, def->y_scale, out->y);
@@ -1009,13 +1056,14 @@ alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
 {
     alltrax_error family_rc = require_xct_controller(ctrl);
     if (family_rc) return family_rc;
-    if (!def || !out)
+    if (!out)
         return ALLTRAX_ERR_INVALID_ARG;
+    alltrax_error rc = validate_curve_def(ctrl, def, true);
+    if (rc) return rc;
 
     out->def = def;
 
-    alltrax_error rc = read_curve_array(ctrl, def->factory_x_address,
-                                        def->x_scale, out->x);
+    rc = read_curve_array(ctrl, def->factory_x_address, def->x_scale, out->x);
     if (rc) return rc;
 
     return read_curve_array(ctrl, def->factory_y_address,
@@ -1055,6 +1103,8 @@ static alltrax_error encode_curve_data(const alltrax_curve_def* def,
 alltrax_error alltrax_validate_curve(const alltrax_curve_def* def,
     const alltrax_curve_data* data)
 {
+    alltrax_error rc = validate_curve_def(NULL, def, false);
+    if (rc) return rc;
     uint8_t x[ALLTRAX_CURVE_POINTS * 2], y[ALLTRAX_CURVE_POINTS * 2];
     return encode_curve_data(def, data, x, y);
 }
@@ -1067,19 +1117,11 @@ alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
     if (family_rc) return family_rc;
     if (!def || !data)
         return ALLTRAX_ERR_INVALID_ARG;
+    alltrax_error rc = validate_curve_def(ctrl, def, false);
+    if (rc) return rc;
 
     alltrax_write_opts defaults = {0};
     if (!opts) opts = &defaults;
-
-    /* Verify addresses are in VARSET page */
-    if (def->x_address < VARSET_ADDR ||
-        def->x_address + ALLTRAX_CURVE_POINTS * 2 > VARSET_ADDR + VARSET_SIZE ||
-        def->y_address < VARSET_ADDR ||
-        def->y_address + ALLTRAX_CURVE_POINTS * 2 > VARSET_ADDR + VARSET_SIZE) {
-        set_error_detail(ctrl, "Curve %s addresses outside VARSET page",
-                         def->name);
-        return ALLTRAX_ERR_ADDRESS;
-    }
 
     /* Validate and encode every point before device I/O or entering CAL. */
     flash_patch_t patches[2];
@@ -1087,7 +1129,7 @@ alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
     patches[0].len = ALLTRAX_CURVE_POINTS * 2;
     patches[1].offset = def->y_address - VARSET_ADDR;
     patches[1].len = ALLTRAX_CURVE_POINTS * 2;
-    alltrax_error rc = encode_curve_data(def, data, patches[0].data, patches[1].data);
+    rc = encode_curve_data(def, data, patches[0].data, patches[1].data);
     if (rc) {
         set_error_detail(ctrl,
             "Invalid %s curve: points must be finite and encode within raw "

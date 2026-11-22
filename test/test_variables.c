@@ -208,6 +208,68 @@ static int test_var_byte_size_string(void)
     return 0;
 }
 
+static int test_invalid_descriptor_sizes_are_rejected(void)
+{
+    alltrax_var_def var = *alltrax_find_var("Throttle_Type_Name");
+    const uint8_t invalid[] = { 0, 33, 56, 255 };
+    for (size_t i = 0; i < sizeof(invalid); i++) {
+        var.size = invalid[i];
+        ASSERT_EQ(alltrax_var_byte_size(&var), 0);
+    }
+    var = *alltrax_find_var("Fan_On");
+    var.size = 1;
+    ASSERT_EQ(alltrax_var_byte_size(&var), 0);
+    var.size = 0;
+    var.type = (alltrax_var_type)99;
+    ASSERT_EQ(alltrax_var_byte_size(&var), 0);
+    return 0;
+}
+
+static int test_descriptor_decode_rejects_before_output_changes(void)
+{
+    uint8_t data[256];
+    memset(data, 'A', sizeof(data));
+    alltrax_var_def var = *alltrax_find_var("Throttle_Type_Name");
+    const uint8_t sizes[] = { 0, 33, 56, 255 };
+    for (size_t i = 0; i < sizeof(sizes); i++) {
+        var.size = sizes[i];
+        alltrax_var_value out = {0}, original;
+        memcpy(&original, &out, sizeof(out));
+        ASSERT_EQ(alltrax_decode_var(data, sizeof(data), &var, var.address, &out),
+                  ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_MEM_EQ(&out, &original, sizeof(out));
+    }
+    var.size = 32;
+    alltrax_var_value out;
+    ASSERT_EQ(alltrax_decode_var(data, 32, &var, var.address, &out), ALLTRAX_OK);
+    ASSERT_EQ(strlen(out.raw.str), 32);
+    ASSERT_EQ(out.raw.str[32], '\0');
+    var.size = 1;
+    ASSERT_EQ(alltrax_decode_var(data, 1, &var, var.address, &out), ALLTRAX_OK);
+    ASSERT_STR_EQ(out.raw.str, "A");
+    ASSERT_EQ(alltrax_decode_var(data, sizeof(data), &var, var.address + 1, &out),
+              ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(alltrax_decode_var(data, 0, &var, var.address, &out), ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(alltrax_decode_var(data, sizeof(data), NULL, 0, &out), ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_EQ(alltrax_decode_var(NULL, 1, &var, var.address, &out), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
+static int test_span_checks_reject_overflow_and_allow_exact_end(void)
+{
+    ASSERT_TRUE(span_fits(2044, 4, 2048));
+    ASSERT_FALSE(span_fits(2045, 4, 2048));
+    ASSERT_FALSE(span_fits(2048, 1, 2048));
+    ASSERT_FALSE(span_fits(0, 0, 2048));
+    ASSERT_FALSE(span_fits(SIZE_MAX, 4, 2048));
+    ASSERT_FALSE(span_fits(1, SIZE_MAX, 2048));
+    ASSERT_TRUE(span_fits(SIZE_MAX - 4, 4, SIZE_MAX));
+    ASSERT_FALSE(span_fits(SIZE_MAX - 3, 4, SIZE_MAX));
+    ASSERT_TRUE(address_span_fits(RAM_END - 4, 4, RAM_BASE, RAM_END - RAM_BASE));
+    ASSERT_FALSE(address_span_fits(UINT32_MAX - 15, 32, VARSET_ADDR, VARSET_SIZE));
+    return 0;
+}
+
 /* ------------------------------------------------------------------ */
 /* 4. Decode — voltage scale (raw 280 * 0.1 = 28.0V)                  */
 /* ------------------------------------------------------------------ */
@@ -1308,6 +1370,9 @@ void run_variables_tests(void)
     RUN_TEST(test_var_byte_size_int16);
     RUN_TEST(test_var_byte_size_int32);
     RUN_TEST(test_var_byte_size_string);
+    RUN_TEST(test_invalid_descriptor_sizes_are_rejected);
+    RUN_TEST(test_descriptor_decode_rejects_before_output_changes);
+    RUN_TEST(test_span_checks_reject_overflow_and_allow_exact_end);
 
     /* Decode */
     RUN_TEST(test_decode_voltage);

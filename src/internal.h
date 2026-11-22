@@ -67,6 +67,7 @@ struct alltrax_controller {
 /* FLASH page size (XCT uses 2KB pages on STM32) */
 #define FLASH_BASE      0x08000000
 #define FLASH_PAGE_SIZE 2048
+#define FLASH_END       (FLASH_BASE + 64 * FLASH_PAGE_SIZE) /* Exclusive XCT limit */
 
 /* Named FLASH pages */
 #define INFOSET_PAGE  1   /* 0x08000800 — controller identity */
@@ -126,6 +127,7 @@ alltrax_error parse_response(const uint8_t data[PACKET_SIZE],
     uint8_t payload[MAX_PAYLOAD]);
 
 /* variables.c */
+/* Zero indicates an invalid type or size (strings: 1-32, other sizes: 0). */
 size_t alltrax_var_byte_size(const alltrax_var_def* var);
 alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
     const alltrax_var_def* var, uint32_t base_address, alltrax_var_value* out);
@@ -145,6 +147,18 @@ alltrax_error transport_read(alltrax_controller* ctrl,
 alltrax_error identify_controller(alltrax_controller* ctrl);
 
 /* Byte helpers */
+/* Subtraction keeps both offset and absolute-address span checks overflow-safe. */
+static inline bool span_fits(size_t offset, size_t length, size_t capacity)
+{
+    return length > 0 && offset <= capacity && length <= capacity - offset;
+}
+
+static inline bool address_span_fits(uint32_t address, size_t length,
+    uint32_t base, size_t capacity)
+{
+    return address >= base && span_fits((size_t)(address - base), length, capacity);
+}
+
 static inline uint16_t get_le16(const uint8_t* buf)
 {
     return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
