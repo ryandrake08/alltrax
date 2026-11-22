@@ -115,6 +115,12 @@ alltrax_error transport_write(alltrax_controller* ctrl,
                          hid_error(ctrl->hid));
         return ALLTRAX_ERR_USB;
     }
+    if (written != PACKET_SIZE) {
+        set_error_detail(ctrl,
+            "USB write length mismatch for report 0x%02X: expected %d bytes, wrote %d",
+            data[0], PACKET_SIZE, written);
+        return ALLTRAX_ERR_USB;
+    }
 
     return ALLTRAX_OK;
 }
@@ -136,6 +142,11 @@ alltrax_error transport_read(alltrax_controller* ctrl,
     if (n == 0) {
         set_error_detail(ctrl, "USB read timed out after %dms", DEFAULT_TIMEOUT_MS);
         return ALLTRAX_ERR_TIMEOUT;
+    }
+    if (n != PACKET_SIZE) {
+        set_error_detail(ctrl, "USB read length mismatch: expected %d bytes, got %d",
+                         PACKET_SIZE, n);
+        return ALLTRAX_ERR_PROTOCOL;
     }
 
     return ALLTRAX_OK;

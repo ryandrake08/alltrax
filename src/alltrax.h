@@ -38,7 +38,7 @@ typedef enum {
     ALLTRAX_OK              =   0,
     ALLTRAX_ERR_USB         =  -1,  /* HID communication failure */
     ALLTRAX_ERR_TIMEOUT     =  -2,  /* No response */
-    ALLTRAX_ERR_PROTOCOL    =  -3,  /* Malformed response */
+    ALLTRAX_ERR_PROTOCOL    =  -3,  /* Malformed or incomplete response */
     ALLTRAX_ERR_DEVICE_FAIL =  -4,  /* Device reported failure */
     ALLTRAX_ERR_VERIFY      =  -5,  /* Write echo mismatch */
     ALLTRAX_ERR_FIRMWARE    =  -6,  /* Unknown firmware version */

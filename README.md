@@ -366,7 +366,7 @@ All functions that can fail return `alltrax_error`:
 | `ALLTRAX_OK` | Success |
 | `ALLTRAX_ERR_USB` | HID communication failure |
 | `ALLTRAX_ERR_TIMEOUT` | No response from device |
-| `ALLTRAX_ERR_PROTOCOL` | Malformed response |
+| `ALLTRAX_ERR_PROTOCOL` | Malformed or incomplete response |
 | `ALLTRAX_ERR_DEVICE_FAIL` | Device reported failure |
 | `ALLTRAX_ERR_VERIFY` | Write echo mismatch |
 | `ALLTRAX_ERR_FIRMWARE` | Unsupported firmware version |
@@ -378,6 +378,12 @@ All functions that can fail return `alltrax_error`:
 | `ALLTRAX_ERR_UNSUPPORTED` | Unsupported USB identity or controller family |
 | `ALLTRAX_ERR_BLOCKED` | Write blocked (`allow_writes=false`) |
 | `ALLTRAX_ERR_NO_MEMORY` | Memory allocation failed |
+
+HID transfers require exactly 64 bytes, including the Report ID. An incomplete
+write returns `ALLTRAX_ERR_USB`; a positive-length incomplete read returns
+`ALLTRAX_ERR_PROTOCOL` before parsing. A zero-byte read returns
+`ALLTRAX_ERR_TIMEOUT`. Transfer-length diagnostics report the expected and
+actual byte counts.
 
 ```c
 const char* alltrax_strerror(alltrax_error err);

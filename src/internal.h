@@ -134,6 +134,8 @@ alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
 int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf);
 
 /* transport.c */
+/* Success requires a complete 64-byte report. A short write is ERR_USB;
+ * a positive short read is ERR_PROTOCOL; zero-byte reads are ERR_TIMEOUT. */
 alltrax_error transport_write(alltrax_controller* ctrl,
     const uint8_t data[PACKET_SIZE]);
 alltrax_error transport_read(alltrax_controller* ctrl,

@@ -20,6 +20,7 @@ static struct {
     uint8_t request[PACKET_SIZE], mode;
     uint32_t program_rev;
     int model_reply_len; /* -1: timeout, -2: USB error; otherwise declared size */
+    int write_result, read_result;
 } mock;
 
 static void mock_reset(void)
@@ -27,6 +28,7 @@ static void mock_reset(void)
     memset(&mock, 0, sizeof(mock));
     mock.program_rev = 5005;
     mock.model_reply_len = 15;
+    mock.write_result = mock.read_result = PACKET_SIZE;
 }
 
 static void add_device(const char* path, uint16_t vid, uint16_t pid, const char* model)
@@ -107,6 +109,7 @@ int hid_write(hid_device* hid, const unsigned char* data, size_t size)
     (void)hid;
     mock.writes++;
     if (size != PACKET_SIZE) return -1;
+    if (mock.write_result != PACKET_SIZE) return mock.write_result;
     memcpy(mock.request, data, size);
     if (data[0] != 0x01) mock.mutations++;
     if (data[0] == 0x02 && request_address() == ADDR_RUN_MODE)
@@ -128,10 +131,8 @@ static uint8_t read_byte(size_t index, uint32_t addr)
     return 0;
 }
 
-int hid_read_timeout(hid_device* hid, unsigned char* buf, size_t size, int timeout)
+static int make_response(hid_device* hid, unsigned char* buf, size_t size)
 {
-    (void)timeout;
-    mock.reads++;
     if (size != PACKET_SIZE) return -1;
     memset(buf, 0, size);
     buf[0] = 0x04;
@@ -149,6 +150,19 @@ int hid_read_timeout(hid_device* hid, unsigned char* buf, size_t size, int timeo
     for (size_t i = 0; i < buf[1] && i < MAX_PAYLOAD; i++)
         buf[8 + i] = read_byte(hid->index, addr + (uint32_t)i);
     return (int)size;
+}
+
+int hid_read_timeout(hid_device* hid, unsigned char* buf, size_t size, int timeout)
+{
+    (void)timeout;
+    mock.reads++;
+    uint8_t reply[PACKET_SIZE];
+    int rc = make_response(hid, reply, size);
+    if (rc <= 0) return rc;
+    int n = mock.read_result;
+    /* A short read really leaves the rest of the caller's buffer untouched. */
+    if (n > 0) memcpy(buf, reply, (size_t)n < size ? (size_t)n : size);
+    return n;
 }
 
 static int test_no_devices_and_unknown_paths(void)
@@ -404,6 +418,171 @@ static int test_transport_blocks_mutations_without_verified_identity(void)
     return 0;
 }
 
+static int test_transport_rejects_incomplete_writes(void)
+{
+    mock_reset();
+    alltrax_controller ctrl = {
+        .hid = &mock.handles[0], .vid = 0x23D4, .pid = 2,
+        .controller_type = ALLTRAX_CONTROLLER_XCT, .allow_writes = true,
+    };
+    uint8_t packets[4][PACKET_SIZE], value = 1;
+    build_read_request(ADDR_CONTROLLER_INFO, 15, packets[0]);
+    build_write_request(0x2000F204, &value, 1, packets[1]);
+    build_reset_request(packets[2]);
+    build_page_erase_request(VARSET_PAGE, packets[3]);
+    for (int n = 0; n <= 65; n++) {
+        if (n == 64) continue;
+        mock.write_result = n;
+        for (size_t p = 0; p < 4; p++) {
+            unsigned writes = mock.writes;
+            ASSERT_EQ(transport_write(&ctrl, packets[p]), ALLTRAX_ERR_USB);
+            ASSERT_EQ(mock.writes, writes + 1);
+            ASSERT_EQ(mock.reads, 0);
+            ASSERT_TRUE(strstr(ctrl.error_detail, "write length mismatch") != NULL);
+            ASSERT_TRUE(strstr(ctrl.error_detail, "expected 64 bytes") != NULL);
+            char actual[32];
+            snprintf(actual, sizeof(actual), "wrote %d", n);
+            ASSERT_TRUE(strstr(ctrl.error_detail, actual) != NULL);
+        }
+    }
+    return 0;
+}
+
+static int test_transport_rejects_incomplete_reads(void)
+{
+    mock_reset();
+    add_device("xct", 0x23D4, 2, "XCT48400-DCS");
+    alltrax_controller ctrl = { .hid = &mock.handles[0] };
+    build_read_request(ADDR_CONTROLLER_INFO, 15, mock.request);
+    for (int n = 1; n <= 65; n++) {
+        if (n == 64) continue;
+        mock.read_result = n;
+        uint8_t buf[PACKET_SIZE];
+        memset(buf, 0xA5, sizeof(buf));
+        unsigned reads = mock.reads;
+        ASSERT_EQ(transport_read(&ctrl, buf), ALLTRAX_ERR_PROTOCOL);
+        ASSERT_EQ(mock.reads, reads + 1);
+        ASSERT_EQ(mock.writes, 0);
+        ASSERT_TRUE(strstr(ctrl.error_detail, "read length mismatch") != NULL);
+        ASSERT_TRUE(strstr(ctrl.error_detail, "expected 64 bytes") != NULL);
+        char actual[32];
+        snprintf(actual, sizeof(actual), "got %d", n);
+        ASSERT_TRUE(strstr(ctrl.error_detail, actual) != NULL);
+        if (n < 64) ASSERT_EQ(buf[n], 0xA5);
+    }
+    return 0;
+}
+
+static int test_read_errors_timeouts_and_full_reports_remain_distinct(void)
+{
+    mock_reset();
+    add_device("xct", 0x23D4, 2, "XCT48400-DCS");
+    alltrax_controller ctrl = { .hid = &mock.handles[0] };
+    build_read_request(ADDR_CONTROLLER_INFO, 15, mock.request);
+    uint8_t buf[PACKET_SIZE];
+    mock.read_result = -1;
+    ASSERT_EQ(transport_read(&ctrl, buf), ALLTRAX_ERR_USB);
+    ASSERT_TRUE(strstr(ctrl.error_detail, "USB read failed: simulated error") != NULL);
+    mock.read_result = 0;
+    ASSERT_EQ(transport_read(&ctrl, buf), ALLTRAX_ERR_TIMEOUT);
+    ASSERT_TRUE(strstr(ctrl.error_detail, "timed out after 1000ms") != NULL);
+    mock.read_result = 64;
+    ASSERT_EQ(transport_read(&ctrl, buf), ALLTRAX_OK);
+    ASSERT_EQ(buf[0], 0x04);
+    ASSERT_EQ(buf[1], 15);
+    ASSERT_MEM_EQ(buf + 8, "XCT48400-DCS", 12);
+    ASSERT_EQ(mock.reads, 3);
+    return 0;
+}
+
+static int test_reset_requires_a_complete_write(void)
+{
+    mock_reset();
+    add_device("xct", 0x23D4, 2, "XCT48400-DCS");
+    alltrax_controller* ctrl = NULL;
+    ASSERT_EQ(alltrax_open(&ctrl, NULL, true), ALLTRAX_OK);
+    const int results[] = { 0, 1, 63, 65, -1, 64 };
+    unsigned reads = mock.reads;
+    for (size_t i = 0; i < sizeof(results) / sizeof(results[0]); i++) {
+        mock.write_result = results[i];
+        unsigned writes = mock.writes;
+        ASSERT_EQ(alltrax_reset_device(ctrl), results[i] == 64 ? ALLTRAX_OK : ALLTRAX_ERR_USB);
+        ASSERT_EQ(mock.writes, writes + 1);
+        ASSERT_EQ(mock.reads, reads); /* Reset has no acknowledgement. */
+        if (results[i] < 0)
+            ASSERT_TRUE(strstr(ctrl->error_detail, "USB write failed: simulated error") != NULL);
+        else if (results[i] != 64)
+            ASSERT_TRUE(strstr(ctrl->error_detail, "report 0x03") != NULL);
+    }
+    alltrax_close(ctrl);
+    return 0;
+}
+
+static int test_partial_reports_never_reach_value_decoding(void)
+{
+    const int lengths[] = { 63, 9, 8, 1 };
+    for (size_t i = 0; i < sizeof(lengths) / sizeof(lengths[0]); i++) {
+        mock_reset();
+        add_device("xct", 0x23D4, 2, "XCT48400-DCS");
+        alltrax_controller* ctrl = NULL;
+        ASSERT_EQ(alltrax_open(&ctrl, NULL, false), ALLTRAX_OK);
+        mock.read_result = lengths[i];
+        const alltrax_var_def* var = alltrax_find_var("HPD");
+        alltrax_var_value out = { .display = 4321 }, original;
+        memcpy(&original, &out, sizeof(out));
+        unsigned reads = mock.reads, writes = mock.writes;
+        ASSERT_EQ(alltrax_read_vars(ctrl, &var, 1, &out), ALLTRAX_ERR_PROTOCOL);
+        ASSERT_MEM_EQ(&out, &original, sizeof(out));
+        ASSERT_EQ(mock.reads, reads + 1);
+        ASSERT_EQ(mock.writes, writes + 1);
+        ASSERT_TRUE(strstr(ctrl->error_detail, "read length mismatch") != NULL);
+        alltrax_close(ctrl);
+    }
+    return 0;
+}
+
+static int test_incomplete_identification_transfers_close_device(void)
+{
+    const int results[] = { 0, 1, 23, 63, 65, -1 };
+    for (int writing = 0; writing < 2; writing++) {
+        for (size_t i = 0; i < sizeof(results) / sizeof(results[0]); i++) {
+            mock_reset();
+            add_device("xct", 0x23D4, 2, "XCT48400-DCS");
+            if (writing) mock.write_result = results[i];
+            else mock.read_result = results[i];
+            alltrax_controller* ctrl = NULL;
+            alltrax_error expected = writing || results[i] < 0 ? ALLTRAX_ERR_USB :
+                                     results[i] == 0 ? ALLTRAX_ERR_TIMEOUT : ALLTRAX_ERR_PROTOCOL;
+            ASSERT_EQ(alltrax_open(&ctrl, "xct", true), expected);
+            ASSERT_NULL(ctrl);
+            ASSERT_EQ(mock.closes, 1);
+            ASSERT_EQ(mock.frees, 1);
+            ASSERT_EQ(mock.writes, 1);
+            ASSERT_EQ(mock.reads, writing ? 0 : 1);
+        }
+    }
+    return 0;
+}
+
+static int test_short_ram_write_does_not_wait_for_an_echo(void)
+{
+    mock_reset();
+    add_device("xct", 0x23D4, 2, "XCT48400-DCS");
+    alltrax_controller* ctrl = NULL;
+    ASSERT_EQ(alltrax_open(&ctrl, NULL, true), ALLTRAX_OK);
+    mock.write_result = 1;
+    const alltrax_var_def* fan = alltrax_find_var("Fan_On");
+    double value = 1;
+    const alltrax_write_opts opts = { .skip_cal = true };
+    unsigned reads = mock.reads, writes = mock.writes;
+    ASSERT_EQ(alltrax_write_vars(ctrl, &fan, &value, 1, &opts), ALLTRAX_ERR_USB);
+    ASSERT_EQ(mock.writes, writes + 1);
+    ASSERT_EQ(mock.reads, reads);
+    ASSERT_TRUE(strstr(ctrl->error_detail, "report 0x02") != NULL);
+    alltrax_close(ctrl);
+    return 0;
+}
+
 int main(void)
 {
     printf("transport (simulated hidapi):\n");
@@ -420,6 +599,13 @@ int main(void)
     RUN_TEST(test_xct_ram_write_reset_and_read_only_protection);
     RUN_TEST(test_unknown_firmware_does_not_block_identity_or_reads);
     RUN_TEST(test_transport_blocks_mutations_without_verified_identity);
+    RUN_TEST(test_transport_rejects_incomplete_writes);
+    RUN_TEST(test_transport_rejects_incomplete_reads);
+    RUN_TEST(test_read_errors_timeouts_and_full_reports_remain_distinct);
+    RUN_TEST(test_reset_requires_a_complete_write);
+    RUN_TEST(test_partial_reports_never_reach_value_decoding);
+    RUN_TEST(test_incomplete_identification_transfers_close_device);
+    RUN_TEST(test_short_ram_write_does_not_wait_for_an_echo);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }
