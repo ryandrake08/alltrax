@@ -292,12 +292,80 @@ static int test_preset_data_xct_torque(void)
 /* encode_curve_array                                                  */
 /* ------------------------------------------------------------------ */
 
+static int test_all_presets_pass_shared_validation(void)
+{
+    for (size_t i = 0; i < alltrax_curve_preset_count(); i++) {
+        const alltrax_curve_preset* preset = alltrax_curve_preset_by_index(i);
+        const alltrax_curve_def* def = alltrax_find_curve(preset->curve_type);
+        alltrax_curve_data data = { .def = def };
+        memcpy(data.x, preset->x, sizeof(data.x));
+        memcpy(data.y, preset->y, sizeof(data.y));
+        ASSERT_EQ(alltrax_validate_curve(def, &data), ALLTRAX_OK);
+    }
+    return 0;
+}
+
+static int test_curve_validation_bounds_and_scales(void)
+{
+    for (size_t c = 0; c < alltrax_curve_count(); c++) {
+        alltrax_curve_def def = *alltrax_curve_by_index(c);
+        alltrax_curve_data data = { .def = &def };
+        data.x[0] = def.x_raw_max * def.x_scale;
+        data.y[0] = def.y_raw_max * def.y_scale;
+        data.x[1] = data.x[0]; /* Repeated points and trailing zeroes are valid. */
+        ASSERT_EQ(alltrax_validate_curve(&def, &data), ALLTRAX_OK);
+        data.x[15] = (def.x_raw_max + 1) * def.x_scale;
+        ASSERT_EQ(alltrax_validate_curve(&def, &data), ALLTRAX_ERR_INVALID_ARG);
+        data.x[15] = 0;
+        data.y[15] = (def.y_raw_max + 1) * def.y_scale;
+        ASSERT_EQ(alltrax_validate_curve(&def, &data), ALLTRAX_ERR_INVALID_ARG);
+        data.y[15] = 0;
+        const double bad[] = { 0, -1, NAN, INFINITY };
+        for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+            alltrax_curve_def invalid = def;
+            invalid.x_scale = bad[i];
+            ASSERT_EQ(alltrax_validate_curve(&invalid, &data), ALLTRAX_ERR_INVALID_ARG);
+            invalid = def;
+            invalid.y_scale = bad[i];
+            ASSERT_EQ(alltrax_validate_curve(&invalid, &data), ALLTRAX_ERR_INVALID_ARG);
+        }
+    }
+    return 0;
+}
+
+static int test_curve_encoder_rejects_without_changing_buffer(void)
+{
+    const double bad[] = { NAN, INFINITY, -INFINITY, -1, 4096, 32768, 1e100 };
+    for (size_t v = 0; v < sizeof(bad) / sizeof(bad[0]); v++) {
+        for (int p = 0; p < ALLTRAX_CURVE_POINTS; p++) {
+            double values[ALLTRAX_CURVE_POINTS] = {0};
+            values[p] = bad[v];
+            uint8_t buf[32], original[32];
+            memset(buf, 0xA5, sizeof(buf));
+            memcpy(original, buf, sizeof(original));
+            ASSERT_EQ(encode_curve_array(values, 1, 4095, buf), ALLTRAX_ERR_INVALID_ARG);
+            ASSERT_MEM_EQ(buf, original, sizeof(buf));
+        }
+    }
+    double values[ALLTRAX_CURVE_POINTS] = { -0.49, 4095.49 };
+    uint8_t buf[32];
+    ASSERT_EQ(encode_curve_array(values, 1, 4095, buf), ALLTRAX_OK);
+    ASSERT_EQ(get_le16(buf), 0);
+    ASSERT_EQ(get_le16(buf + 2), 4095);
+    values[0] = -0.5;
+    ASSERT_EQ(encode_curve_array(values, 1, 4095, buf), ALLTRAX_ERR_INVALID_ARG);
+    values[0] = 0;
+    values[1] = 4095.5;
+    ASSERT_EQ(encode_curve_array(values, 1, 4095, buf), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
 static int test_encode_curve_identity_scale(void)
 {
     /* scale=1.0: raw = round(value / 1.0) */
-    double values[ALLTRAX_CURVE_POINTS] = {0, 1, 100, -1, 0,0,0,0, 0,0,0,0, 0,0,0,0};
+    double values[ALLTRAX_CURVE_POINTS] = {0, 1, 100, 4095, 0,0,0,0, 0,0,0,0, 0,0,0,0};
     uint8_t buf[ALLTRAX_CURVE_POINTS * 2];
-    encode_curve_array(values, 1.0, buf);
+    ASSERT_EQ(encode_curve_array(values, 1.0, 4095, buf), ALLTRAX_OK);
 
     /* 0 → 0x0000 */
     ASSERT_EQ(buf[0], 0x00);
@@ -308,9 +376,9 @@ static int test_encode_curve_identity_scale(void)
     /* 100 → 0x0064 */
     ASSERT_EQ(buf[4], 0x64);
     ASSERT_EQ(buf[5], 0x00);
-    /* -1 → 0xFFFF (int16 LE) */
+    /* 4095 → 0x0FFF */
     ASSERT_EQ(buf[6], 0xFF);
-    ASSERT_EQ(buf[7], 0xFF);
+    ASSERT_EQ(buf[7], 0x0F);
     return 0;
 }
 
@@ -326,7 +394,7 @@ static int test_encode_curve_pct_scale(void)
     values[2] = 100.0;
 
     uint8_t buf[ALLTRAX_CURVE_POINTS * 2];
-    encode_curve_array(values, scale, buf);
+    ASSERT_EQ(encode_curve_array(values, scale, 4095, buf), ALLTRAX_OK);
 
     /* 0 → raw 0 → 0x0000 */
     ASSERT_EQ(buf[0], 0x00);
@@ -351,8 +419,8 @@ static int test_encode_curve_field_scale(void)
 
     uint8_t x_buf[ALLTRAX_CURVE_POINTS * 2];
     uint8_t y_buf[ALLTRAX_CURVE_POINTS * 2];
-    encode_curve_array(x_vals, 0.1, x_buf);
-    encode_curve_array(y_vals, 0.01, y_buf);
+    ASSERT_EQ(encode_curve_array(x_vals, 0.1, 7500, x_buf), ALLTRAX_OK);
+    ASSERT_EQ(encode_curve_array(y_vals, 0.01, 5000, y_buf), ALLTRAX_OK);
 
     /* 7500 = 0x1D4C LE */
     ASSERT_EQ(x_buf[0], 0x4C);
@@ -389,6 +457,9 @@ void run_curves_tests(void)
 
     /* encode_curve_array */
     RUN_TEST(test_encode_curve_identity_scale);
+    RUN_TEST(test_all_presets_pass_shared_validation);
+    RUN_TEST(test_curve_validation_bounds_and_scales);
+    RUN_TEST(test_curve_encoder_rejects_without_changing_buffer);
     RUN_TEST(test_encode_curve_pct_scale);
     RUN_TEST(test_encode_curve_field_scale);
 }

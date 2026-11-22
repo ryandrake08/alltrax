@@ -1015,15 +1015,41 @@ alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
                             def->y_scale, out->y);
 }
 
-/* Encode display values back to raw int16 LE bytes */
-void encode_curve_array(const double* values, double scale,
+/* Check and encode one axis. Failure leaves the destination unchanged. */
+alltrax_error encode_curve_array(const double* values, double scale, int16_t raw_max,
     uint8_t* buf)
 {
+    if (!values || !buf || !isfinite(scale) || scale <= 0 || raw_max < 0)
+        return ALLTRAX_ERR_INVALID_ARG;
+
+    const alltrax_var_def axis = {
+        .type = ALLTRAX_TYPE_INT16, .scale = scale,
+        .raw_min = 0, .raw_max = raw_max,
+    };
+    uint8_t encoded[ALLTRAX_CURVE_POINTS * 2];
     for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++) {
-        int16_t raw = (int16_t)round(values[i] / scale);
-        buf[i * 2]     = (uint8_t)(raw & 0xFF);
-        buf[i * 2 + 1] = (uint8_t)((raw >> 8) & 0xFF);
+        if (alltrax_encode_var(&axis, values[i], encoded + i * 2) != 2)
+            return ALLTRAX_ERR_INVALID_ARG;
     }
+    memcpy(buf, encoded, sizeof(encoded));
+    return ALLTRAX_OK;
+}
+
+static alltrax_error encode_curve_data(const alltrax_curve_def* def,
+    const alltrax_curve_data* data, uint8_t* x, uint8_t* y)
+{
+    if (!def || !data)
+        return ALLTRAX_ERR_INVALID_ARG;
+    alltrax_error rc = encode_curve_array(data->x, def->x_scale, def->x_raw_max, x);
+    if (rc) return rc;
+    return encode_curve_array(data->y, def->y_scale, def->y_raw_max, y);
+}
+
+alltrax_error alltrax_validate_curve(const alltrax_curve_def* def,
+    const alltrax_curve_data* data)
+{
+    uint8_t x[ALLTRAX_CURVE_POINTS * 2], y[ALLTRAX_CURVE_POINTS * 2];
+    return encode_curve_data(def, data, x, y);
 }
 
 alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
@@ -1048,8 +1074,23 @@ alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
         return ALLTRAX_ERR_ADDRESS;
     }
 
+    /* Validate and encode every point before device I/O or entering CAL. */
+    flash_patch_t patches[2];
+    patches[0].offset = def->x_address - VARSET_ADDR;
+    patches[0].len = ALLTRAX_CURVE_POINTS * 2;
+    patches[1].offset = def->y_address - VARSET_ADDR;
+    patches[1].len = ALLTRAX_CURVE_POINTS * 2;
+    alltrax_error rc = encode_curve_data(def, data, patches[0].data, patches[1].data);
+    if (rc) {
+        set_error_detail(ctrl,
+            "Invalid %s curve: points must be finite and encode within raw "
+            "X [0,%d], Y [0,%d] with finite positive scales",
+            def->name, def->x_raw_max, def->y_raw_max);
+        return rc;
+    }
+
     /* FLASH pre-checks */
-    alltrax_error rc = flash_prechecks(ctrl, opts);
+    rc = flash_prechecks(ctrl, opts);
     if (rc) return rc;
 
     /* Enter CAL */
@@ -1058,17 +1099,6 @@ alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
         rc = enter_cal(ctrl, &in_cal);
         if (rc) return rc;
     }
-
-    /* Build patches for X and Y arrays */
-    flash_patch_t patches[2];
-
-    patches[0].offset = def->x_address - VARSET_ADDR;
-    patches[0].len = ALLTRAX_CURVE_POINTS * 2;
-    encode_curve_array(data->x, def->x_scale, patches[0].data);
-
-    patches[1].offset = def->y_address - VARSET_ADDR;
-    patches[1].len = ALLTRAX_CURVE_POINTS * 2;
-    encode_curve_array(data->y, def->y_scale, patches[1].data);
 
     rc = write_flash_page(ctrl, patches, 2, opts->skip_verify);
 

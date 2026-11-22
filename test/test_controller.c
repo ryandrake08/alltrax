@@ -13,6 +13,7 @@ int test_fail_count;
 static struct {
     alltrax_controller ctrl;
     uint8_t page[VARSET_SIZE];
+    uint8_t factory[FLASH_PAGE_SIZE];
     uint8_t request[PACKET_SIZE];
     uint8_t mode;
     unsigned erases, settings_writes, goodset_clears;
@@ -61,6 +62,8 @@ static uint8_t mock_read_byte(uint32_t addr)
 
     if (addr >= VARSET_ADDR && addr < VARSET_ADDR + VARSET_SIZE)
         return mock.page[addr - VARSET_ADDR];
+    if (addr >= FACTSET_ADDR && addr < FACTSET_ADDR + FLASH_PAGE_SIZE)
+        return mock.factory[addr - FACTSET_ADDR];
     if (addr >= ADDR_CONTROLLER_INFO && addr < ADDR_CONTROLLER_INFO + sizeof(model))
         return (uint8_t)model[addr - ADDR_CONTROLLER_INFO];
     if (addr >= ADDR_BOOT_REV && addr < ADDR_BOOT_REV + sizeof(boot_rev))
@@ -364,6 +367,94 @@ static int test_scaled_flash_batch_preserves_values_and_neighbors(void)
     return 0;
 }
 
+static int test_invalid_curve_points_reject_before_io(void)
+{
+    const double invalid[] = { NAN, INFINITY, -INFINITY, DBL_MAX, -DBL_MAX, -1, 200 };
+    const alltrax_write_opts unchecked = {
+        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_fw_check = true, .skip_voltage_link = true,
+    };
+    const alltrax_write_opts* options[] = { NULL, &unchecked };
+    for (size_t c = 0; c < alltrax_curve_count(); c++) {
+        const alltrax_curve_def* def = alltrax_curve_by_index(c);
+        for (int axis = 0; axis < 2; axis++) {
+            double scale = axis ? def->y_scale : def->x_scale;
+            int max = axis ? def->y_raw_max : def->x_raw_max;
+            for (size_t v = 0; v < sizeof(invalid) / sizeof(invalid[0]); v++) {
+                for (size_t o = 0; o < sizeof(options) / sizeof(options[0]); o++) {
+                    for (int p = 0; p < ALLTRAX_CURVE_POINTS; p++) {
+                        mock_reset();
+                        uint8_t original[VARSET_SIZE];
+                        memcpy(original, mock.page, sizeof(original));
+                        alltrax_curve_data data = { .def = def };
+                        /* The last case is beyond each axis's actual maximum. */
+                        double value = v == 6 ? (max + 1) * scale : invalid[v];
+                        (axis ? data.y : data.x)[p] = value;
+                        ASSERT_EQ(alltrax_write_curve(&mock.ctrl, def, &data, options[o]),
+                                  ALLTRAX_ERR_INVALID_ARG);
+                        ASSERT_EQ(mock.requests, 0);
+                        ASSERT_TRUE(strstr(mock.ctrl.error_detail, def->name) != NULL);
+                        ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+                        ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+                    }
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+static int test_curve_write_preserves_padding_and_neighbors(void)
+{
+    mock_reset();
+    const alltrax_curve_def* def = alltrax_find_curve("linearization");
+    const alltrax_curve_preset* preset = alltrax_find_curve_preset("linearization", "linear");
+    alltrax_curve_data data = { .def = def };
+    memcpy(data.x, preset->x, sizeof(data.x));
+    memcpy(data.y, preset->y, sizeof(data.y));
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, mock.page, sizeof(expected));
+    /* Literal C encoding of the padded linear preset, using existing round(). */
+    const uint8_t x[32] = { 0,0, 41,0, 0xD6,0x0F, 0xFF,0x0F };
+    const uint8_t y[32] = { 0,0, 0,0, 0xFF,0x0F, 0xFF,0x0F };
+    memcpy(expected + 0x100, x, sizeof(x));
+    memcpy(expected + 0x120, y, sizeof(y));
+    ASSERT_EQ(alltrax_write_curve(&mock.ctrl, def, &data, NULL), ALLTRAX_OK);
+    ASSERT_MEM_EQ(mock.page, expected, sizeof(expected));
+    ASSERT_EQ(mock.erases, 1);
+    ASSERT_EQ(mock.goodset_clears, 1);
+    ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+    return 0;
+}
+
+static int test_factory_curves_round_trip_within_declared_bounds(void)
+{
+    for (size_t c = 0; c < alltrax_curve_count(); c++) {
+        mock_reset();
+        const alltrax_curve_def* def = alltrax_curve_by_index(c);
+        uint8_t raw[2][32] = {{0}};
+        raw[0][2] = (uint8_t)def->x_raw_max;
+        raw[0][3] = (uint8_t)(def->x_raw_max >> 8);
+        raw[1][2] = (uint8_t)def->y_raw_max;
+        raw[1][3] = (uint8_t)(def->y_raw_max >> 8);
+        memcpy(mock.factory + def->factory_x_address - FACTSET_ADDR, raw[0], 32);
+        memcpy(mock.factory + def->factory_y_address - FACTSET_ADDR, raw[1], 32);
+        uint8_t expected[VARSET_SIZE];
+        memcpy(expected, mock.page, sizeof(expected));
+        memcpy(expected + def->x_address - VARSET_ADDR, raw[0], 32);
+        memcpy(expected + def->y_address - VARSET_ADDR, raw[1], 32);
+        alltrax_curve_data data;
+        ASSERT_EQ(alltrax_read_curve_factory(&mock.ctrl, def, &data), ALLTRAX_OK);
+        ASSERT_EQ(alltrax_validate_curve(def, &data), ALLTRAX_OK);
+        ASSERT_EQ(alltrax_write_curve(&mock.ctrl, def, &data, NULL), ALLTRAX_OK);
+        ASSERT_MEM_EQ(mock.page, expected, sizeof(expected));
+        ASSERT_EQ(mock.erases, 1);
+        ASSERT_EQ(mock.goodset_clears, 1);
+        ASSERT_EQ(mock.mode, RUN_MODE_RUN);
+    }
+    return 0;
+}
+
 static int test_info_exact_read_lengths(void)
 {
     mock_reset();
@@ -511,6 +602,9 @@ int main(void)
     RUN_TEST(test_read_only_variables_reject_entire_batch_before_io);
     RUN_TEST(test_invalid_numeric_batches_reject_before_io);
     RUN_TEST(test_scaled_flash_batch_preserves_values_and_neighbors);
+    RUN_TEST(test_invalid_curve_points_reject_before_io);
+    RUN_TEST(test_curve_write_preserves_padding_and_neighbors);
+    RUN_TEST(test_factory_curves_round_trip_within_declared_bounds);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }

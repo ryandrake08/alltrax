@@ -212,6 +212,13 @@ alltrax curve reset all --reset
 Blank lines are ignored. Up to 16 points; if fewer are provided, the remaining
 points are set to 0,0.
 
+Curve points must be finite and round into the supported raw bounds: 0–4095
+for both throttle axes (0–100%), and 0–7500 X / 0–5000 Y for field curves
+(0–750A / 0–50A). Zero padding and repeated points are allowed. Malformed
+values and more than 16 points are rejected. Config import validates every
+curve before applying any settings; malformed or incomplete curve arrays
+cause the import to fail.
+
 ```csv
 # Linearization curve
 # X (%), Y (%)
@@ -672,6 +679,8 @@ for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++)
 **Writing curves:**
 
 ```c
+alltrax_error alltrax_validate_curve(const alltrax_curve_def* def,
+    const alltrax_curve_data* data);
 alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
     const alltrax_curve_def* def, const alltrax_curve_data* data,
     const alltrax_write_opts* opts);
@@ -681,6 +690,14 @@ Writes both X and Y arrays in a single FLASH page cycle (read page, patch both
 arrays, erase, write, verify). Uses the same `alltrax_write_opts` as
 `alltrax_write_vars()` — pass `NULL` for safe defaults. Requires
 `allow_writes=true`.
+
+`alltrax_validate_curve()` checks all 16 points without device I/O. Both scales
+must be finite and positive, and each finite point must round into
+`[0, x_raw_max]` or `[0, y_raw_max]` using the existing rounding policy.
+Zero padding and repeated points are accepted; no ordering constraint is
+imposed. The writer enforces this same validation before any device request,
+regardless of write options, and returns `ALLTRAX_ERR_INVALID_ARG` for invalid
+data. CLI and config inputs use the same library validation.
 
 Example — copy factory curve to user:
 

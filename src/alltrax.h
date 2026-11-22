@@ -314,6 +314,13 @@ alltrax_error alltrax_read_curve(alltrax_controller* ctrl,
     const alltrax_curve_def* def, alltrax_curve_data* out);
 alltrax_error alltrax_read_curve_factory(alltrax_controller* ctrl,
     const alltrax_curve_def* def, alltrax_curve_data* out);
+/* Validate all 16 points without device I/O. Scales must be finite and positive;
+ * points must be finite and round to raw [0, axis_raw_max]. Zero padding and
+ * repeated points are permitted; no ordering constraint is imposed.
+ * Returns ALLTRAX_ERR_INVALID_ARG on invalid data. */
+alltrax_error alltrax_validate_curve(const alltrax_curve_def* def,
+    const alltrax_curve_data* data);
+/* Enforces the same curve validation before device I/O, regardless of opts. */
 alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
     const alltrax_curve_def* def, const alltrax_curve_data* data,
     const alltrax_write_opts* opts);

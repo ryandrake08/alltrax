@@ -22,7 +22,8 @@ alltrax_error validate_voltage_link(
 char* format_rev(uint32_t rev, char* buf, size_t buflen);
 bool firmware_in_bounds(alltrax_controller_type type,
     uint32_t boot_rev, uint32_t program_rev);
-void encode_curve_array(const double* values, double scale, uint8_t* buf);
+alltrax_error encode_curve_array(const double* values, double scale,
+    int16_t raw_max, uint8_t* buf);
 
 /* variables.c */
 void type_range(alltrax_var_type type, int64_t* lo, int64_t* hi);

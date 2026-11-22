@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
 #include "cli.h"
 
 /* ------------------------------------------------------------------ */
@@ -94,16 +95,22 @@ static int parse_csv_file(const char* filepath, alltrax_curve_data* curve)
     char line[256];
     int count = 0;
 
-    while (fgets(line, sizeof(line), f) && count < ALLTRAX_CURVE_POINTS) {
+    while (fgets(line, sizeof(line), f)) {
         /* Skip comments and blank lines */
         char* p = line;
         while (*p == ' ' || *p == '\t') p++;
         if (*p == '#' || *p == '\n' || *p == '\r' || *p == '\0')
             continue;
+        if (count == ALLTRAX_CURVE_POINTS) {
+            fprintf(stderr, "Error: too many curve points (maximum %d)\n", ALLTRAX_CURVE_POINTS);
+            fclose(f);
+            return 1;
+        }
 
         char* endptr;
+        errno = 0;
         double x = strtod(p, &endptr);
-        if (endptr == p) {
+        if (endptr == p || errno == ERANGE) {
             fprintf(stderr, "Error: bad X value on line: %s", line);
             fclose(f);
             return 1;
@@ -113,9 +120,16 @@ static int parse_csv_file(const char* filepath, alltrax_curve_data* curve)
         p = endptr;
         while (*p == ' ' || *p == '\t' || *p == ',') p++;
 
+        errno = 0;
         double y = strtod(p, &endptr);
-        if (endptr == p) {
+        if (endptr == p || errno == ERANGE) {
             fprintf(stderr, "Error: bad Y value on line: %s", line);
+            fclose(f);
+            return 1;
+        }
+        while (*endptr == ' ' || *endptr == '\t' || *endptr == '\r' || *endptr == '\n') endptr++;
+        if (*endptr != '\0') {
+            fprintf(stderr, "Error: trailing data on line: %s", line);
             fclose(f);
             return 1;
         }
@@ -147,10 +161,14 @@ static int parse_xy_args(int argc, char** argv, int start,
 {
     int count = 0;
 
-    for (int i = start; i < argc && count < ALLTRAX_CURVE_POINTS; i++) {
+    for (int i = start; i < argc; i++) {
         /* Skip flags */
-        if (argv[i][0] == '-')
+        if (strncmp(argv[i], "--", 2) == 0)
             continue;
+        if (count == ALLTRAX_CURVE_POINTS) {
+            fprintf(stderr, "Error: too many curve points (maximum %d)\n", ALLTRAX_CURVE_POINTS);
+            return -1;
+        }
 
         char* comma = strchr(argv[i], ',');
         if (!comma) {
@@ -159,14 +177,16 @@ static int parse_xy_args(int argc, char** argv, int start,
         }
 
         char* endptr;
+        errno = 0;
         double x = strtod(argv[i], &endptr);
-        if (endptr != comma) {
+        if (endptr == argv[i] || endptr != comma || errno == ERANGE) {
             fprintf(stderr, "Error: bad X value in: %s\n", argv[i]);
             return -1;
         }
 
+        errno = 0;
         double y = strtod(comma + 1, &endptr);
-        if (*endptr != '\0') {
+        if (endptr == comma + 1 || *endptr != '\0' || errno == ERANGE) {
             fprintf(stderr, "Error: bad Y value in: %s\n", argv[i]);
             return -1;
         }
@@ -375,8 +395,15 @@ static int do_set(int argc, char** argv)
         return 1;
     }
 
+    alltrax_error err = alltrax_validate_curve(def, &curve);
+    if (err) {
+        fprintf(stderr, "Error: invalid %s curve; points must be finite and within supported bounds\n",
+                def->name);
+        return 1;
+    }
+
     alltrax_controller* ctrl = NULL;
-    alltrax_error err = cli_open(&ctrl, true);
+    err = cli_open(&ctrl, true);
     if (err) return 1;
 
     alltrax_write_opts opts = {

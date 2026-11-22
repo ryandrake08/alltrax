@@ -11,6 +11,7 @@
 #include <string.h>
 #include <math.h>
 #include <inttypes.h>
+#include <errno.h>
 #include <openssl/evp.h>
 #include <libxml/parser.h>
 #include <libxml/tree.h>
@@ -291,8 +292,9 @@ static bool parse_curve_csv(const char* csv, double scale, double* out)
     const char* p = csv;
     for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++) {
         char* endptr;
+        errno = 0;
         long val = strtol(p, &endptr, 10);
-        if (endptr == p) return false;
+        if (endptr == p || errno == ERANGE) return false;
         if (val < INT16_MIN || val > INT16_MAX) return false;
         out[i] = (double)(int16_t)val * scale;
         p = endptr;
@@ -361,9 +363,9 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
                                         curves_out[c].x)) {
                         curves_out[c].has_x = true;
                     } else {
-                        fprintf(stderr,
-                            "  Skipping %s: bad curve data\n", name);
-                        (*out_skipped)++;
+                        fprintf(stderr, "Error: %s: bad curve data\n", name);
+                        xmlFree(xval);
+                        goto invalid_curve;
                     }
                     is_curve = true;
                     break;
@@ -373,9 +375,9 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
                                         curves_out[c].y)) {
                         curves_out[c].has_y = true;
                     } else {
-                        fprintf(stderr,
-                            "  Skipping %s: bad curve data\n", name);
-                        (*out_skipped)++;
+                        fprintf(stderr, "Error: %s: bad curve data\n", name);
+                        xmlFree(xval);
+                        goto invalid_curve;
                     }
                     is_curve = true;
                     break;
@@ -428,15 +430,33 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
         }
     }
 
-    /* Count complete curves (both X and Y present) */
+    /* Validate every imported curve before opening or applying any settings. */
     for (size_t c = 0; c < NUM_CURVE_XML; c++) {
-        if (curves_out[c].has_x && curves_out[c].has_y)
-            (*curve_count)++;
+        if (!curves_out[c].has_x && !curves_out[c].has_y)
+            continue;
+        if (!curves_out[c].has_x || !curves_out[c].has_y) {
+            fprintf(stderr, "Error: incomplete %s curve (X and Y required)\n",
+                    curves_out[c].def->name);
+            goto invalid_curve;
+        }
+        alltrax_curve_data data = { .def = curves_out[c].def };
+        memcpy(data.x, curves_out[c].x, sizeof(data.x));
+        memcpy(data.y, curves_out[c].y, sizeof(data.y));
+        if (alltrax_validate_curve(data.def, &data)) {
+            fprintf(stderr, "Error: invalid %s curve in config\n", data.def->name);
+            goto invalid_curve;
+        }
+        (*curve_count)++;
     }
 
     xmlFreeDoc(doc);
     *out_count = count;
     return entries;
+
+invalid_curve:
+    free(entries);
+    xmlFreeDoc(doc);
+    return NULL;
 }
 
 /* ------------------------------------------------------------------ */
