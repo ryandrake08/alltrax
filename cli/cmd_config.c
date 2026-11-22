@@ -62,6 +62,7 @@ static unsigned char* des3_encrypt(const char* plain, size_t plain_len,
     *out_len = (size_t)total;
     return out;
 
+/* OpenSSL failures release both the context and the partial ciphertext. */
 fail:
     EVP_CIPHER_CTX_free(ctx);
     free(out);
@@ -94,6 +95,7 @@ static char* des3_decrypt(const unsigned char* cipher, size_t cipher_len,
     *out_len = (size_t)total;
     return out;
 
+/* OpenSSL failures release both the context and the partial plaintext. */
 fail:
     EVP_CIPHER_CTX_free(ctx);
     free(out);
@@ -316,6 +318,7 @@ static char* build_xml(alltrax_controller* ctrl, size_t* total_vars,
     *total_vars = count;
     *total_curves = curves;
 
+/* All exits release the XML objects; result stays NULL on failure. */
 cleanup:
     if (buf) xmlBufferFree(buf);
     if (doc) xmlFreeDoc(doc);
@@ -525,6 +528,7 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
     *out_count = count;
     return entries;
 
+/* Reject the whole import and release its entries and XML document. */
 invalid_config:
     free(entries);
     xmlFreeDoc(doc);
@@ -777,6 +781,7 @@ static int do_load(int argc, char** argv)
         printf("Device reset sent (controller will reboot)\n");
     }
 
+/* Write/reset failures share cleanup with success; items reference entries. */
 done:
     free(items);
     free(entries);

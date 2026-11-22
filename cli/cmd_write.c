@@ -162,6 +162,7 @@ int cmd_write(int argc, char** argv)
         printf("Device reset sent (controller will reboot)\n");
     }
 
+/* Success and write/reset failures release the batch and close the device. */
 done:
     free(assigns);
     alltrax_close(ctrl);

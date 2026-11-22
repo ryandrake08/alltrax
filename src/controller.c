@@ -1216,6 +1216,8 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
 
     rc = ALLTRAX_OK;
 
+/* Success and write failures restore RUN if CAL was attempted;
+ * cleanup preserves any write error. */
 restore_run:
     return finish_cal_write(ctrl, cal_attempted, rc);
 }

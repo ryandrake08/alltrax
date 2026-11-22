@@ -568,6 +568,7 @@ static int do_curve_reset(int argc, char** argv)
         printf("Device reset sent (controller will reboot)\n");
     }
 
+/* Read, write, and reset failures share cleanup for both buffers and the device. */
 done:
     free(items);
     free(factory);
