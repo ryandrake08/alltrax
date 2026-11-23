@@ -335,11 +335,14 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
  * and restoration fail, the original error is returned and error detail
  * contains both failures; a restoration-only failure returns its error. */
 typedef struct {
+    /* Debug and development bypasses */
     bool skip_cal;           /* Skip CAL/RUN bracket and its restoration */
     bool skip_verify;        /* Skip read-back verification (FLASH only) */
     bool skip_goodset;       /* Skip GoodSet pre-check (FLASH only) */
+    /* User options */
     bool skip_fw_check;      /* Allow unvalidated firmware within V0.001-V5.999 */
-    bool skip_voltage_link;  /* Skip voltage link validation */
+    bool skip_voltage_link;  /* Skip voltage link validation, including the
+                              * rated range for BMS_Missing_HiBat_Vlim */
 } alltrax_write_opts;
 
 /* Write numeric/bool values in display units: alltrax_write_assignments()
@@ -426,11 +429,17 @@ typedef struct {
 } alltrax_assignment;
 
 /* Write a batch of variables, strings, and user curves. Every item is
- * validated and encoded before device I/O; any invalid item rejects the whole
- * batch. All writes share one CAL/RUN bracket, and all FLASH items share one
- * settings page cycle (one erase). Limits: 16 RAM variables and 96 FLASH
- * patches (each curve uses 2). Permissions, firmware policy, voltage link, and
- * throttle-type checks apply as for alltrax_write_vars(). */
+ * validated and encoded before device I/O; any invalid item, or two items
+ * writing the same bytes, rejects the whole batch. All writes share one
+ * CAL/RUN bracket, and all FLASH items share one settings page cycle (one
+ * erase). Limits: 16 RAM variables and 96 FLASH patches (each curve uses 2).
+ * Permissions and firmware policy apply as for alltrax_write_vars(). Batches
+ * with a voltage setting or a nonzero Throttle_Type read the controller info
+ * before writing: AnalogInputs_Threshold, LoBat_Vlim, and HiBat_Vlim (and
+ * BMS_Missing_HiBat_Vlim unless skip_voltage_link) must lie within 16.0-62.0V
+ * on 48V controllers or 20.0-90.0V on 72V controllers (other ratings cannot
+ * write them), and the throttle type must be allowed by the version-gated
+ * throttles_allowed. The voltage link check then applies. */
 alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
     const alltrax_assignment* items, size_t count,
     const alltrax_write_opts* opts);

@@ -112,6 +112,24 @@ alltrax_error transport_write(alltrax_controller* ctrl,
     return ALLTRAX_OK;
 }
 
+/* A 48V XCT on write-validated firmware with every throttle type allowed. */
+static uint8_t identity_byte(uint32_t a)
+{
+    static const char model[] = "XCT48400-DCS";
+    const struct { uint32_t addr; uint32_t value; } words[] = {
+        { ADDR_CONTROLLER_INFO + 0x24, 5002 }, { ADDR_CONTROLLER_INFO + 0x28, 5005 },
+        { ADDR_HARDWARE_CONFIG, 48 }, { ADDR_HARDWARE_CONFIG + 16, 0x7FF },
+        { ADDR_BOOT_REV, 5002 }, { ADDR_PRGM_REV, 5005 },
+    };
+    if (a >= ADDR_CONTROLLER_INFO && a < ADDR_CONTROLLER_INFO + sizeof(model) - 1)
+        return (uint8_t)model[a - ADDR_CONTROLLER_INFO];
+    for (size_t w = 0; w < sizeof(words) / sizeof(words[0]); w++) {
+        if (a - words[w].addr < 4)
+            return (uint8_t)(words[w].value >> ((a - words[w].addr) * 8));
+    }
+    return 0;
+}
+
 alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
 {
     (void)ctrl;
@@ -136,6 +154,7 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
     uint32_t addr = request_addr();
     for (uint32_t i = 0; i < buf[1]; i++) {
         uint32_t a = addr + i;
+        buf[8 + i] = identity_byte(a);
         if (device.writable && a >= VARSET_ADDR && a - VARSET_ADDR < VARSET_SIZE)
             buf[8 + i] = device.page[a - VARSET_ADDR];
         else if (device.writable && a == ADDR_RUN_MODE)
@@ -160,9 +179,9 @@ static int test_valid_strings_reach_open(void)
         for (size_t j = 0; j < sizeof(values) / sizeof(values[0]); j++) {
             char arg[80];
             snprintf(arg, sizeof(arg), "%s=%s", names[i], values[j]);
-            char* argv[] = { "write", arg };
+            char* argv[] = { "write", arg, "--field-map" };
             open_calls = unexpected_calls = 0;
-            ASSERT_EQ(cmd_write(2, argv), 1); /* The fake open always fails. */
+            ASSERT_EQ(cmd_write(3, argv), 1); /* The fake open always fails. */
             ASSERT_EQ(open_calls, 1);
             ASSERT_EQ(unexpected_calls, 0);
         }
@@ -442,11 +461,11 @@ static int test_invalid_throttle_config_rejected_before_transport(void)
 
 static int test_options_accepted_before_and_after_positionals(void)
 {
-    const unsigned allowed = CLI_OPT_NO_CAL | CLI_OPT_NO_FW_VERSION |
+    const unsigned allowed = CLI_OPT_DEBUG_NO_CAL | CLI_OPT_ALLOW_UNVALIDATED |
                              CLI_OPT_RESET | CLI_OPT_FILE;
     char* argv[] = {
-        "set", "--reset", "linearization", "--no-cal", "-1,0",
-        "--file", "lin.csv", "-", "--no-fw-version",
+        "set", "--reset", "linearization", "--debug-no-cal", "-1,0",
+        "--file", "lin.csv", "-", "--allow-unvalidated-firmware",
     };
     cli_flags flags;
     ASSERT_EQ(cli_parse_args(9, argv, "curve set", allowed, 1, -1, &flags), 3);
@@ -454,9 +473,9 @@ static int test_options_accepted_before_and_after_positionals(void)
     ASSERT_STR_EQ(argv[2], "-1,0");
     ASSERT_STR_EQ(argv[3], "-");
     ASSERT_TRUE(flags.reset);
-    ASSERT_TRUE(flags.no_cal);
-    ASSERT_TRUE(flags.no_fw_version);
-    ASSERT_FALSE(flags.no_verify);
+    ASSERT_TRUE(flags.debug_no_cal);
+    ASSERT_TRUE(flags.allow_unvalidated_firmware);
+    ASSERT_FALSE(flags.debug_no_verify);
     ASSERT_STR_EQ(flags.file, "lin.csv");
     ASSERT_NULL(flags.preset);
     return 0;
@@ -467,7 +486,7 @@ static int test_invalid_options_and_argument_counts_rejected(void)
     const unsigned allowed = CLI_OPT_RESET | CLI_OPT_FILE;
     struct { int argc; char* argv[5]; int min, max; } bad[] = {
         { 2, { "cmd", "--bogus" }, 0, -1 },            /* unknown */
-        { 2, { "cmd", "--no-goodset" }, 0, -1 },       /* not accepted */
+        { 2, { "cmd", "--debug-no-goodset" }, 0, -1 }, /* not accepted */
         { 2, { "cmd", "--file" }, 0, -1 },             /* missing value */
         { 3, { "cmd", "--file", "--reset" }, 0, -1 },  /* option as value */
         { 5, { "cmd", "--file", "a", "--file", "b" }, 0, -1 }, /* repeated */
@@ -486,17 +505,17 @@ static int test_invalid_options_and_argument_counts_rejected(void)
     return 0;
 }
 
-static int test_global_fw_override_sets_command_flag(void)
+static int test_write_options_map_to_library_options(void)
 {
-    char* argv[] = { "reset" };
+    char* argv[] = {
+        "write", "--debug-no-cal", "--debug-no-verify", "--debug-no-goodset",
+        "--allow-unvalidated-firmware", "--no-voltage-link",
+    };
     cli_flags flags;
-    cli_no_fw_version = true;
-    int rc = cli_parse_args(1, argv, "reset", 0, 0, 0, &flags);
-    cli_no_fw_version = false;
-    ASSERT_EQ(rc, 0);
-    ASSERT_TRUE(flags.no_fw_version);
-    ASSERT_EQ(cli_parse_args(1, argv, "reset", 0, 0, 0, &flags), 0);
-    ASSERT_FALSE(flags.no_fw_version);
+    ASSERT_EQ(cli_parse_args(6, argv, "write", ~0u, 0, -1, &flags), 0);
+    alltrax_write_opts opts = cli_write_opts(&flags);
+    ASSERT_TRUE(opts.skip_cal && opts.skip_verify && opts.skip_goodset &&
+                opts.skip_fw_check && opts.skip_voltage_link);
     return 0;
 }
 
@@ -504,7 +523,6 @@ static int test_bad_command_options_rejected_before_open(void)
 {
     struct { int argc; char* argv[7]; } bad[] = {
         { 6, { "curve", "set", "linearization", "--preset", "linear", "--bogus" } },
-        { 6, { "curve", "set", "linearization", "--no-goodset", "--preset", "linear" } },
         { 6, { "curve", "set", "linearization", "--preset", "linear", "0,0" } },
         { 7, { "curve", "set", "linearization", "--file", "x.csv", "--preset", "linear" } },
         { 3, { "curve", "set", "linearization" } },
@@ -533,7 +551,7 @@ static int test_bad_command_options_rejected_before_open(void)
     ASSERT_EQ(open_calls, 0);
 #ifdef TEST_CONFIG
     char* save_extra[] = { "config", "save", "out.xml", "extra" };
-    char* load_bogus[] = { "config", "load", "in.xml", "--no-voltage-link" };
+    char* load_bogus[] = { "config", "load", "in.xml", "--plot" };
     ASSERT_EQ(cmd_config(4, save_extra), 1);
     ASSERT_EQ(cmd_config(4, load_bogus), 1);
     ASSERT_EQ(open_calls, 0);
@@ -542,7 +560,7 @@ static int test_bad_command_options_rejected_before_open(void)
 }
 
 /* Firmware V5.004 is readable but not write-validated, so the write gate
- * returns ALLTRAX_ERR_FIRMWARE unless --no-fw-version reached the write
+ * returns ALLTRAX_ERR_FIRMWARE unless --allow-unvalidated-firmware reached the write
  * options; with it, the first device transfer fails with ALLTRAX_ERR_USB. */
 static alltrax_error run_on_unvalidated_firmware(int (*cmd)(int, char**),
     int argc, char** argv)
@@ -564,8 +582,8 @@ static int test_fw_flag_reaches_write_options_in_any_position(void)
 {
     for (int after = 0; after <= 1; after++) {
         char* set[] = {
-            "curve", "set", after ? "linearization" : "--no-fw-version",
-            "--preset", "linear", after ? "--no-fw-version" : "linearization",
+            "curve", "set", after ? "linearization" : "--allow-unvalidated-firmware",
+            "--preset", "linear", after ? "--allow-unvalidated-firmware" : "linearization",
         };
         ASSERT_EQ(run_on_unvalidated_firmware(cmd_curve, 6, set), ALLTRAX_ERR_USB);
         char* set_default[] = { "curve", "set", "linearization", "--preset", "linear" };
@@ -574,11 +592,11 @@ static int test_fw_flag_reaches_write_options_in_any_position(void)
         ASSERT_EQ(transport_calls, 0);
 
         char assign[] = "HPD=1";
-        char* write[] = { "write", after ? assign : "--no-fw-version",
-                          after ? "--no-fw-version" : assign };
+        char* write[] = { "write", after ? assign : "--allow-unvalidated-firmware",
+                          after ? "--allow-unvalidated-firmware" : assign };
         ASSERT_EQ(run_on_unvalidated_firmware(cmd_write, 3, write), ALLTRAX_ERR_USB);
     }
-    char* reset[] = { "reset", "--no-fw-version" };
+    char* reset[] = { "reset", "--allow-unvalidated-firmware" };
     ASSERT_EQ(run_on_unvalidated_firmware(cmd_reset, 2, reset), ALLTRAX_ERR_USB);
     char* reset_default[] = { "reset" };
     ASSERT_EQ(run_on_unvalidated_firmware(cmd_reset, 1, reset_default),
@@ -846,7 +864,7 @@ static void writable_device_reset(void)
         }
     }
     const struct { const char* name; double volts; } limits[] = {
-        { "AnalogInputs_Threshold", 10 }, { "LoBat_Vlim", 20 },
+        { "AnalogInputs_Threshold", 18 }, { "LoBat_Vlim", 20 },
         { "HiBat_Vlim", 60 }, { "BMS_Missing_HiBat_Vlim", 50 },
     };
     for (size_t i = 0; i < sizeof(limits) / sizeof(limits[0]); i++) {
@@ -901,8 +919,8 @@ static int test_config_round_trip_restores_strings_in_one_erase(void)
         set_page_string("F_Table_Name", "CHANGED");
         set_page_string("Throttle_Type_Name", "CHANGED");
         device.erases = device.mutations = 0;
-        char* argv[] = { "config", "load", "--no-crypt", path };
-        int rc = run_writable(cmd_config, 4, argv);
+        char* argv[] = { "config", "load", "--no-crypt", path, "--field-map" };
+        int rc = run_writable(cmd_config, 5, argv);
         remove(path);
         ASSERT_EQ(rc, 0);
         ASSERT_EQ(device.erases, 1);
@@ -970,15 +988,15 @@ static int test_write_command_writes_strings_and_numbers_in_one_batch(void)
     expected[hpd->address - VARSET_ADDR] = 1;
 
     char text[] = "F_Table_Name=NEW MAP", number[] = "HPD=1";
-    char* argv[] = { "write", text, number };
-    ASSERT_EQ(run_writable(cmd_write, 3, argv), 0);
+    char* argv[] = { "write", text, number, "--field-map" };
+    ASSERT_EQ(run_writable(cmd_write, 4, argv), 0);
     ASSERT_EQ(device.erases, 1);
     ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
 
     /* An empty value clears the field to spaces. */
     char clear[] = "F_Table_Name=";
-    char* argv2[] = { "write", clear };
-    ASSERT_EQ(run_writable(cmd_write, 2, argv2), 0);
+    char* argv2[] = { "write", clear, "--field-map" };
+    ASSERT_EQ(run_writable(cmd_write, 3, argv2), 0);
     alltrax_encode_string(name, "", expected + (name->address - VARSET_ADDR));
     ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
     return 0;
@@ -1018,8 +1036,8 @@ static int test_curve_reset_restores_in_one_erase(void)
         prepare_factory_curves(strcmp(types[t], "all") ? types[t] : NULL, expected);
         char type[16];
         snprintf(type, sizeof(type), "%s", types[t]);
-        char* argv[] = { "curve", "reset", type };
-        ASSERT_EQ(run_writable(cmd_curve, 3, argv), 0);
+        char* argv[] = { "curve", "reset", type, "--field-map" };
+        ASSERT_EQ(run_writable(cmd_curve, 4, argv), 0);
         ASSERT_EQ(device.erases, 1);
         ASSERT_EQ(device.mode, RUN_MODE_RUN);
         ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
@@ -1029,16 +1047,17 @@ static int test_curve_reset_restores_in_one_erase(void)
 
 static int test_curve_reset_read_failure_writes_nothing(void)
 {
-    /* curve reset all reads 2 factory arrays for each of the 5 curves. */
-    for (unsigned n = 1; n <= 10; n++) {
+    /* curve reset all reads 2 factory arrays for each of the 5 curves, then
+     * the current field map name. */
+    for (unsigned n = 1; n <= 11; n++) {
         writable_device_reset();
         uint8_t expected[VARSET_SIZE];
         prepare_factory_curves(NULL, expected);
         uint8_t original[VARSET_SIZE];
         memcpy(original, device.page, sizeof(original));
         device.fail_read_at = n;
-        char* argv[] = { "curve", "reset", "all" };
-        ASSERT_EQ(run_writable(cmd_curve, 3, argv), 1);
+        char* argv[] = { "curve", "reset", "all", "--field-map" };
+        ASSERT_EQ(run_writable(cmd_curve, 4, argv), 1);
         ASSERT_EQ(device.reads, n);
         ASSERT_EQ(device.mutations, 0);
         ASSERT_MEM_EQ(device.page, original, sizeof(original));
@@ -1056,12 +1075,12 @@ static int run_reset_case(int which)
     char* write_before[] = { "write", "--reset", hpd };
     char* write_after[] = { "write", hpd, "--reset" };
     char* curve_set[] = { "curve", "set", "linearization", "--preset", "linear", "--reset" };
-    char* curve_reset[] = { "curve", "reset", "all", "--reset" };
+    char* curve_reset[] = { "curve", "reset", "all", "--reset", "--field-map" };
     switch (which) {
     case 0: return run_writable(cmd_write, 3, write_before);
     case 1: return run_writable(cmd_write, 3, write_after);
     case 2: return run_writable(cmd_curve, 6, curve_set);
-    default: return run_writable(cmd_curve, 4, curve_reset);
+    default: return run_writable(cmd_curve, 5, curve_reset);
     }
 }
 
@@ -1095,10 +1114,10 @@ static int test_reset_flag_sends_no_reset_after_failure(void)
  * variable's address, returning its stdout line in `out`. */
 static int run_get(const char* name, uint32_t value, char* out, size_t out_size)
 {
-    const alltrax_var_def* var = alltrax_find_var(name);
-    if (!var) return -1;
+    const alltrax_var_def* var = name ? alltrax_find_var(name) : NULL;
+    if (name && !var) return -1;
     char arg[64];
-    snprintf(arg, sizeof(arg), "%s", name);
+    snprintf(arg, sizeof(arg), "%s", name ? name : "");
     char* argv[] = { "get", arg };
     fake_ctrl = (alltrax_controller) {
         .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
@@ -1107,7 +1126,7 @@ static int run_get(const char* name, uint32_t value, char* out, size_t out_size)
     };
     memset(&device, 0, sizeof(device));
     device.enabled = true;
-    device.value_addr = var->address;
+    device.value_addr = var ? var->address : 0;
     device.value = value;
     open_succeeds = true;
 
@@ -1117,7 +1136,7 @@ static int run_get(const char* name, uint32_t value, char* out, size_t out_size)
     fflush(stdout);
     int saved = dup(STDOUT_FILENO);
     dup2(fd, STDOUT_FILENO);
-    int rc = cmd_get(2, argv);
+    int rc = cmd_get(name ? 2 : 1, argv);
     fflush(stdout);
     dup2(saved, STDOUT_FILENO);
     close(saved);
@@ -1165,6 +1184,156 @@ static int test_get_keeps_scaled_formatting(void)
     return 0;
 }
 
+static int test_get_lists_settings_without_factory_copies(void)
+{
+    static char out[16384];
+    ASSERT_EQ(run_get(NULL, 0, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "Speed_Limit_On") != NULL);
+    ASSERT_TRUE(strstr(out, "Tach_4_8") != NULL);
+    ASSERT_TRUE(strstr(out, "Throttle_Type_Name") != NULL);
+    ASSERT_NULL(strstr(out, "F_Speed_Limit_On"));
+    return 0;
+}
+
+static void set_page_bytes(const char* name, const char* bytes, size_t len)
+{
+    const alltrax_var_def* var = alltrax_find_var(name);
+    memcpy(device.page + (var->address - VARSET_ADDR), bytes, len);
+}
+
+static int test_field_map_writes_require_flag(void)
+{
+    char turbo[] = "Turbo_Start_RPM=2000", name[] = "F_Table_Name=MAP";
+    char point0[] = "0,0", point1[] = "750,50";
+    char* write_scalar[] = { "write", turbo };
+    char* write_name[] = { "write", name };
+    char* set_field[] = { "curve", "set", "field", point0, point1 };
+    char* reset_gen[] = { "curve", "reset", "genfield" };
+    char* reset_all[] = { "curve", "reset", "all" };
+    struct { int (*cmd)(int, char**); int argc; char** argv; } cases[] = {
+        { cmd_write, 2, write_scalar }, { cmd_write, 2, write_name },
+        { cmd_curve, 5, set_field }, { cmd_curve, 3, reset_gen },
+        { cmd_curve, 3, reset_all },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        writable_device_reset();
+        ASSERT_EQ(run_writable(cases[i].cmd, cases[i].argc, cases[i].argv), 1);
+        ASSERT_EQ(open_calls, 0);
+        ASSERT_EQ(device.mutations, 0);
+    }
+    return 0;
+}
+
+/* A field-map write without F_Table_Name re-writes the current name. */
+static int test_field_map_writes_include_current_name(void)
+{
+    writable_device_reset();
+    set_page_bytes("F_Table_Name", "AB\0\0", 4);  /* Read back as "AB" */
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, device.page, sizeof(expected));
+    const alltrax_var_def* name = alltrax_find_var("F_Table_Name");
+    const alltrax_var_def* turbo = alltrax_find_var("Turbo_Start_RPM");
+    alltrax_encode_string(name, "AB", expected + (name->address - VARSET_ADDR));
+    alltrax_encode_var(turbo, 2000, expected + (turbo->address - VARSET_ADDR));
+
+    char arg[] = "Turbo_Start_RPM=2000";
+    char* argv[] = { "write", arg, "--field-map" };
+    ASSERT_EQ(run_writable(cmd_write, 3, argv), 0);
+    ASSERT_EQ(device.erases, 1);
+    ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+    return 0;
+}
+
+#ifdef TEST_CONFIG
+/* Load a plain XML file into the writable device. */
+static int run_config_load(const char* xml, bool field_map)
+{
+    char path[64];
+    if (make_temp_path(path) || write_file(path, xml)) return -1;
+    char* argv[] = { "config", "load", "--no-crypt", path, "--field-map" };
+    int rc = run_writable(cmd_config, field_map ? 5 : 4, argv);
+    remove(path);
+    return rc;
+}
+
+static int test_config_load_skips_field_map_without_flag(void)
+{
+    const char* xml = "<XCT><Node-Throttle><HPD>1</HPD></Node-Throttle>"
+                      "<Node-Field><Turbo_Start_RPM>2000</Turbo_Start_RPM>"
+                      "</Node-Field></XCT>";
+    const alltrax_var_def* hpd = alltrax_find_var("HPD");
+    const alltrax_var_def* turbo = alltrax_find_var("Turbo_Start_RPM");
+    for (int field_map = 0; field_map <= 1; field_map++) {
+        writable_device_reset();
+        uint8_t expected[VARSET_SIZE];
+        memcpy(expected, device.page, sizeof(expected));
+        expected[hpd->address - VARSET_ADDR] = 1;
+        if (field_map)
+            alltrax_encode_var(turbo, 2000, expected + (turbo->address - VARSET_ADDR));
+        ASSERT_EQ(run_config_load(xml, field_map), 0);
+        ASSERT_EQ(device.erases, 1);
+        ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+    }
+    /* A file with only field-map data has nothing to write without the flag. */
+    writable_device_reset();
+    ASSERT_EQ(run_config_load("<XCT><Node-Field><Turbo_Start_RPM>2000"
+                              "</Turbo_Start_RPM></Node-Field></XCT>", false), 1);
+    ASSERT_EQ(open_calls, 0);
+    return 0;
+}
+
+static int test_config_load_fails_closed_on_bad_values(void)
+{
+    const char* bad[] = {
+        "<HPD>2</HPD>", "<HPD>yes</HPD>", "<HPD></HPD>",
+        "<N_Speed_Limit>12x</N_Speed_Limit>", "<N_Speed_Limit>4000,</N_Speed_Limit>",
+        "<N_Speed_Limit>4000.5</N_Speed_Limit>",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        char xml[256];
+        snprintf(xml, sizeof(xml), "<XCT><Node-Throttle>%s<Speed_Limit_On>1"
+                 "</Speed_Limit_On></Node-Throttle></XCT>", bad[i]);
+        writable_device_reset();
+        ASSERT_EQ(run_config_load(xml, false), 1);
+        ASSERT_EQ(open_calls, 0);
+    }
+    writable_device_reset();
+    ASSERT_EQ(run_config_load("<XCT><Node-Throttle><HPD> 1 </HPD></Node-Throttle></XCT>",
+                              false), 0);
+    ASSERT_EQ(device.page[alltrax_find_var("HPD")->address - VARSET_ADDR], 1);
+    return 0;
+}
+
+static int test_config_save_writes_only_settings_in_toolkit_nodes(void)
+{
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    memset(&device, 0, sizeof(device));
+    ASSERT_EQ(run_config_save(path, 5005), 0);
+    char* xml = read_file(path);
+    remove(path);
+    ASSERT_TRUE(xml != NULL);
+    const char* absent[] = {
+        "<F_F_Table_Name>", "<F_Reverse_Field_Weaken_Percent>",
+        "<F_Speed_Limit_On>", "<Relay_Off_At_Zero>", "<RunMode>", "<Node-Tach/>",
+    };
+    for (size_t i = 0; i < sizeof(absent) / sizeof(absent[0]); i++)
+        ASSERT_NULL(strstr(xml, absent[i]));
+    const char* tach = strstr(xml, "<Node-Tach>");
+    const char* other = strstr(xml, "<Node-Other_Settings>");
+    const char* throttle = strstr(xml, "<Node-Throttle>");
+    const char* field = strstr(xml, "<Node-Field>");
+    ASSERT_TRUE(tach && other && throttle && field);
+    const char* speed = strstr(xml, "<Speed_Limit_On>");
+    const char* name = strstr(xml, "<Throttle_Type_Name>");
+    ASSERT_TRUE(speed > tach && speed < other);
+    ASSERT_TRUE(name > throttle && name < field);
+    ASSERT_TRUE(strstr(xml, "<Throttle_Type_Name>                </Throttle_Type_Name>") != NULL);
+    free(xml);
+    return 0;
+}
+#endif
+
 int main(void)
 {
     printf("CLI mutation preflight (no USB):\n");
@@ -1184,9 +1353,12 @@ int main(void)
     RUN_TEST(test_reset_flag_sends_no_reset_after_failure);
     RUN_TEST(test_get_prints_full_integer_range);
     RUN_TEST(test_get_keeps_scaled_formatting);
+    RUN_TEST(test_get_lists_settings_without_factory_copies);
+    RUN_TEST(test_field_map_writes_require_flag);
+    RUN_TEST(test_field_map_writes_include_current_name);
     RUN_TEST(test_options_accepted_before_and_after_positionals);
     RUN_TEST(test_invalid_options_and_argument_counts_rejected);
-    RUN_TEST(test_global_fw_override_sets_command_flag);
+    RUN_TEST(test_write_options_map_to_library_options);
     RUN_TEST(test_bad_command_options_rejected_before_open);
     RUN_TEST(test_fw_flag_reaches_write_options_in_any_position);
 #ifdef TEST_CONFIG
@@ -1203,6 +1375,9 @@ int main(void)
     RUN_TEST(test_config_round_trip_restores_strings_in_one_erase);
     RUN_TEST(test_config_load_rejects_invalid_strings_before_open);
     RUN_TEST(test_config_load_reset_flag_sends_one_reset);
+    RUN_TEST(test_config_load_skips_field_map_without_flag);
+    RUN_TEST(test_config_load_fails_closed_on_bad_values);
+    RUN_TEST(test_config_save_writes_only_settings_in_toolkit_nodes);
 #endif
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;

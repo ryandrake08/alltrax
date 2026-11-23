@@ -293,22 +293,15 @@ static int do_get(int argc, char** argv)
 static int do_set(int argc, char** argv)
 {
     cli_flags flags;
-    int nargs = cli_parse_args(argc, argv, "curve set",
-        CLI_OPT_NO_CAL | CLI_OPT_NO_VERIFY | CLI_OPT_NO_FW_VERSION |
-        CLI_OPT_RESET | CLI_OPT_FILE | CLI_OPT_PRESET, 1, -1, &flags);
+    const unsigned allowed = CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP |
+                             CLI_OPT_FILE | CLI_OPT_PRESET;
+    int nargs = cli_parse_args(argc, argv, "curve set", allowed, 1, -1, &flags);
     if (nargs < 0) {
         fprintf(stderr,
-            "Usage: alltrax curve set <type> (--file f.csv | --preset name | x,y ...) [flags]\n"
+            "Usage: alltrax curve set <type> (--file f.csv | --preset name | x,y ...) [options]\n"
             "\n"
-            "Types: linearization, speed, torque, field, genfield\n"
-            "\n"
-            "Flags:\n"
-            "  --file <f.csv>   Read points from CSV file\n"
-            "  --preset <name>  Use a built-in preset curve\n"
-            "  --no-cal         Skip CAL/RUN mode bracket\n"
-            "  --no-verify      Skip read-back verification\n"
-            "  --no-fw-version  Allow unvalidated firmware within V0.001-V5.999\n"
-            "  --reset          Reboot controller after write\n");
+            "Types: linearization, speed, torque, field, genfield\n");
+        cli_print_options(stderr, allowed);
         return 1;
     }
 
@@ -363,17 +356,23 @@ static int do_set(int argc, char** argv)
         return 1;
     }
 
+    alltrax_assignment items[2] = { { .curve = def, .curve_data = &curve } };
+    size_t count = 1;
+    if (cli_check_field_map(items, count, flags.field_map))
+        return 1;
+
     alltrax_controller* ctrl = NULL;
     err = cli_open(&ctrl, true);
     if (err) return 1;
 
-    alltrax_write_opts opts = {
-        .skip_cal = flags.no_cal,
-        .skip_verify = flags.no_verify,
-        .skip_fw_check = flags.no_fw_version,
-    };
-
-    err = alltrax_write_curve(ctrl, def, &curve, &opts);
+    alltrax_write_opts opts = cli_write_opts(&flags);
+    char field_map_name[33];
+    err = cli_add_field_map_name(ctrl, items, &count, field_map_name);
+    if (err) {
+        alltrax_close(ctrl);
+        return 1;
+    }
+    err = alltrax_write_assignments(ctrl, items, count, &opts);
     if (err) {
         cli_error(ctrl, err, "writing curve");
         alltrax_close(ctrl);
@@ -381,6 +380,7 @@ static int do_set(int argc, char** argv)
     }
 
     printf("Wrote %s curve (%d points)\n", def->name, ALLTRAX_CURVE_POINTS);
+    cli_field_map_written(items, count);
 
     if (flags.reset) {
         err = alltrax_reset_device(ctrl, &opts);
@@ -484,19 +484,13 @@ static int do_diff(int argc, char** argv)
 static int do_curve_reset(int argc, char** argv)
 {
     cli_flags flags;
-    if (cli_parse_args(argc, argv, "curve reset",
-                       CLI_OPT_NO_CAL | CLI_OPT_NO_VERIFY |
-                       CLI_OPT_NO_FW_VERSION | CLI_OPT_RESET, 1, 1, &flags) < 0) {
+    const unsigned allowed = CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP;
+    if (cli_parse_args(argc, argv, "curve reset", allowed, 1, 1, &flags) < 0) {
         fprintf(stderr,
-            "Usage: alltrax curve reset <type> [flags]\n"
+            "Usage: alltrax curve reset <type> [options]\n"
             "\n"
-            "Types: linearization, speed, torque, field, genfield, all\n"
-            "\n"
-            "Flags:\n"
-            "  --no-cal         Skip CAL/RUN mode bracket\n"
-            "  --no-verify      Skip read-back verification\n"
-            "  --no-fw-version  Allow unvalidated firmware within V0.001-V5.999\n"
-            "  --reset          Reboot controller after write\n");
+            "Types: linearization, speed, torque, field, genfield, all\n");
+        cli_print_options(stderr, allowed);
         return 1;
     }
 
@@ -507,11 +501,25 @@ static int do_curve_reset(int argc, char** argv)
         return 1;
     }
 
+    /* One spare item for the field-map name. */
     size_t ncurves = alltrax_curve_count();
     alltrax_curve_data* factory = calloc(ncurves, sizeof(*factory));
-    alltrax_assignment* items = calloc(ncurves, sizeof(*items));
+    alltrax_assignment* items = calloc(ncurves + 1, sizeof(*items));
     if (!factory || !items) {
         fprintf(stderr, "Error: out of memory\n");
+        free(factory);
+        free(items);
+        return 1;
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < ncurves; i++) {
+        const alltrax_curve_def* def = alltrax_curve_by_index(i);
+        if (all || strcmp(def->name, type) == 0) {
+            items[n] = (alltrax_assignment){ .curve = def, .curve_data = &factory[n] };
+            n++;
+        }
+    }
+    if (cli_check_field_map(items, n, flags.field_map)) {
         free(factory);
         free(items);
         return 1;
@@ -525,31 +533,28 @@ static int do_curve_reset(int argc, char** argv)
         return 1;
     }
 
-    alltrax_write_opts opts = {
-        .skip_cal = flags.no_cal,
-        .skip_verify = flags.no_verify,
-        .skip_fw_check = flags.no_fw_version,
-    };
+    alltrax_write_opts opts = cli_write_opts(&flags);
+    char field_map_name[33];
 
     /* Read every selected factory curve first, then restore them in one batch
      * (one CAL bracket, one page cycle), so a failed read writes nothing. */
     int ret = 0;
-    size_t n = 0;
-    for (size_t i = 0; i < ncurves; i++) {
-        const alltrax_curve_def* def = alltrax_curve_by_index(i);
-        if (!all && strcmp(def->name, type) != 0)
-            continue;
-        err = alltrax_read_curve_factory(ctrl, def, &factory[n]);
+    for (size_t i = 0; i < n; i++) {
+        err = alltrax_read_curve_factory(ctrl, items[i].curve, &factory[i]);
         if (err) {
-            cli_error(ctrl, err, def->name);
+            cli_error(ctrl, err, items[i].curve->name);
             ret = 1;
             goto done;
         }
-        items[n] = (alltrax_assignment){ .curve = def, .curve_data = &factory[n] };
-        n++;
+    }
+    size_t count = n;
+    err = cli_add_field_map_name(ctrl, items, &count, field_map_name);
+    if (err) {
+        ret = 1;
+        goto done;
     }
 
-    err = alltrax_write_assignments(ctrl, items, n, &opts);
+    err = alltrax_write_assignments(ctrl, items, count, &opts);
     if (err) {
         cli_error(ctrl, err, "resetting curves");
         ret = 1;
@@ -557,6 +562,7 @@ static int do_curve_reset(int argc, char** argv)
     }
     for (size_t i = 0; i < n; i++)
         printf("Reset %s curve to factory defaults\n", items[i].curve->name);
+    cli_field_map_written(items, count);
 
     if (flags.reset) {
         err = alltrax_reset_device(ctrl, &opts);

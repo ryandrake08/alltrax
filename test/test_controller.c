@@ -27,7 +27,9 @@ static struct {
     unsigned erases, settings_writes, goodset_clears;
     unsigned requests;
     uint32_t throttles_allowed;
-    unsigned throttle_mask_reads, mode_writes;
+    uint16_t rated_volts;
+    uint32_t orig_boot_rev, orig_program_rev;
+    unsigned hw_config_reads, mode_writes;
     unsigned cal_attempts, run_attempts, fan_writes;
     bool cal_transfer_error, run_transfer_error, fan_transfer_error;
     bool cal_write_blocked;
@@ -58,6 +60,9 @@ static void mock_reset(void)
     mock.ctrl.boot_rev = mock.boot_rev = 5002;
     mock.ctrl.program_rev = mock.program_rev = 5005;
     mock.throttles_allowed = 0x7FF;
+    mock.rated_volts = 48;
+    mock.orig_boot_rev = 5002;
+    mock.orig_program_rev = 5005;
     for (size_t i = 0; i < sizeof(mock.page); i++)
         mock.page[i] = (uint8_t)(i * 37 + 11);
     mock.page[0] = mock.page[1] = 0;
@@ -94,6 +99,12 @@ static uint8_t mock_read_byte(uint32_t addr)
         return mock.mode;
     if (addr >= RAM_END - 4 && addr < RAM_END)
         return mock.ram_tail[addr - (RAM_END - 4)];
+    if (addr >= ADDR_CONTROLLER_INFO + 0x24 && addr < ADDR_CONTROLLER_INFO + 0x28)
+        return (uint8_t)(mock.orig_boot_rev >> ((addr - ADDR_CONTROLLER_INFO - 0x24) * 8));
+    if (addr >= ADDR_CONTROLLER_INFO + 0x28 && addr < ADDR_CONTROLLER_INFO + 0x2C)
+        return (uint8_t)(mock.orig_program_rev >> ((addr - ADDR_CONTROLLER_INFO - 0x28) * 8));
+    if (addr >= ADDR_HARDWARE_CONFIG && addr < ADDR_HARDWARE_CONFIG + 2)
+        return (uint8_t)(mock.rated_volts >> ((addr - ADDR_HARDWARE_CONFIG) * 8));
     if (addr >= ADDR_HARDWARE_CONFIG + 16 && addr < ADDR_HARDWARE_CONFIG + 20)
         return (uint8_t)(mock.throttles_allowed >> ((addr - ADDR_HARDWARE_CONFIG - 16) * 8));
     return 0;
@@ -110,8 +121,8 @@ alltrax_error transport_write(alltrax_controller* ctrl,
     uint32_t addr = request_address();
 
     if (data[0] == 0x01) {
-        if (addr == ADDR_HARDWARE_CONFIG + 16)
-            mock.throttle_mask_reads++;
+        if (addr == ADDR_HARDWARE_CONFIG)
+            mock.hw_config_reads++;
         return ALLTRAX_OK;
     }
     if (data[0] == 0x02) {
@@ -220,6 +231,8 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
         buf[8 + i] = mock_read_byte(addr + (uint32_t)i);
     return ALLTRAX_OK;
 }
+
+static const alltrax_write_opts batch_opts = { .skip_voltage_link = true };
 
 static alltrax_error write_hpd(void)
 {
@@ -495,8 +508,8 @@ static int test_curve_write_preserves_padding_and_neighbors(void)
     memcpy(data.y, preset->y, sizeof(data.y));
     uint8_t expected[VARSET_SIZE];
     memcpy(expected, mock.page, sizeof(expected));
-    /* Literal C encoding of the padded linear preset, using existing round(). */
-    const uint8_t x[32] = { 0,0, 41,0, 0xD6,0x0F, 0xFF,0x0F };
+    /* The padded linear preset. */
+    const uint8_t x[32] = { 0,0, 40,0, 0xD6,0x0F, 0xFF,0x0F };
     const uint8_t y[32] = { 0,0, 0,0, 0xFF,0x0F, 0xFF,0x0F };
     memcpy(expected + 0x100, x, sizeof(x));
     memcpy(expected + 0x120, y, sizeof(y));
@@ -591,7 +604,7 @@ static int test_nonzero_throttle_types_require_their_exact_hardware_bit(void)
                 double value = (double)t + 1;
                 ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, &value, 1, options[o]),
                           allowed ? ALLTRAX_OK : ALLTRAX_ERR_INVALID_ARG);
-                ASSERT_EQ(mock.throttle_mask_reads, 1);
+                ASSERT_EQ(mock.hw_config_reads, 1);
                 if (allowed) expected[0xA0] = (uint8_t)(t + 1);
                 ASSERT_MEM_EQ(mock.page, expected, sizeof(expected));
                 ASSERT_EQ(mock.erases, allowed);
@@ -608,11 +621,11 @@ static int test_throttle_none_bypasses_hardware_mask(void)
 {
     mock_reset();
     mock.throttles_allowed = 0;
-    mock_fault(ADDR_HARDWARE_CONFIG + 16, 4, 0, 1);
+    mock_fault(ADDR_HARDWARE_CONFIG, 24, 0, 1);
     const alltrax_var_def* var = alltrax_find_var("Throttle_Type");
     double value = 0;
     ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, &value, 1, NULL), ALLTRAX_OK);
-    ASSERT_EQ(mock.throttle_mask_reads, 0);
+    ASSERT_EQ(mock.hw_config_reads, 0);
     ASSERT_EQ(mock.page[0xA0], 0);
     ASSERT_EQ(mock.erases, 1);
     ASSERT_EQ(mock.mode_writes, 2);
@@ -620,22 +633,80 @@ static int test_throttle_none_bypasses_hardware_mask(void)
     return 0;
 }
 
-static int test_every_throttle_assignment_is_checked(void)
+static int test_repeated_and_overlapping_targets_reject_batch_before_io(void)
 {
-    const alltrax_var_def* vars[] = {
-        alltrax_find_var("Throttle_Type"), alltrax_find_var("Throttle_Type"),
+    const alltrax_curve_def* lin = alltrax_find_curve("linearization");
+    alltrax_curve_data zero = { .def = lin };
+    const alltrax_var_def* type = alltrax_find_var("Throttle_Type");
+    const alltrax_var_def* hpd = alltrax_find_var("HPD");
+    const alltrax_assignment cases[][2] = {
+        { { .var = type, .number = 0 }, { .var = type, .number = 1 } },
+        { { .var = hpd, .number = 1 }, { .var = hpd, .number = 1 } },
+        { { .curve = lin, .curve_data = &zero }, { .curve = lin, .curve_data = &zero } },
     };
-    const double values[][2] = { {0,1}, {1,2} };
-    for (size_t i = 0; i < 2; i++) {
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         mock_reset();
-        mock.throttles_allowed = i == 0 ? 0x002 : 0x001;
-        uint8_t original[VARSET_SIZE];
-        memcpy(original, mock.page, sizeof(original));
-        ASSERT_EQ(alltrax_write_vars(&mock.ctrl, vars, values[i], 2, NULL), ALLTRAX_ERR_INVALID_ARG);
-        ASSERT_EQ(mock.throttle_mask_reads, i + 1);
-        ASSERT_EQ(mock.mode_writes, 0);
-        ASSERT_EQ(mock.erases, 0);
-        ASSERT_MEM_EQ(mock.page, original, sizeof(original));
+        ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, cases[i], 2, &batch_opts),
+                  ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_TRUE(strstr(mock.ctrl.error_detail, "once per batch") != NULL);
+        ASSERT_EQ(mock.requests, 0);
+    }
+    return 0;
+}
+
+static int test_voltage_settings_bounded_by_rated_voltage(void)
+{
+    const struct { uint16_t rated; const char* name; double volts; bool skip_link; bool ok; } cases[] = {
+        { 48, "LoBat_Vlim", 16.0, true, true },
+        { 48, "LoBat_Vlim", 15.9, true, false },
+        { 48, "HiBat_Vlim", 62.0, true, true },
+        { 48, "HiBat_Vlim", 62.1, true, false },
+        { 48, "AnalogInputs_Threshold", 15.9, true, false },
+        { 72, "LoBat_Vlim", 19.9, true, false },
+        { 72, "HiBat_Vlim", 90.0, true, true },
+        { 72, "HiBat_Vlim", 90.1, true, false },
+        { 36, "LoBat_Vlim", 30.0, true, false },
+        { 48, "BMS_Missing_HiBat_Vlim", 70.0, true, true },
+        { 48, "BMS_Missing_HiBat_Vlim", 70.0, false, false },
+        { 36, "BMS_Missing_HiBat_Vlim", 30.0, true, true },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        mock_reset();
+        mock.rated_volts = cases[i].rated;
+        /* Existing limits that keep the link check satisfied for the cases
+         * that write only the variable under test. */
+        const struct { uint32_t addr; uint16_t raw; } page[] = {
+            { 0x08002002, 160 }, { 0x08002020, 170 },
+            { 0x08002022, 620 }, { 0x08002026, 600 },
+        };
+        for (size_t p = 0; p < 4; p++) {
+            mock.page[page[p].addr - VARSET_ADDR] = (uint8_t)page[p].raw;
+            mock.page[page[p].addr - VARSET_ADDR + 1] = (uint8_t)(page[p].raw >> 8);
+        }
+        const alltrax_var_def* var = alltrax_find_var(cases[i].name);
+        alltrax_write_opts opts = { .skip_voltage_link = cases[i].skip_link };
+        alltrax_error rc = alltrax_write_vars(&mock.ctrl, &var, &cases[i].volts, 1, &opts);
+        if (cases[i].ok) {
+            ASSERT_EQ(rc, ALLTRAX_OK);
+        } else {
+            ASSERT_EQ(rc, ALLTRAX_ERR_INVALID_ARG);
+            ASSERT_TRUE(strstr(mock.ctrl.error_detail, "V") != NULL);
+            ASSERT_EQ(mock.mode_writes, 0);
+            ASSERT_EQ(mock.erases, 0);
+        }
+    }
+    return 0;
+}
+
+static int test_old_firmware_throttle_default_excludes_ezgo(void)
+{
+    const alltrax_var_def* var = alltrax_find_var("Throttle_Type");
+    for (double type = 1; type <= 11; type++) {
+        mock_reset();
+        mock.orig_boot_rev = mock.orig_program_rev = 1;
+        mock.throttles_allowed = 0;  /* Unprogrammed bits are ignored. */
+        ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &var, &type, 1, NULL),
+                  type == 4 ? ALLTRAX_ERR_INVALID_ARG : ALLTRAX_OK);
     }
     return 0;
 }
@@ -1132,7 +1203,6 @@ static int test_monitor_reads_user_profile_and_inputs(void)
     return 0;
 }
 
-static const alltrax_write_opts batch_opts = { .skip_voltage_link = true };
 
 static int test_string_writes_are_space_padded(void)
 {
@@ -1285,11 +1355,8 @@ static int test_batch_flash_patch_limit(void)
     ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 97, &batch_opts),
               ALLTRAX_ERR_INVALID_ARG);
     ASSERT_EQ(mock.requests, 0);
-    mock_reset();
-    ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 96, &batch_opts), ALLTRAX_OK);
-    ASSERT_EQ(mock.erases, 1);
 
-    /* Each curve uses two patches: 48 curves fit, 49 do not. */
+    /* Each curve uses two patches, so 49 curves exceed the limit. */
     const alltrax_curve_def* lin = alltrax_find_curve("linearization");
     alltrax_curve_data zero = { .def = lin };
     for (size_t i = 0; i < 49; i++)
@@ -1298,8 +1365,35 @@ static int test_batch_flash_patch_limit(void)
     ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 49, &batch_opts),
               ALLTRAX_ERR_INVALID_ARG);
     ASSERT_EQ(mock.requests, 0);
+
+    /* Every writable settings variable and curve fits in one batch. */
+    alltrax_curve_data curves[8];
+    size_t n = 0;
+    for (int g = 0; g < ALLTRAX_VARS_GROUP_COUNT; g++) {
+        size_t count;
+        const alltrax_var_def* defs = alltrax_get_var_defs((alltrax_var_group)g, &count);
+        for (size_t i = 0; i < count; i++) {
+            const alltrax_var_def* var = &defs[i];
+            if (!var->writable || !var->is_flash)
+                continue;
+            double min, max;
+            alltrax_var_display_bounds(var, &min, &max);
+            int v = strcmp(var->name, "AnalogInputs_Threshold") == 0 ? 0 :
+                    strcmp(var->name, "LoBat_Vlim") == 0 ? 1 :
+                    strcmp(var->name, "HiBat_Vlim") == 0 ? 2 : -1;
+            items[n++] = var->type == ALLTRAX_TYPE_STRING
+                ? (alltrax_assignment){ .var = var, .text = "" }
+                : (alltrax_assignment){ .var = var,
+                      .number = v >= 0 ? 20.0 + 10 * v : isnan(min) ? 0 : min };
+        }
+    }
+    for (size_t c = 0; c < alltrax_curve_count(); c++) {
+        curves[c] = (alltrax_curve_data){ .def = alltrax_curve_by_index(c) };
+        items[n++] = (alltrax_assignment){ .curve = curves[c].def, .curve_data = &curves[c] };
+    }
     mock_reset();
-    ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 48, &batch_opts), ALLTRAX_OK);
+    ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, n, &batch_opts), ALLTRAX_OK);
+    ASSERT_EQ(mock.erases, 1);
     return 0;
 }
 
@@ -1316,7 +1410,8 @@ static int test_batch_keeps_voltage_link_checks(void)
     ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items, 5, NULL),
               ALLTRAX_ERR_INVALID_ARG);
     ASSERT_TRUE(strstr(mock.ctrl.error_detail, "KSI") != NULL);
-    ASSERT_EQ(mock.requests, 0);
+    ASSERT_EQ(mock.mode_writes, 0);
+    ASSERT_EQ(mock.erases, 0);
     return 0;
 }
 
@@ -1472,7 +1567,9 @@ int main(void)
     RUN_TEST(test_invalid_throttle_types_reject_batch_before_io);
     RUN_TEST(test_nonzero_throttle_types_require_their_exact_hardware_bit);
     RUN_TEST(test_throttle_none_bypasses_hardware_mask);
-    RUN_TEST(test_every_throttle_assignment_is_checked);
+    RUN_TEST(test_repeated_and_overlapping_targets_reject_batch_before_io);
+    RUN_TEST(test_old_firmware_throttle_default_excludes_ezgo);
+    RUN_TEST(test_voltage_settings_bounded_by_rated_voltage);
     RUN_TEST(test_throttle_mask_uses_encoded_value);
     RUN_TEST(test_non_catalog_variables_rejected_before_io);
     RUN_TEST(test_non_catalog_curves_rejected_before_io);

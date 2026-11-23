@@ -84,12 +84,12 @@ point source: x,y pairs, `--file`, or `--preset`.
 | Firmware (boot and program) | `info` | Other reads | Writes and `reset` |
 |---|---|---|---|
 | V5.005 (validated for writes) | Yes | Yes | Yes |
-| Other V0.001-V5.999 | Yes | Yes | With `--no-fw-version` |
-| Outside V0.001-V5.999 | Yes | With `alltrax --no-fw-version <command>` | Never |
+| Other V0.001-V5.999 | Yes | Yes | With `--allow-unvalidated-firmware` |
+| Outside V0.001-V5.999 | Yes | With `alltrax --debug-ignore-fw-bounds <command>` | Never |
 
-`--no-fw-version` placed before the command applies to reads and writes; placed after
-a write command (`write`, `reset`, `config load`, `curve set`, `curve reset`) it
-applies to that command's writes.
+`--allow-unvalidated-firmware` is accepted by the write commands (`write`,
+`reset`, `config load`, `curve set`, `curve reset`). `--debug-ignore-fw-bounds`
+is a debug option placed before the command; it affects reads only.
 
 ### Write examples
 
@@ -107,25 +107,48 @@ alltrax write LoBat_Vlim=28.1 HiBat_Vlim=61.0
 alltrax write Fan_On=1
 
 # Write a string setting together with a number (one FLASH page cycle)
-alltrax write F_Table_Name="MY FIELD MAP" HPD=1
+alltrax write Throttle_Type_Name="0-5K 2 Wire" HPD=1
 
 # Clear a string setting (stored as spaces)
-alltrax write F_Table_Name=
+alltrax write Throttle_Type_Name=
 ```
 
 String settings take the text after `=` literally: printable ASCII, at most the
 field size (`Throttle_Type_Name` 16, `F_Table_Name` 32). Trailing spaces are
 ignored.
 
-### Write flags
+Each variable or curve may appear only once per write. Voltage settings
+(`AnalogInputs_Threshold`, `LoBat_Vlim`, `HiBat_Vlim`, and
+`BMS_Missing_HiBat_Vlim` unless `--no-voltage-link` is given) must lie within
+16.0–62.0 V on 48 V controllers and 20.0–90.0 V on 72 V controllers; other
+ratings cannot write them. `Throttle_Type` must be allowed by the controller's
+hardware (older controllers allow every type except EZGO ITS).
 
-| Flag | Effect |
-|------|--------|
-| `--no-cal` | Skip CAL/RUN mode bracket (safe for bench programming with no motor) |
-| `--no-verify` | Skip read-back verification after FLASH write |
-| `--no-goodset` | Skip GoodSet corruption pre-check (required to write when a previous interrupted write left GoodSet invalid) |
-| `--no-fw-version` | Allow writes on unvalidated firmware within V0.001-V5.999 |
+### Write options
+
+| Option | Effect |
+|--------|--------|
+| `--no-voltage-link` | Skip the KSI/under-voltage/over-voltage relationship check (KSI + 1 V ≤ under-voltage ≤ over-voltage − 1 V, with the BMS-missing limit between them) |
+| `--allow-unvalidated-firmware` | Allow writes on unvalidated firmware within V0.001-V5.999 |
+| `--field-map` | Allow writing field-map data (see [Field maps](#field-maps)) |
 | `--reset` | Reboot controller after FLASH write |
+
+Debug bypasses are listed under [Debug and development options](#debug-and-development-options).
+
+### Field maps
+
+A field map (`F_Table_Name`, the `field` and `genfield` curves, and the six
+field weakening variables) must match the installed motor; a wrong map can
+damage the motor. Any command that writes field-map data requires
+`--field-map`, prints a warning, and afterwards reminds you to check the speed
+sensor pole count (`Tach_4_8`). Field-map writes always include
+`F_Table_Name`: when a command does not set it, the current name is written
+back with the map.
+
+```sh
+alltrax write Turbo_Start_RPM=2500 --field-map
+alltrax curve reset field --field-map
+```
 
 ### Config save/load
 
@@ -147,31 +170,35 @@ alltrax config load settings.txt
 alltrax config load --no-crypt --reset settings.xml
 ```
 
-`config save` writes a file only when every settings group and curve has been
-read. It refuses to save when the controller's user settings are not valid
-(Var_GoodSet ≠ 0): either only factory defaults are present, or no settings
-are loaded. Read, validity, and encryption failures exit with an error and
-leave an existing file unchanged. If writing the file itself fails (for example,
-a full disk), it exits with an error and removes the partial file; the previous
-contents are not kept.
+`config save` writes every writable setting and curve, including the field
+map. Strings are space-padded to their field size, and read-only values such
+as factory defaults are not saved. It writes a file only when every settings
+group and curve has been read. It refuses to save when the controller's user
+settings are not valid (Var_GoodSet ≠ 0): either only factory defaults are
+present, or no settings are loaded. Read, validity, and encryption failures
+exit with an error and leave an existing file unchanged. If writing the file
+itself fails (for example, a full disk), it exits with an error and removes
+the partial file; the previous contents are not kept.
 
 `config load` restores every writable setting in the file, including the
-`Throttle_Type_Name` and `F_Table_Name` strings, and all curves. Writes
+`Throttle_Type_Name` string and all curves. Field-map entries are skipped
+unless `--field-map` is given; the rest of the file is still written. Writes
 everything in one batch: one CAL/RUN bracket and one settings page erase.
-Any invalid value, such as a string that is too long or not ASCII, rejects
-the load before the controller is opened.
+Read-only and unknown entries are skipped. Any invalid value rejects the load
+before the controller is opened: a number that is not a whole integer, a
+boolean other than 0 or 1, a curve without exactly 16 values, or a string
+that is too long or not ASCII.
 
 Config files saved by the Alltrax Toolkit ("Save All Settings") can be loaded
 with `alltrax config load`. Config files saved by the CLI can be loaded by the
 Toolkit (unless `--no-crypt` was used).
 
-| Flag | Applies to | Effect |
-|------|-----------|--------|
+| Option | Applies to | Effect |
+|--------|-----------|--------|
 | `--no-crypt` | save, load | Plain XML instead of 3DES encrypted |
-| `--no-cal` | load | Skip CAL/RUN mode bracket |
-| `--no-verify` | load | Skip read-back verification |
-| `--no-goodset` | load | Skip GoodSet pre-check |
-| `--no-fw-version` | load | Allow writes on unvalidated firmware within V0.001-V5.999 |
+| `--no-voltage-link` | load | Skip the voltage relationship check |
+| `--allow-unvalidated-firmware` | load | Allow writes on unvalidated firmware within V0.001-V5.999 |
+| `--field-map` | load | Also write the file's field-map entries |
 | `--reset` | load | Reboot controller after write |
 
 ### Curve tables
@@ -245,12 +272,13 @@ alltrax curve diff all
 # Reset curve to factory defaults
 alltrax curve reset linearization
 
-# Reset all curves to factory defaults
-alltrax curve reset all --reset
+# Reset all curves to factory defaults (includes the field map)
+alltrax curve reset all --reset --field-map
 ```
 
 `curve reset` reads every selected factory curve first, then writes them all
 in one batch (one settings page erase), so a failed read changes nothing.
+Writing the `field` or `genfield` curve requires `--field-map`.
 
 **CSV format:** One `x, y` pair per line. Lines starting with `#` are comments.
 Blank lines are ignored. Up to 16 points; if fewer are provided, the remaining
@@ -279,10 +307,23 @@ cause the import to fail.
 | `--file <path>` | get, set | CSV file for import/export |
 | `--preset <name>` | set | Use a built-in preset curve |
 | `--plot` | get | ASCII chart instead of table |
-| `--no-cal` | set, reset | Skip CAL/RUN mode bracket |
-| `--no-verify` | set, reset | Skip read-back verification |
-| `--no-fw-version` | set, reset | Allow writes on unvalidated firmware within V0.001-V5.999 |
+| `--allow-unvalidated-firmware` | set, reset | Allow writes on unvalidated firmware within V0.001-V5.999 |
+| `--field-map` | set, reset | Allow writing the `field` and `genfield` curves |
 | `--reset` | set, reset | Reboot controller after write |
+
+### Debug and development options
+
+These bypass safety checks. They exist to diagnose problems and develop this
+tool, not for normal use, and are listed separately in every usage message.
+
+| Option | Applies to | Bypasses |
+|--------|-----------|----------|
+| `--debug-ignore-fw-bounds` | global (before the command) | Firmware bounds for reads (firmware outside V0.001-V5.999); never widens writes |
+| `--debug-no-cal` | write commands | CAL/RUN mode bracket |
+| `--debug-no-verify` | write commands | FLASH read-back verification |
+| `--debug-no-goodset` | write commands | GoodSet check, allowing writes over invalid settings |
+
+The write commands are `write`, `config load`, `curve set`, and `curve reset`.
 
 ## Building
 
@@ -524,7 +565,8 @@ bool alltrax_has_feature(const alltrax_info* info, alltrax_feature feat);
 Checks whether the firmware is new enough to have reliable hardware config
 bytes for a given feature. The `alltrax_info` struct fields (e.g.
 `has_forward`, `throttles_allowed`) are already gated by `alltrax_get_info()`
-— old firmware gets safe defaults (all capabilities assumed present). This
+— old firmware gets defaults (capabilities assumed present; every throttle
+type allowed except EZGO ITS). This
 function is useful if you need to know whether the value was read from
 hardware config vs. defaulted.
 
@@ -675,10 +717,18 @@ Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
 
 | Field | Effect |
 |-------|--------|
-| `skip_cal` | Skip CAL/RUN bracket (safe for bench programming with no motor) |
-| `skip_verify` | Skip read-back verification (FLASH only) |
-| `skip_goodset` | Skip GoodSet corruption pre-check (FLASH only) |
-| `skip_fw_check` | Allow writes on unvalidated firmware within V0.001-V5.999 |
+| `skip_voltage_link` | Skip the voltage relationship check (CLI `--no-voltage-link`) |
+| `skip_fw_check` | Allow writes on unvalidated firmware within V0.001-V5.999 (CLI `--allow-unvalidated-firmware`) |
+| `skip_cal` | Debug bypass: skip the CAL/RUN bracket |
+| `skip_verify` | Debug bypass: skip read-back verification (FLASH only) |
+| `skip_goodset` | Debug bypass: skip the GoodSet check (FLASH only) |
+
+Each variable or curve may appear once per batch; repeated or overlapping
+targets return `ALLTRAX_ERR_INVALID_ARG` before device I/O. Batches that
+write a voltage setting or a nonzero `Throttle_Type` read the controller info
+first: voltage settings must lie within the rated-voltage range (48 V:
+16.0–62.0 V, 72 V: 20.0–90.0 V; other ratings cannot write them), and the
+throttle type must be allowed by the version-gated `throttles_allowed`.
 
 **RAM variables** (`is_flash=false`) take effect immediately but are not
 persistent across power cycles.
@@ -734,7 +784,7 @@ are single-kind wrappers around it.
 const alltrax_curve_def* lin = alltrax_find_curve("linearization");
 alltrax_curve_data curve;                 /* filled by the caller */
 alltrax_assignment items[] = {
-    { .var = alltrax_find_var("F_Table_Name"), .text = "MY FIELD MAP" },
+    { .var = alltrax_find_var("Throttle_Type_Name"), .text = "0-5K 2 Wire" },
     { .var = alltrax_find_var("HPD"), .number = 1 },
     { .curve = lin, .curve_data = &curve },
 };
@@ -859,7 +909,7 @@ Reads real-time status in a single call (6 USB reads internally).
 | Field | Type | Description |
 |-------|------|-------------|
 | `errors[17]` | `uint8_t` | Active error flags (one per error type) |
-| `error_history[17]` | `uint16_t` | Lifetime error counts |
+| `error_history[17]` | `uint16_t` | Raw error history values; nonzero means the error has occurred (units unverified) |
 | `battery_volts` | `double` | Battery voltage (V) |
 | `output_amps` | `double` | Output current (A) |
 | `battery_amps` | `double` | Battery current (A) |
@@ -966,6 +1016,9 @@ Battery voltage limits and analog input threshold.
 | `HiBat_Vlim` | High battery voltage cutoff | V |
 | `BMS_Missing_HiBat_Vlim` | High battery voltage cutoff when BMS is missing | V |
 
+Writes are limited to 16.0–62.0 V on 48 V controllers and 20.0–90.0 V on 72 V
+controllers (see [Write examples](#write-examples)).
+
 #### User Profiles (Normal, User 1, User 2)
 
 Three user profiles with identical structure. The **Normal** profile uses the
@@ -1027,9 +1080,7 @@ read. Write options cannot bypass these checks.
 |----------|-------------|------|--------|
 | `Throttle_Type` | Throttle hardware type (see table above) | | 0–11, integer |
 | `HPD` | High Pedal Disable — block drive if throttle is pressed at key-on | bool | |
-| `Relay_Off_At_Zero` | Turn off main contactor at zero throttle input | bool | |
-| `Speed_Limit_On` | Enable speed limiting (uses `N_Speed_Limit` etc.) | bool | |
-| `Tach_4_8` | Speed sensor type: No = 4-pole, Yes = 8-pole | bool | |
+| `Throttle_Type_Name` | Name of the selected throttle (16 chars) | | |
 | `ABS_Lo_Throt_Min` | Absolute throttle calibration: low input minimum | | 0 – 4095 |
 | `ABS_Lo_Throt_Max` | Absolute throttle calibration: low input maximum | | 0 – 4095 |
 | `ABS_Hi_Throt_Min` | Absolute throttle calibration: high input minimum | | 0 – 4095 |
@@ -1052,14 +1103,15 @@ curves.
 | `User3_Invert` | Charger interlock input polarity | bool | |
 | `BMS_Expected` | Whether a Battery Management System should be connected | bool | |
 | `UserInputs_State` | User input mode: 0 = switches, 1 = U1 analog, 2 = both analog | | 0 – 2 |
-| `Throttle_Type_Name` | Custom display name for the selected throttle (16 chars) | | |
 
-#### Tach (read-only factory defaults)
+#### Tach
 
-Factory copies of speed sensor settings, for reference.
+Speed sensor settings and their read-only factory copies.
 
 | Variable | Description | Unit |
 |----------|-------------|------|
+| `Speed_Limit_On` | Enable speed limiting (uses `N_Speed_Limit` etc.) | bool |
+| `Tach_4_8` | Speed sensor type: No = 4-pole, Yes = 8-pole | bool |
 | `F_Speed_Limit_On` | Speed limiting enabled (factory) | bool |
 | `F_Tach_4_8` | Speed sensor type (factory) | bool |
 
@@ -1201,14 +1253,14 @@ Real-time controller status. These are the variables read by `alltrax monitor`.
 | `State_Of_Charge` | Battery state of charge estimate | % |
 | `Battery_Amps` | Battery current (input side) | A |
 
-#### Controls (writable RAM)
+#### Controls
 
-Writable RAM variables for real-time control. These take effect immediately
-but do not persist across power cycles.
+RAM control variables. Writable ones take effect immediately but do not
+persist across power cycles.
 
 | Variable | Description | Unit |
 |----------|-------------|------|
-| `RunMode` | Controller mode: 0 = RUN (normal), 255 = CAL (settings mode). Used internally by the write bracket — you normally don't need to write this directly. | |
+| `RunMode` | Controller mode: 0 = RUN (normal), 255 = CAL (settings mode). Read-only; the library sets it around writes. | |
 | `Fan_On` | Fan test trigger. Writing `1` starts a timed fan test (~10–30 seconds); the firmware stops it automatically. This is a momentary command, not a toggle — reading it always returns 0. | bool |
 
 ## Supported hardware

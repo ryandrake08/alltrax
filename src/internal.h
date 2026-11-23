@@ -93,7 +93,7 @@ struct alltrax_controller {
 #define ADDR_HARDWARE_CONFIG  (INFOSET_ADDR + 0x80)   /* 0x08000880 */
 
 /* Addresses in other FLASH regions */
-#define ADDR_BOOT_REV         0x080067F0  /* page 13 (DATA) */
+#define ADDR_BOOT_REV         0x080067F0  /* end of page 12 (bootloader) */
 #define ADDR_PRGM_REV         0x0801FFF0  /* last page (PRGM) */
 
 /* RAM addresses */

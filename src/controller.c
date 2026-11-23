@@ -448,10 +448,11 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
         }
 
         /* Gate: ThrottlesAllowed — OriginalBootRev > 2 or
-         * OriginalPrgmRev > 2 */
+         * OriginalPrgmRev > 2. Older firmware allows every type except
+         * EZGO (type 4, bit 3). */
         if (out->original_boot_rev <= 2 &&
             out->original_program_rev <= 2)
-            out->throttles_allowed = 0x7FF;
+            out->throttles_allowed = 0x7F7;
     }
 
     /* Device family is already validated; firmware support is independent. */
@@ -1052,6 +1053,126 @@ static const alltrax_var_def* numeric_var(const alltrax_assignment* item)
     return item->var && !item->text ? item->var : NULL;
 }
 
+/* Voltage settings in voltage link order: KSI, UnderVolt, OverVolt, BMS
+ * Missing OverVolt. */
+static const char* const voltage_names[4] = {
+    "AnalogInputs_Threshold", "LoBat_Vlim", "HiBat_Vlim",
+    "BMS_Missing_HiBat_Vlim",
+};
+
+/* Index of var in voltage_names, or -1 (also for NULL). */
+static int voltage_index(const alltrax_var_def* var)
+{
+    for (int v = 0; var && v < 4; v++) {
+        if (strcmp(var->name, voltage_names[v]) == 0)
+            return v;
+    }
+    return -1;
+}
+
+/* Raw voltage range for a rated voltage; false for unsupported ratings. */
+static bool rated_voltage_range(uint16_t rated, int64_t* lo, int64_t* hi)
+{
+    switch (rated) {
+    case 48: *lo = 160; *hi = 620; return true;
+    case 72: *lo = 200; *hi = 900; return true;
+    default: return false;
+    }
+}
+
+/* Check one numeric assignment against the controller's rated voltage and
+ * allowed throttle types. BMS_Missing_HiBat_Vlim is range-checked only with
+ * the voltage link check. */
+static alltrax_error check_hardware_limits(alltrax_controller* ctrl,
+    const alltrax_info* info, const alltrax_assignment* item,
+    const alltrax_write_opts* opts)
+{
+    const alltrax_var_def* var = numeric_var(item);
+    if (!var)
+        return ALLTRAX_OK;
+    /* Encoded values were validated by encode_assignment(). */
+    uint8_t encoded[4];
+    int len = alltrax_encode_var(var, item->number, encoded);
+
+    int v = voltage_index(var);
+    if (v >= 0 && (v < 3 || !opts->skip_voltage_link)) {
+        int64_t lo, hi;
+        if (!rated_voltage_range(info->rated_voltage, &lo, &hi)) {
+            set_error_detail(ctrl, "Cannot write %s: voltage settings are "
+                             "defined only for 48V and 72V controllers (rated %uV)",
+                             var->name, info->rated_voltage);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+        int64_t raw = len == 2 ? get_le16(encoded) : -1;
+        if (raw < lo || raw > hi) {
+            set_error_detail(ctrl, "%s %.1fV is outside %.1f-%.1fV for a %uV controller",
+                             var->name, item->number, (double)lo * var->scale,
+                             (double)hi * var->scale, info->rated_voltage);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+    }
+
+    /* Type 0 (None) is always allowed; types 1-11 map to bits 0-10. */
+    if (strcmp(var->name, "Throttle_Type") == 0 && len == 1 && encoded[0] > 0) {
+        uint8_t ttype = encoded[0];
+        if (!(info->throttles_allowed & (UINT32_C(1) << (ttype - 1)))) {
+            const char* name = alltrax_throttle_type_name(ttype);
+            set_error_detail(ctrl,
+                "Throttle type %u (%s) is not allowed by hardware (allowed: 0x%04X)",
+                ttype, name ? name : "unknown", info->throttles_allowed);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+    }
+    return ALLTRAX_OK;
+}
+
+static const char* assignment_name(const alltrax_assignment* item)
+{
+    return item->var ? item->var->name : item->curve->name;
+}
+
+/* Byte spans an assignment writes: one for a variable, two for a curve. */
+static size_t assignment_spans(const alltrax_assignment* item,
+    uint32_t addr[2], size_t len[2])
+{
+    if (item->curve) {
+        addr[0] = item->curve->x_address;
+        addr[1] = item->curve->y_address;
+        len[0] = len[1] = ALLTRAX_CURVE_POINTS * 2;
+        return 2;
+    }
+    addr[0] = item->var->address;
+    len[0] = alltrax_var_byte_size(item->var);
+    return 1;
+}
+
+/* Reject repeated or overlapping targets. Items must already be validated
+ * library entries. */
+static alltrax_error check_overlaps(alltrax_controller* ctrl,
+    const alltrax_assignment* items, size_t count)
+{
+    for (size_t i = 0; i < count; i++) {
+        uint32_t ai[2], aj[2];
+        size_t li[2], lj[2];
+        size_t ni = assignment_spans(&items[i], ai, li);
+        for (size_t j = i + 1; j < count; j++) {
+            size_t nj = assignment_spans(&items[j], aj, lj);
+            for (size_t a = 0; a < ni; a++) {
+                for (size_t b = 0; b < nj; b++) {
+                    if (ai[a] < aj[b] + lj[b] && aj[b] < ai[a] + li[a]) {
+                        set_error_detail(ctrl, "%s and %s write the same bytes; "
+                                         "each target may appear once per batch",
+                                         assignment_name(&items[i]),
+                                         assignment_name(&items[j]));
+                        return ALLTRAX_ERR_INVALID_ARG;
+                    }
+                }
+            }
+        }
+    }
+    return ALLTRAX_OK;
+}
+
 alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
     const alltrax_assignment* items, size_t count,
     const alltrax_write_opts* opts)
@@ -1082,29 +1203,50 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
         if (rc) return rc;
     }
 
-    /* ---- 1b. Voltage link validation ---- */
+    /* ---- 1b. Each target byte appears once per batch ---- */
+
+    rc = check_overlaps(ctrl, items, count);
+    if (rc) return rc;
+
+    /* ---- 1c. Hardware limits ---- */
+    /* Voltage settings are bounded by the rated voltage (the link check adds
+     * BMS_Missing_HiBat_Vlim), and Throttle_Type by the version-gated
+     * throttles allowed. Both come from one controller info read. */
+
+    bool needs_info = false;
+    for (size_t i = 0; i < count; i++) {
+        const alltrax_var_def* var = numeric_var(&items[i]);
+        int v = voltage_index(var);
+        if ((v >= 0 && (v < 3 || !opts->skip_voltage_link)) ||
+            (var && strcmp(var->name, "Throttle_Type") == 0 && items[i].number != 0))
+            needs_info = true;
+    }
+
+    if (needs_info) {
+        alltrax_info info;
+        rc = alltrax_get_info(ctrl, &info);
+        if (rc) return rc;
+        for (size_t i = 0; i < count; i++) {
+            rc = check_hardware_limits(ctrl, &info, &items[i], opts);
+            if (rc) return rc;
+        }
+    }
+
+    /* ---- 1d. Voltage link validation ---- */
     /* Enforce KSI < UnderVolt < OverVolt with 1V gaps, plus BMS constraints.
      * Reads current values for any voltage vars not in the write set. */
 
     if (!opts->skip_voltage_link) {
-        static const char* vlink_names[4] = {
-            "AnalogInputs_Threshold",   /* KSI */
-            "LoBat_Vlim",               /* UnderVolt */
-            "HiBat_Vlim",               /* OverVolt */
-            "BMS_Missing_HiBat_Vlim",   /* BMS Missing OverVolt */
-        };
         double vlink_vals[4] = { -1, -1, -1, -1 };
         bool vlink_touched[4] = { false, false, false, false };
         bool any_voltage = false;
 
         for (size_t i = 0; i < count; i++) {
-            const alltrax_var_def* var = numeric_var(&items[i]);
-            for (int v = 0; var && v < 4; v++) {
-                if (strcmp(var->name, vlink_names[v]) == 0) {
-                    vlink_vals[v] = items[i].number;
-                    vlink_touched[v] = true;
-                    any_voltage = true;
-                }
+            int v = voltage_index(numeric_var(&items[i]));
+            if (v >= 0) {
+                vlink_vals[v] = items[i].number;
+                vlink_touched[v] = true;
+                any_voltage = true;
             }
         }
 
@@ -1116,7 +1258,7 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
 
             for (int v = 0; v < 4; v++) {
                 if (!vlink_touched[v]) {
-                    to_read[n_reads] = alltrax_find_var(vlink_names[v]);
+                    to_read[n_reads] = alltrax_find_var(voltage_names[v]);
                     read_idx[n_reads] = v;
                     n_reads++;
                 }
@@ -1138,46 +1280,6 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
             if (rc) {
                 set_error_detail(ctrl, "%s", errmsg);
                 return ALLTRAX_ERR_INVALID_ARG;
-            }
-        }
-    }
-
-    /* ---- 1c. Throttle type validation ---- */
-    /* If Throttle_Type is being written, check that the value is allowed
-     * by the hardware's throttles_allowed bitmask. */
-
-    for (size_t i = 0; i < count; i++) {
-        const alltrax_var_def* var = numeric_var(&items[i]);
-        if (var && strcmp(var->name, "Throttle_Type") == 0) {
-            /* Use the checked encoder's byte, including descriptor scaling or
-             * offsets, so hardware validation matches what will be written. */
-            uint8_t encoded[4];
-            if (alltrax_encode_var(var, items[i].number, encoded) != 1 ||
-                !alltrax_throttle_type_name(encoded[0])) {
-                set_error_detail(ctrl, "Throttle_Type must encode a defined one-byte enum value");
-                return ALLTRAX_ERR_INVALID_ARG;
-            }
-            uint8_t ttype = encoded[0]; /* A defined enum value in [0,11]. */
-
-            /* Type 0 (None) is always allowed */
-            if (ttype > 0) {
-                /* Read throttles_allowed from hardware config */
-                uint32_t hw_addr = ADDR_HARDWARE_CONFIG + 16;
-                uint8_t ta_buf[4];
-                rc = read_memory(ctrl, hw_addr, 4, ta_buf);
-                if (rc) return rc;
-
-                uint32_t throttles_allowed = get_le32(ta_buf);
-                uint32_t bit = UINT32_C(1) << (ttype - 1);
-
-                if (!(throttles_allowed & bit)) {
-                    const char* name = alltrax_throttle_type_name(ttype);
-                    set_error_detail(ctrl,
-                        "Throttle type %u (%s) is not allowed by hardware "
-                        "(allowed: 0x%04X)",
-                        ttype, name ? name : "unknown", throttles_allowed);
-                    return ALLTRAX_ERR_INVALID_ARG;
-                }
             }
         }
     }

@@ -66,6 +66,13 @@ static int test_find_var_run_mode(void)
     ASSERT_NOT_NULL(var);
     ASSERT_EQ(var->address, 0x2000FFFA);
     ASSERT_FALSE(var->is_flash);
+    ASSERT_FALSE(var->writable);  /* The library brackets writes itself. */
+    return 0;
+}
+
+static int test_relay_off_at_zero_is_not_an_xct_setting(void)
+{
+    ASSERT_NULL(alltrax_find_var("Relay_Off_At_Zero"));
     return 0;
 }
 
@@ -118,8 +125,10 @@ static int test_get_tach_group(void)
     size_t count;
     const alltrax_var_def* vars = alltrax_get_var_defs(ALLTRAX_VARS_TACH, &count);
     ASSERT_NOT_NULL(vars);
-    ASSERT_EQ(count, 2);
-    ASSERT_STR_EQ(vars[0].name, "F_Speed_Limit_On");
+    ASSERT_EQ(count, 4);
+    ASSERT_STR_EQ(vars[0].name, "Speed_Limit_On");
+    ASSERT_STR_EQ(vars[1].name, "Tach_4_8");
+    ASSERT_STR_EQ(vars[2].name, "F_Speed_Limit_On");
     return 0;
 }
 
@@ -1497,6 +1506,7 @@ void run_variables_tests(void)
     RUN_TEST(test_find_var_nonexistent);
     RUN_TEST(test_find_var_fan_on);
     RUN_TEST(test_find_var_run_mode);
+    RUN_TEST(test_relay_off_at_zero_is_not_an_xct_setting);
     RUN_TEST(test_find_var_throttle_type_name);
 
     /* Groups */

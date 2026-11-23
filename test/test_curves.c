@@ -253,20 +253,40 @@ static int test_preset_data_s_curve(void)
         alltrax_find_curve_preset("linearization", "0-5k-2wire");
     ASSERT_NOT_NULL(p);
 
-    /* Check a few key points from the S-curve */
-    ASSERT_NEAR(p->x[1], 1.0, 0.01);
-    ASSERT_NEAR(p->y[1], 0.0, 0.01);
-    ASSERT_NEAR(p->x[5], 50.0, 0.01);
-    ASSERT_NEAR(p->y[5], 15.0, 0.01);
-    ASSERT_NEAR(p->x[11], 99.0, 0.01);
-    ASSERT_NEAR(p->y[11], 100.0, 0.01);
-    ASSERT_NEAR(p->x[12], 100.0, 0.01);
-    ASSERT_NEAR(p->y[12], 100.0, 0.01);
+    /* Key points, within one raw count (0.024%) of truncation */
+    ASSERT_NEAR(p->x[1], 1.0, 0.025);
+    ASSERT_NEAR(p->y[1], 0.0, 0.025);
+    ASSERT_NEAR(p->x[5], 50.0, 0.025);
+    ASSERT_NEAR(p->y[5], 15.0, 0.025);
+    ASSERT_NEAR(p->x[11], 99.0, 0.025);
+    ASSERT_NEAR(p->y[11], 100.0, 0.025);
+    ASSERT_NEAR(p->x[12], 100.0, 0.025);
+    ASSERT_NEAR(p->y[12], 100.0, 0.025);
 
     /* Trailing points should be zero */
-    ASSERT_NEAR(p->x[13], 0.0, 0.01);
-    ASSERT_NEAR(p->y[13], 0.0, 0.01);
+    ASSERT_NEAR(p->x[13], 0.0, 0.025);
+    ASSERT_NEAR(p->y[13], 0.0, 0.025);
 
+    return 0;
+}
+
+static int test_linearization_presets_encode_toolkit_raw_values(void)
+{
+    const int16_t x[16] = { 0, 40, 532, 982, 1474, 2047, 2457, 2866, 3194,
+                            3480, 3726, 4054, 4095 };
+    const int16_t y[16] = { 0, 0, 81, 163, 327, 614, 900, 1310, 1801, 2375,
+                            2989, 4095, 4095 };
+    const alltrax_curve_preset* p =
+        alltrax_find_curve_preset("linearization", "0-5k-2wire");
+    const alltrax_curve_def* def = alltrax_find_curve("linearization");
+    ASSERT_NOT_NULL(p);
+    uint8_t buf[32];
+    ASSERT_EQ(encode_curve_array(p->x, def->x_scale, def->x_raw_max, buf), ALLTRAX_OK);
+    for (int i = 0; i < 16; i++)
+        ASSERT_EQ((int16_t)(buf[i * 2] | buf[i * 2 + 1] << 8), x[i]);
+    ASSERT_EQ(encode_curve_array(p->y, def->y_scale, def->y_raw_max, buf), ALLTRAX_OK);
+    for (int i = 0; i < 16; i++)
+        ASSERT_EQ((int16_t)(buf[i * 2] | buf[i * 2 + 1] << 8), y[i]);
     return 0;
 }
 
@@ -448,6 +468,7 @@ void run_curves_tests(void)
     RUN_TEST(test_preset_find);
     RUN_TEST(test_preset_data_s_curve);
     RUN_TEST(test_preset_data_xct_torque);
+    RUN_TEST(test_linearization_presets_encode_toolkit_raw_values);
 
     /* encode_curve_array */
     RUN_TEST(test_encode_curve_identity_scale);

@@ -111,6 +111,7 @@ static const alltrax_var_group save_groups[] = {
     ALLTRAX_VARS_NORMAL_USER,
     ALLTRAX_VARS_USER1,
     ALLTRAX_VARS_USER2,
+    ALLTRAX_VARS_TACH,
     ALLTRAX_VARS_OTHER_SETTINGS,
     ALLTRAX_VARS_THROTTLE,
     ALLTRAX_VARS_FIELD,
@@ -215,7 +216,7 @@ static char* build_xml(alltrax_controller* ctrl, size_t* total_vars,
             goto cleanup;
         }
 
-        /* Read all variables in this group */
+        /* Read the writable variables in this group */
         const alltrax_var_def** ptrs =
             calloc(var_count, sizeof(alltrax_var_def*));
         alltrax_var_value* vals =
@@ -227,12 +228,15 @@ static char* build_xml(alltrax_controller* ctrl, size_t* total_vars,
             goto cleanup;
         }
 
-        for (size_t i = 0; i < var_count; i++)
-            ptrs[i] = &defs[i];
+        size_t n = 0;
+        for (size_t i = 0; i < var_count; i++) {
+            if (defs[i].writable)
+                ptrs[n++] = &defs[i];
+        }
 
-        alltrax_error err = alltrax_read_vars(ctrl, ptrs, var_count, vals);
-        free(ptrs);
+        alltrax_error err = alltrax_read_vars(ctrl, ptrs, n, vals);
         if (err) {
+            free(ptrs);
             free(vals);
             char action[96];
             snprintf(action, sizeof(action), "reading %s settings", gname);
@@ -245,25 +249,27 @@ static char* build_xml(alltrax_controller* ctrl, size_t* total_vars,
         xmlNodePtr group = xmlNewChild(root, NULL, BAD_CAST node_name, NULL);
         bool ok = group != NULL;
 
-        for (size_t i = 0; ok && i < var_count; i++) {
-            char vbuf[32];
-            const char* text = vbuf;
-            if (defs[i].type == ALLTRAX_TYPE_STRING) {
-                text = vals[i].raw.str;
+        for (size_t i = 0; ok && i < n; i++) {
+            /* Strings are space-padded to the field size. */
+            char vbuf[40];
+            if (ptrs[i]->type == ALLTRAX_TYPE_STRING) {
+                snprintf(vbuf, sizeof(vbuf), "%-*s", (int)ptrs[i]->size,
+                         vals[i].raw.str);
             } else {
                 int64_t raw = alltrax_var_raw_int64(&vals[i]);
                 snprintf(vbuf, sizeof(vbuf), "%" PRId64, raw);
             }
-            ok = xmlNewTextChild(group, NULL, BAD_CAST defs[i].name,
-                                 BAD_CAST text) != NULL;
+            ok = xmlNewTextChild(group, NULL, BAD_CAST ptrs[i]->name,
+                                 BAD_CAST vbuf) != NULL;
         }
+        free(ptrs);
         free(vals);
         if (!ok) {
             report_no_memory();
             goto cleanup;
         }
         group_nodes[save_groups[g]] = group;
-        count += var_count;
+        count += n;
     }
 
     /* Append curve data to existing group nodes */
@@ -364,6 +370,22 @@ static bool parse_curve_csv(const char* csv, double scale, double* out)
     /* Allow trailing whitespace/NUL but not extra values */
     while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
     return *p == '\0';
+}
+
+/* Parse a whole decimal integer; surrounding whitespace is allowed. */
+static bool parse_config_integer(const char* text, long long* out)
+{
+    char* end;
+    errno = 0;
+    long long value = strtoll(text, &end, 10);
+    if (end == text || errno == ERANGE)
+        return false;
+    while (*end == ' ' || *end == '\t' || *end == '\r' || *end == '\n')
+        end++;
+    if (*end != '\0')
+        return false;
+    *out = value;
+    return true;
 }
 
 static config_entry* parse_xml(const char* xml, size_t xml_len,
@@ -486,14 +508,13 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
                 continue;
             }
 
-            char* endptr;
-            long long raw = strtoll(value, &endptr, 10);
-            if (*endptr != '\0' && *endptr != ',') {
-                fprintf(stderr, "  Skipping %s: bad value \"%s\"\n",
-                        name, value);
-                (*out_skipped)++;
+            /* A bad value fails the whole load */
+            long long raw;
+            if (!parse_config_integer(value, &raw) ||
+                (var->type == ALLTRAX_TYPE_BOOL && raw != 0 && raw != 1)) {
+                fprintf(stderr, "Error: %s: bad value \"%s\"\n", name, value);
                 xmlFree(xval);
-                continue;
+                goto invalid_config;
             }
             xmlFree(xval);
 
@@ -535,6 +556,9 @@ invalid_config:
     return NULL;
 }
 
+#define LOAD_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_NO_CRYPT | \
+                      CLI_OPT_NO_VOLTAGE_LINK | CLI_OPT_FIELD_MAP)
+
 /* ------------------------------------------------------------------ */
 /* alltrax config save <file>                                          */
 /* ------------------------------------------------------------------ */
@@ -544,11 +568,8 @@ static int do_save(int argc, char** argv)
     cli_flags flags;
     if (cli_parse_args(argc, argv, "config save", CLI_OPT_NO_CRYPT, 1, 1,
                        &flags) < 0) {
-        fprintf(stderr,
-            "Usage: alltrax config save [flags] <file>\n"
-            "\n"
-            "Flags:\n"
-            "  --no-crypt       Write plain XML (not Toolkit-compatible)\n");
+        fprintf(stderr, "Usage: alltrax config save [options] <file>\n");
+        cli_print_options(stderr, CLI_OPT_NO_CRYPT);
         return 1;
     }
     const char* filepath = argv[1];
@@ -623,20 +644,13 @@ static int do_save(int argc, char** argv)
 static int do_load(int argc, char** argv)
 {
     cli_flags flags;
-    if (cli_parse_args(argc, argv, "config load",
-                       CLI_OPT_NO_CRYPT | CLI_OPT_NO_CAL | CLI_OPT_NO_VERIFY |
-                       CLI_OPT_NO_GOODSET | CLI_OPT_NO_FW_VERSION |
-                       CLI_OPT_RESET, 1, 1, &flags) < 0) {
+    if (cli_parse_args(argc, argv, "config load", LOAD_OPTIONS, 1, 1,
+                       &flags) < 0) {
         fprintf(stderr,
-            "Usage: alltrax config load [flags] <file>\n"
+            "Usage: alltrax config load [options] <file>\n"
             "\n"
-            "Flags:\n"
-            "  --no-crypt       Read plain XML (not encrypted)\n"
-            "  --no-cal         Skip CAL/RUN mode bracket\n"
-            "  --no-verify      Skip read-back verification\n"
-            "  --no-goodset     Skip GoodSet pre-check\n"
-            "  --no-fw-version  Allow unvalidated firmware within V0.001-V5.999\n"
-            "  --reset          Reboot controller after write\n");
+            "Field-map entries are skipped unless --field-map is given.\n");
+        cli_print_options(stderr, LOAD_OPTIONS);
         return 1;
     }
     const char* filepath = argv[1];
@@ -716,7 +730,8 @@ static int do_load(int argc, char** argv)
     /* Settings, strings, and curves go to the device in one batch: one
      * CAL/RUN bracket and one settings page cycle. */
     alltrax_curve_data curve_data[NUM_CURVE_XML];
-    alltrax_assignment* items = calloc(count + n_curves, sizeof(*items));
+    /* One spare item for the field-map name. */
+    alltrax_assignment* items = calloc(count + n_curves + 1, sizeof(*items));
     if (!items) {
         fprintf(stderr, "Error: out of memory\n");
         free(entries);
@@ -740,6 +755,26 @@ static int do_load(int argc, char** argv)
         };
     }
 
+    if (!flags.field_map) {
+        size_t kept = 0;
+        for (size_t i = 0; i < n_items; i++) {
+            if (!cli_assignment_is_field_map(&items[i]))
+                items[kept++] = items[i];
+        }
+        if (kept < n_items)
+            printf("Skipping %zu field-map entries (add --field-map to write them)\n",
+                   n_items - kept);
+        n_items = kept;
+    }
+    if (n_items == 0 ||
+        cli_check_field_map(items, n_items, flags.field_map)) {
+        if (n_items == 0)
+            fprintf(stderr, "Error: nothing to write\n");
+        free(items);
+        free(entries);
+        return 1;
+    }
+
     /* Open device with write access */
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, true);
@@ -750,12 +785,13 @@ static int do_load(int argc, char** argv)
     }
 
     int ret = 0;
-    alltrax_write_opts write_opts = {
-        .skip_cal = flags.no_cal,
-        .skip_verify = flags.no_verify,
-        .skip_goodset = flags.no_goodset,
-        .skip_fw_check = flags.no_fw_version,
-    };
+    alltrax_write_opts write_opts = cli_write_opts(&flags);
+    char field_map_name[33];
+    err = cli_add_field_map_name(ctrl, items, &n_items, field_map_name);
+    if (err) {
+        ret = 1;
+        goto done;
+    }
 
     err = alltrax_write_assignments(ctrl, items, n_items, &write_opts);
     if (err) {
@@ -770,6 +806,7 @@ static int do_load(int argc, char** argv)
         else
             printf("  Wrote %s\n", items[i].var->name);
     }
+    cli_field_map_written(items, n_items);
 
     if (flags.reset) {
         err = alltrax_reset_device(ctrl, &write_opts);
@@ -797,20 +834,12 @@ int cmd_config(int argc, char** argv)
 {
     if (argc < 2) {
         fprintf(stderr,
-            "Usage: alltrax config <save|load> [flags] <file>\n"
+            "Usage: alltrax config <save|load> [options] <file>\n"
             "\n"
-            "  save [flags] <file>  Read settings, write config file\n"
-            "  load [flags] <file>  Load config file, write settings to device\n"
+            "  save [options] <file>  Read settings, write config file\n"
+            "  load [options] <file>  Load config file, write settings to device\n"
             "\n"
-            "Common flags:\n"
-            "  --no-crypt       Plain XML instead of encrypted (not Toolkit-compatible)\n"
-            "\n"
-            "Load flags:\n"
-            "  --no-cal         Skip CAL/RUN mode bracket\n"
-            "  --no-verify      Skip read-back verification\n"
-            "  --no-goodset     Skip GoodSet pre-check\n"
-            "  --no-fw-version  Allow unvalidated firmware within V0.001-V5.999\n"
-            "  --reset          Reboot controller after write\n");
+            "Run 'alltrax config save' or 'alltrax config load' for options.\n");
         return 1;
     }
 

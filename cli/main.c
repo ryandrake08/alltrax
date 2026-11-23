@@ -17,7 +17,7 @@ alltrax_error cli_open(alltrax_controller** ctrl, bool writes)
             fprintf(stderr, "  %s\n", alltrax_last_error_detail(*ctrl));
         return err;
     }
-    if (cli_no_fw_version)
+    if (cli_ignore_fw_bounds)
         alltrax_set_firmware_read_override(*ctrl, true);
     return ALLTRAX_OK;
 }
@@ -35,12 +35,13 @@ void cli_error(alltrax_controller* ctrl, alltrax_error err, const char* action)
 static void print_usage(void)
 {
     fprintf(stderr,
-        "Usage: alltrax [--device <path>] <command> [options]\n"
+        "Usage: alltrax [global options] <command> [options]\n"
         "\n"
         "Global options:\n"
-        "  --device <path>  HID device path (e.g. /dev/hidraw0)\n"
-        "  --no-fw-version  Read firmware outside V0.001-V5.999; write\n"
-        "                   unvalidated firmware within V0.001-V5.999\n"
+        "  --device <path>           HID device path (e.g. /dev/hidraw0)\n"
+        "\n"
+        "Debug and development (bypasses safety checks):\n"
+        "  --debug-ignore-fw-bounds  Read firmware outside V0.001-V5.999\n"
         "\n"
         "Commands:\n"
         "  info      Controller identity and firmware\n"
@@ -71,8 +72,8 @@ int main(int argc, char** argv)
             }
             cli_device_path = argv[argi + 1];
             argi += 2;
-        } else if (strcmp(argv[argi], "--no-fw-version") == 0) {
-            cli_no_fw_version = true;
+        } else if (strcmp(argv[argi], "--debug-ignore-fw-bounds") == 0) {
+            cli_ignore_fw_bounds = true;
             argi++;
         } else {
             break;  /* Not a global flag — let subcommand handle it */

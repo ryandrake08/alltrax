@@ -75,12 +75,12 @@ int cmd_info(int argc, char** argv)
     if (!info.supported) {
         printf("\nWarning: firmware (boot %s, program %s) is outside "
                "V0.001-V5.999.\n", info.boot_rev_str, info.program_rev_str);
-        printf("Other reads require 'alltrax --no-fw-version <command>' and "
+        printf("Other reads require 'alltrax --debug-ignore-fw-bounds <command>' and "
                "may produce incorrect results. Writes are not allowed.\n");
     } else if (!info.write_validated) {
         printf("\nWarning: firmware %s has not been validated for writes.\n",
                info.program_rev_str);
-        printf("Writes and reset require --no-fw-version.\n");
+        printf("Writes and reset require --allow-unvalidated-firmware.\n");
     }
 
     alltrax_close(ctrl);

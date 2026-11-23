@@ -34,7 +34,6 @@
 /* RAM variables (not FLASH) */
 #define VAR_RAM_RO(n, d, a, t, sc, off, u) { n, d, a, t, 0, sc, off, u, false, false, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
 #define VAR_RAM_BOOL_RO(n, d, a) { n, d, a, ALLTRAX_TYPE_BOOL, 0, 1.0, 0, "", false, false, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
-#define VAR_RAM_RW(n, d, a, t, sc, off, u) { n, d, a, t, 0, sc, off, u, true, false, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
 #define VAR_RAM_RW_B(n, d, a, t, sc, off, u, mn, mx) { n, d, a, t, 0, sc, off, u, true, false, mn, mx }
 #define VAR_RAM_BOOL_RW(n, d, a) { n, d, a, ALLTRAX_TYPE_BOOL, 0, 1.0, 0, "", true, false, ALLTRAX_NO_MIN, ALLTRAX_NO_MAX }
 
@@ -110,10 +109,8 @@ static const alltrax_var_def user2_vars[] = {
 /* --- THROTTLE --- */
 static const alltrax_var_def throttle_vars[] = {
     VAR_RW_B("Throttle_Type", "Throttle type selector", 0x080020A0, ALLTRAX_TYPE_UINT8, 1.0, 0, "", 0, THROTTLE_TYPE_COUNT - 1),
+    VAR_STR_RW("Throttle_Type_Name", "Name of selected throttle type", 0x080020C0, 16),
     VAR_BOOL_RW("HPD", "High Pedal Disable", 0x080020A4),
-    VAR_BOOL_RW("Relay_Off_At_Zero", "Turn off relay at zero throttle", 0x080020A6),
-    VAR_BOOL_RW("Speed_Limit_On", "Speed limiting enabled", 0x080020A7),
-    VAR_BOOL_RW("Tach_4_8", "false=4-pole, true=8-pole sensor", 0x080020A8),
     VAR_RW_B("ABS_Lo_Throt_Min", "ABS throttle low input min", 0x080020AA, ALLTRAX_TYPE_INT16, 1.0, 0, "", 0, 4095),
     VAR_RW_B("ABS_Lo_Throt_Max", "ABS throttle low input max", 0x080020AC, ALLTRAX_TYPE_INT16, 1.0, 0, "", 0, 4095),
     VAR_RW_B("ABS_Hi_Throt_Min", "ABS throttle high input min", 0x080020AE, ALLTRAX_TYPE_INT16, 1.0, 0, "", 0, 4095),
@@ -132,12 +129,13 @@ static const alltrax_var_def other_settings_vars[] = {
     VAR_BOOL_RW("User3_Invert", "Charger interlock polarity", 0x080020BB),
     VAR_BOOL_RW("BMS_Expected", "True if BMS should be connected", 0x080020BC),
     VAR_RW_B("UserInputs_State", "0=Switches, 1=U1 Analog, 2=Both Analog", 0x080020BE, ALLTRAX_TYPE_INT16, 1.0, 0, "", 0, 2),
-    VAR_STR_RW("Throttle_Type_Name", "Name of selected throttle type", 0x080020C0, 16),
 };
 #define OTHER_SETTINGS_COUNT (sizeof(other_settings_vars) / sizeof(other_settings_vars[0]))
 
-/* --- TACH (factory defaults only — user versions in throttle_vars) --- */
+/* --- TACH --- */
 static const alltrax_var_def tach_vars[] = {
+    VAR_BOOL_RW("Speed_Limit_On", "Speed limiting enabled", 0x080020A7),
+    VAR_BOOL_RW("Tach_4_8", "false=4-pole, true=8-pole sensor", 0x080020A8),
     VAR_BOOL_RO("F_Speed_Limit_On", "Speed limiting enabled (factory)", 0x080010A7),
     VAR_BOOL_RO("F_Tach_4_8", "false=4-pole, true=8-pole (factory)", 0x080010A8),
 };
@@ -257,7 +255,7 @@ static const alltrax_var_def read_values_vars[] = {
 
 /* --- WRITE VALUES (writable RAM controls) --- */
 static const alltrax_var_def write_values_vars[] = {
-    VAR_RAM_RW("RunMode", "0x00=RUN, 0xFF=CAL", 0x2000FFFA, ALLTRAX_TYPE_UINT8, 1.0, 0, ""),
+    VAR_RAM_RO("RunMode", "0x00=RUN, 0xFF=CAL", 0x2000FFFA, ALLTRAX_TYPE_UINT8, 1.0, 0, ""),
     VAR_RAM_BOOL_RW("Fan_On", "Fan test trigger (momentary)", 0x2000F204),
 };
 #define WRITE_VALUES_COUNT (sizeof(write_values_vars) / sizeof(write_values_vars[0]))
@@ -751,42 +749,43 @@ const alltrax_curve_def* alltrax_curve_by_index(size_t index)
 /* ------------------------------------------------------------------ */
 /* Curve preset definitions                                           */
 /* ------------------------------------------------------------------ */
-/*   XCT_ThrotLin[12]  — linearization presets per throttle type      */
-/*   Curves_Speed[1]    — standard speed preset                       */
-/*   XCT_Curves_Torque[1] — XCT torque preset                         */
+/* Default linearization curves for the throttle types, and the       */
+/* standard speed and torque curves.                                  */
 /* All values are in display units (percentages).                     */
+
+#define LIN(pct) ((double)((4095 * (pct)) / 100) * SCALE_AMPS_PCT)
 
 static const alltrax_curve_preset curve_presets[] = {
     /* --- Linearization presets --- */
     {
         "linear", "Simple linear response",
         "linearization",
-        { 0, 1, 99, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
-        { 0, 0, 100, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
+        { 0, LIN(1), LIN(99), LIN(100), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        { 0, 0, LIN(100), LIN(100), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
     },
     {
         "0-5k-2wire", "S-curve for 0-5K ohm 2-wire pot",
         "linearization",
-        { 0, 1, 13, 24, 36, 50, 60, 70, 78, 85, 91, 99, 100, 0,0,0 },
-        { 0, 0,  2,  4,  8, 15, 22, 32, 44, 58, 73, 100, 100, 0,0,0 },
+        { 0, LIN(1), LIN(13), LIN(24), LIN(36), LIN(50), LIN(60), LIN(70), LIN(78), LIN(85), LIN(91), LIN(99), LIN(100), 0, 0, 0 },
+        { 0, 0, LIN(2), LIN(4), LIN(8), LIN(15), LIN(22), LIN(32), LIN(44), LIN(58), LIN(73), LIN(100), LIN(100), 0, 0, 0 },
     },
     {
         "5k-0-2wire", "Inverse S-curve for 5K-0 ohm 2-wire pot",
         "linearization",
-        { 0, 1,  9, 15, 22, 30, 40, 50, 64, 76, 87, 99, 100, 0,0,0 },
-        { 0, 0, 27, 42, 56, 68, 78, 85, 92, 96, 99, 100, 100, 0,0,0 },
+        { 0, LIN(1), LIN(9), LIN(15), LIN(22), LIN(30), LIN(40), LIN(50), LIN(64), LIN(76), LIN(87), LIN(99), LIN(100), 0, 0, 0 },
+        { 0, 0, LIN(27), LIN(42), LIN(56), LIN(68), LIN(78), LIN(85), LIN(92), LIN(96), LIN(99), LIN(100), LIN(100), 0, 0, 0 },
     },
     {
         "yamaha", "Compressed range for Yamaha 0-1K throttle",
         "linearization",
-        { 0, 1, 80, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
-        { 0, 0, 100, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
+        { 0, LIN(1), LIN(80), LIN(100), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        { 0, 0, LIN(100), LIN(100), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
     },
     {
         "clubcar", "Offset start for Club Car 3-wire throttle",
         "linearization",
-        { 0, 5, 99, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
-        { 0, 0, 100, 100, 0,0,0,0, 0,0,0,0, 0,0,0,0 },
+        { 0, LIN(5), LIN(99), LIN(100), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+        { 0, 0, LIN(100), LIN(100), 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
     },
 
     /* --- Speed preset --- */

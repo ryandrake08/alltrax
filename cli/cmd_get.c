@@ -36,14 +36,15 @@ int cmd_get(int argc, char** argv)
     if (err) return 1;
 
     if (nargs == 0) {
-        /* No args: print all settings groups */
+        /* No args: print the writable settings (not factory copies) */
         alltrax_var_group groups[] = {
             ALLTRAX_VARS_VOLTAGE,
             ALLTRAX_VARS_NORMAL_USER,
             ALLTRAX_VARS_USER1,
             ALLTRAX_VARS_USER2,
-            ALLTRAX_VARS_THROTTLE,
+            ALLTRAX_VARS_TACH,
             ALLTRAX_VARS_OTHER_SETTINGS,
+            ALLTRAX_VARS_THROTTLE,
         };
         size_t ngroups = sizeof(groups) / sizeof(groups[0]);
 
@@ -53,18 +54,21 @@ int cmd_get(int argc, char** argv)
             if (!defs || count == 0) continue;
 
             const alltrax_var_def* ptrs[64];
-            for (size_t i = 0; i < count && i < 64; i++)
-                ptrs[i] = &defs[i];
+            size_t n = 0;
+            for (size_t i = 0; i < count && n < 64; i++) {
+                if (defs[i].writable)
+                    ptrs[n++] = &defs[i];
+            }
 
             alltrax_var_value vals[64];
-            err = alltrax_read_vars(ctrl, ptrs, count, vals);
+            err = alltrax_read_vars(ctrl, ptrs, n, vals);
             if (err) {
                 cli_error(ctrl, err, "reading variables");
                 alltrax_close(ctrl);
                 return 1;
             }
 
-            for (size_t i = 0; i < count; i++)
+            for (size_t i = 0; i < n; i++)
                 print_var(&vals[i]);
         }
     } else {

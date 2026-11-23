@@ -15,31 +15,23 @@
 int cmd_write(int argc, char** argv)
 {
     cli_flags flags;
-    int n_assignments = cli_parse_args(argc, argv, "write",
-        CLI_OPT_NO_CAL | CLI_OPT_NO_VERIFY | CLI_OPT_NO_GOODSET |
-        CLI_OPT_NO_FW_VERSION | CLI_OPT_NO_VOLTAGE_LINK | CLI_OPT_RESET,
-        1, -1, &flags);
+    const unsigned allowed = CLI_OPTS_WRITE | CLI_OPT_NO_VOLTAGE_LINK |
+                             CLI_OPT_FIELD_MAP;
+    int n_assignments = cli_parse_args(argc, argv, "write", allowed, 1, -1,
+                                       &flags);
 
     if (n_assignments < 0) {
         fprintf(stderr,
-            "Usage: alltrax write [flags] var=value ...\n"
+            "Usage: alltrax write [options] var=value ...\n"
             "\n"
             "String variables take the text after '=' (printable ASCII, up to\n"
-            "the field size); an empty value clears the field.\n"
-            "\n"
-            "Flags:\n"
-            "  --no-cal           Skip CAL/RUN mode bracket\n"
-            "  --no-verify        Skip read-back verification (FLASH)\n"
-            "  --no-goodset       Skip GoodSet pre-check (allows write when\n"
-            "                     a previous interrupted write left GoodSet invalid)\n"
-            "  --no-fw-version    Allow unvalidated firmware within V0.001-V5.999\n"
-            "  --no-voltage-link  Skip voltage link validation\n"
-            "                     (KSI < UnderVolt < OverVolt, min 1V gaps)\n"
-            "  --reset            Reboot controller after FLASH write\n");
+            "the field size); an empty value clears the field.\n");
+        cli_print_options(stderr, allowed);
         return 1;
     }
 
-    alltrax_assignment* assigns = calloc((size_t)n_assignments,
+    /* One spare item for the field-map name. */
+    alltrax_assignment* assigns = calloc((size_t)n_assignments + 1,
                                          sizeof(alltrax_assignment));
     if (!assigns) {
         fprintf(stderr, "Error: out of memory\n");
@@ -122,6 +114,12 @@ int cmd_write(int argc, char** argv)
         assigns[i] = (alltrax_assignment){ .var = var, .number = value };
     }
 
+    size_t count = (size_t)n_assignments;
+    if (cli_check_field_map(assigns, count, flags.field_map)) {
+        free(assigns);
+        return 1;
+    }
+
     /* Open with write access */
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, true);
@@ -131,26 +129,25 @@ int cmd_write(int argc, char** argv)
     }
 
     int ret = 0;
+    alltrax_write_opts write_opts = cli_write_opts(&flags);
+    char field_map_name[33];
 
-    alltrax_write_opts write_opts = {
-        .skip_cal = flags.no_cal,
-        .skip_verify = flags.no_verify,
-        .skip_goodset = flags.no_goodset,
-        .skip_fw_check = flags.no_fw_version,
-        .skip_voltage_link = flags.no_voltage_link,
-    };
-
-    err = alltrax_write_assignments(ctrl, assigns, (size_t)n_assignments,
-                                    &write_opts);
+    err = cli_add_field_map_name(ctrl, assigns, &count, field_map_name);
+    if (err) {
+        ret = 1;
+        goto done;
+    }
+    err = alltrax_write_assignments(ctrl, assigns, count, &write_opts);
     if (err) {
         cli_error(ctrl, err, "writing variables");
         ret = 1;
         goto done;
     }
 
-    for (int i = 0; i < n_assignments; i++)
+    for (size_t i = 0; i < count; i++)
         printf("Wrote %s (%s)\n", assigns[i].var->name,
                assigns[i].var->is_flash ? "FLASH" : "RAM");
+    cli_field_map_written(assigns, count);
 
     if (flags.reset) {
         err = alltrax_reset_device(ctrl, &write_opts);
