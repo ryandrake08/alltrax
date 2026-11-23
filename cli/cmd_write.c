@@ -129,10 +129,12 @@ int cmd_write(int argc, char** argv)
     }
 
     int ret = 0;
-    alltrax_write_opts write_opts = cli_write_opts(&flags);
+    alltrax_write_report report;
+    alltrax_write_opts write_opts = cli_write_opts(&flags, &report);
     char field_map_name[33];
 
-    err = cli_add_field_map_name(ctrl, assigns, &count, field_map_name);
+    err = cli_add_field_map_name(ctrl, assigns, &count, field_map_name,
+                                 flags.debug_no_goodset);
     if (err) {
         ret = 1;
         goto done;
@@ -140,6 +142,7 @@ int cmd_write(int argc, char** argv)
     err = alltrax_write_assignments(ctrl, assigns, count, &write_opts);
     if (err) {
         cli_error(ctrl, err, "writing variables");
+        cli_print_write_report(&report);
         ret = 1;
         goto done;
     }
@@ -149,15 +152,7 @@ int cmd_write(int argc, char** argv)
                assigns[i].var->is_flash ? "FLASH" : "RAM");
     cli_field_map_written(assigns, count);
 
-    if (flags.reset) {
-        err = alltrax_reset_device(ctrl, &write_opts);
-        if (err) {
-            cli_error(ctrl, err, "resetting device");
-            ret = 1;
-            goto done;
-        }
-        printf("Device reset sent (controller will reboot)\n");
-    }
+    cli_print_write_report(&report);
 
 /* Success and write/reset failures release the batch and close the device. */
 done:

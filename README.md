@@ -124,6 +124,18 @@ Each variable or curve may appear only once per write. Voltage settings
 ratings cannot write them. `Throttle_Type` must be allowed by the controller's
 hardware (older controllers allow every type except EZGO ITS).
 
+Writing `Throttle_Type` or `HPD` clears the learned throttle calibration and
+reboots the controller. Writing `Speed_Limit_On` or `Tach_4_8` also reboots it.
+Writing `F_Table_Name` updates the field-map date. These actions run even if the
+assigned values are unchanged. Adding `--reset` still sends only one reset.
+The command prints each action it performed, such as "Cleared throttle
+auto-calibration" and "Device reset sent", including after a failed write.
+
+Before a FLASH write, the tool checks both settings pages. If the factory
+page is invalid, it refuses the write. If only the user settings page is
+invalid, it announces the recovery, restores the factory page to user
+settings, then applies the requested changes.
+
 ### Write options
 
 | Option | Effect |
@@ -131,7 +143,7 @@ hardware (older controllers allow every type except EZGO ITS).
 | `--no-voltage-link` | Skip the KSI/under-voltage/over-voltage relationship check (KSI + 1 V ≤ under-voltage ≤ over-voltage − 1 V, with the BMS-missing limit between them) |
 | `--allow-unvalidated-firmware` | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | Allow writing field-map data (see [Field maps](#field-maps)) |
-| `--reset` | Reboot controller after FLASH write |
+| `--reset` | Reboot controller after a successful write |
 
 Debug bypasses are listed under [Debug and development options](#debug-and-development-options).
 
@@ -142,8 +154,8 @@ field weakening variables) must match the installed motor; a wrong map can
 damage the motor. Any command that writes field-map data requires
 `--field-map`, prints a warning, and afterwards reminds you to check the speed
 sensor pole count (`Tach_4_8`). Field-map writes always include
-`F_Table_Name`: when a command does not set it, the current name is written
-back with the map.
+`F_Table_Name`: when a command does not set it, the name from the settings
+page used for the write is written back with the map.
 
 ```sh
 alltrax write Turbo_Start_RPM=2500 --field-map
@@ -321,7 +333,8 @@ tool, not for normal use, and are listed separately in every usage message.
 | `--debug-ignore-fw-bounds` | global (before the command) | Firmware bounds for reads (firmware outside V0.001-V5.999); never widens writes |
 | `--debug-no-cal` | write commands | CAL/RUN mode bracket |
 | `--debug-no-verify` | write commands | FLASH read-back verification |
-| `--debug-no-goodset` | write commands | GoodSet check, allowing writes over invalid settings |
+| `--debug-no-goodset` | write commands | GoodSet checks and factory recovery |
+| `--debug-no-post-write` | write commands | Automatic calibration clear, date stamp and reset. An explicit `--reset` still applies. |
 
 The write commands are `write`, `config load`, `curve set`, and `curve reset`.
 
@@ -451,7 +464,7 @@ path that matches a supported enumeration entry. Opening performs a read-only
 model check and accepts the XCT, SRX, and NCT prefixes. PID 1 and unrecognized
 families are rejected with `ALLTRAX_ERR_UNSUPPORTED`; unmatched paths return
 `ALLTRAX_ERR_NO_DEVICE`. Firmware overrides cannot bypass these checks.
-Opening also reads the boot and program revisions used by the firmware policy.
+Opening also reads the boot and program revisions and StartUpSwitch.
 `*out` must be `NULL` on entry and remains `NULL` on failure. Set `allow_writes`
 to `true` if you intend to write settings; the library will reject write
 operations otherwise. Multiple controllers can be open simultaneously.
@@ -468,6 +481,10 @@ reset require write-validated firmware (V5.005); `skip_fw_check` widens this to
 V0.001-V5.999. Firmware outside that range is never written, and the read
 override does not affect writes.
 
+`info` reports whether the controller is in program or bootloader mode. In
+bootloader mode, only controller information can be read. Other controller
+operations return `ALLTRAX_ERR_BOOTLOADER`, even with a firmware override.
+
 ### Error handling
 
 All functions that can fail return `alltrax_error`:
@@ -482,7 +499,7 @@ All functions that can fail return `alltrax_error`:
 | `ALLTRAX_ERR_VERIFY` | Write echo mismatch |
 | `ALLTRAX_ERR_FIRMWARE` | Unsupported firmware version |
 | `ALLTRAX_ERR_FLASH` | FLASH operation failed |
-| `ALLTRAX_ERR_NOT_RUN` | Controller not in RUN mode |
+| `ALLTRAX_ERR_BOOTLOADER` | Settings and reset unavailable in bootloader mode |
 | `ALLTRAX_ERR_INVALID_ARG` | Bad argument |
 | `ALLTRAX_ERR_NO_DEVICE` | No Alltrax device found |
 | `ALLTRAX_ERR_UNSUPPORTED` | Unsupported USB identity or controller family |
@@ -491,9 +508,11 @@ All functions that can fail return `alltrax_error`:
 
 HID transfers require exactly 64 bytes, including the Report ID. An incomplete
 write returns `ALLTRAX_ERR_USB`; a positive-length incomplete read returns
-`ALLTRAX_ERR_PROTOCOL` before parsing. A zero-byte read returns
-`ALLTRAX_ERR_TIMEOUT`. Transfer-length diagnostics report the expected and
-actual byte counts.
+`ALLTRAX_ERR_PROTOCOL` before parsing. The reply timeout is 750 ms. After a
+timeout, the library drains pending reports, resends once, and drains again
+before moving on. Negative HID writes get up to four attempts, 125 ms apart.
+A reset is sent once because it has no reply. Transfer-length diagnostics
+report the expected and actual byte counts.
 
 ```c
 const char* alltrax_strerror(alltrax_error err);
@@ -694,6 +713,7 @@ RUN cleanup. If the operation and restoration both fail, the original error
 code is returned and `alltrax_last_error_detail()` includes both failures
 (abbreviated to fit its buffer). If only restoration fails, its error is
 returned explicitly as a RUN restoration failure.
+If the controller starts outside RUN, the library writes in its existing mode.
 
 The library enforces each definition's `writable` permission. A read-only
 variable anywhere in a batch returns `ALLTRAX_ERR_INVALID_ARG` before device
@@ -721,7 +741,10 @@ Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
 | `skip_fw_check` | Allow writes on unvalidated firmware within V0.001-V5.999 (CLI `--allow-unvalidated-firmware`) |
 | `skip_cal` | Debug bypass: skip the CAL/RUN bracket |
 | `skip_verify` | Debug bypass: skip read-back verification (FLASH only) |
-| `skip_goodset` | Debug bypass: skip the GoodSet check (FLASH only) |
+| `skip_goodset` | Debug bypass: skip GoodSet checks and factory recovery |
+| `skip_post_write` | Debug bypass: skip automatic calibration clear, date stamp and reset |
+| `reset_after_write` | Request one reset after a successful write |
+| `report` | Optional `alltrax_write_report*`, cleared and then filled with the actions the write performed: `factory_restored`, `autocal_cleared`, `date_stamped`, `reset_sent`. Each flag is set once its action succeeded, so a failed write still reports what ran. |
 
 Each variable or curve may appear once per batch; repeated or overlapping
 targets return `ALLTRAX_ERR_INVALID_ARG` before device I/O. Batches that
@@ -736,7 +759,8 @@ persistent across power cycles.
 **FLASH variables** (`is_flash=true`) are persistent. The library performs a
 full page cycle: read the 2KB settings page, patch in the new values, erase
 the page, write it back, and verify. Multiple FLASH variables are batched into
-a single page cycle. Requires `allow_writes=true` and the write firmware policy.
+a single page cycle, plus a separate cycle if factory recovery is needed.
+Requires `allow_writes=true` and the write firmware policy.
 
 When both RAM and FLASH variables are written together, all writes share a
 single CAL/RUN bracket — saving 4 USB packets compared to separate calls.

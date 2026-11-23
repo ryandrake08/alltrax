@@ -130,6 +130,12 @@ static uint8_t identity_byte(uint32_t a)
     return 0;
 }
 
+alltrax_error transport_drain(alltrax_controller* ctrl)
+{
+    (void)ctrl;
+    return ALLTRAX_OK;
+}
+
 alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
 {
     (void)ctrl;
@@ -513,7 +519,9 @@ static int test_write_options_map_to_library_options(void)
     };
     cli_flags flags;
     ASSERT_EQ(cli_parse_args(6, argv, "write", ~0u, 0, -1, &flags), 0);
-    alltrax_write_opts opts = cli_write_opts(&flags);
+    alltrax_write_report report;
+    alltrax_write_opts opts = cli_write_opts(&flags, &report);
+    ASSERT_TRUE(opts.report == &report);
     ASSERT_TRUE(opts.skip_cal && opts.skip_verify && opts.skip_goodset &&
                 opts.skip_fw_check && opts.skip_voltage_link);
     return 0;
@@ -938,7 +946,7 @@ static int test_config_load_reset_flag_sends_one_reset(void)
         ASSERT_EQ(make_temp_path(path), 0);
         ASSERT_EQ(run_config_save(path, 5005), 0);
         if (fail)
-            device.page[0] = device.page[1] = 0xFF;  /* GoodSet invalid */
+            device.fact_goodset = 0xFFFF;
         device.erases = device.resets = 0;
         char* argv[] = { "config", "load", "--no-crypt", path, "--reset" };
         int rc = run_writable(cmd_config, 5, argv);
@@ -1099,9 +1107,9 @@ static int test_reset_flag_sends_one_reset_after_success(void)
 static int test_reset_flag_sends_no_reset_after_failure(void)
 {
     for (int which = 0; which < 4; which++) {
-        /* An invalid GoodSet fails writes; a failed read fails curve reset. */
+        /* Invalid factory settings fail writes; a failed read fails curve reset. */
         writable_device_reset();
-        device.page[0] = device.page[1] = 0xFF;
+        device.fact_goodset = 0xFFFF;
         device.fail_read_at = which == 3 ? 1 : 0;
         ASSERT_EQ(run_reset_case(which), 1);
         ASSERT_EQ(device.erases, 0);
@@ -1244,6 +1252,25 @@ static int test_field_map_writes_include_current_name(void)
     return 0;
 }
 
+static int test_field_map_recovery_uses_factory_name(void)
+{
+    writable_device_reset();
+    set_page_bytes("F_Table_Name", "INVALID", 7);
+    device.page[0] = device.page[1] = 0xFF;
+    const alltrax_var_def* name = alltrax_find_var("F_Table_Name");
+    size_t offset = name->address - VARSET_ADDR;
+    memcpy(device.factory + offset, "FACTORY", 7);
+
+    char arg[] = "Turbo_Start_RPM=2000";
+    char* argv[] = { "write", arg, "--field-map" };
+    ASSERT_EQ(run_writable(cmd_write, 3, argv), 0);
+    ASSERT_EQ(device.erases, 2);
+    uint8_t expected[32];
+    ASSERT_EQ(alltrax_encode_string(name, "FACTORY", expected), 32);
+    ASSERT_MEM_EQ(device.page + offset, expected, sizeof(expected));
+    return 0;
+}
+
 #ifdef TEST_CONFIG
 /* Load a plain XML file into the writable device. */
 static int run_config_load(const char* xml, bool field_map)
@@ -1356,6 +1383,7 @@ int main(void)
     RUN_TEST(test_get_lists_settings_without_factory_copies);
     RUN_TEST(test_field_map_writes_require_flag);
     RUN_TEST(test_field_map_writes_include_current_name);
+    RUN_TEST(test_field_map_recovery_uses_factory_name);
     RUN_TEST(test_options_accepted_before_and_after_positionals);
     RUN_TEST(test_invalid_options_and_argument_counts_rejected);
     RUN_TEST(test_write_options_map_to_library_options);

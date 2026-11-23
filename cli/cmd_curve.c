@@ -365,9 +365,11 @@ static int do_set(int argc, char** argv)
     err = cli_open(&ctrl, true);
     if (err) return 1;
 
-    alltrax_write_opts opts = cli_write_opts(&flags);
+    alltrax_write_report report;
+    alltrax_write_opts opts = cli_write_opts(&flags, &report);
     char field_map_name[33];
-    err = cli_add_field_map_name(ctrl, items, &count, field_map_name);
+    err = cli_add_field_map_name(ctrl, items, &count, field_map_name,
+                                 flags.debug_no_goodset);
     if (err) {
         alltrax_close(ctrl);
         return 1;
@@ -375,6 +377,7 @@ static int do_set(int argc, char** argv)
     err = alltrax_write_assignments(ctrl, items, count, &opts);
     if (err) {
         cli_error(ctrl, err, "writing curve");
+        cli_print_write_report(&report);
         alltrax_close(ctrl);
         return 1;
     }
@@ -382,15 +385,7 @@ static int do_set(int argc, char** argv)
     printf("Wrote %s curve (%d points)\n", def->name, ALLTRAX_CURVE_POINTS);
     cli_field_map_written(items, count);
 
-    if (flags.reset) {
-        err = alltrax_reset_device(ctrl, &opts);
-        if (err) {
-            cli_error(ctrl, err, "resetting device");
-            alltrax_close(ctrl);
-            return 1;
-        }
-        printf("Device reset sent (controller will reboot)\n");
-    }
+    cli_print_write_report(&report);
 
     alltrax_close(ctrl);
     return 0;
@@ -533,7 +528,8 @@ static int do_curve_reset(int argc, char** argv)
         return 1;
     }
 
-    alltrax_write_opts opts = cli_write_opts(&flags);
+    alltrax_write_report report;
+    alltrax_write_opts opts = cli_write_opts(&flags, &report);
     char field_map_name[33];
 
     /* Read every selected factory curve first, then restore them in one batch
@@ -548,7 +544,8 @@ static int do_curve_reset(int argc, char** argv)
         }
     }
     size_t count = n;
-    err = cli_add_field_map_name(ctrl, items, &count, field_map_name);
+    err = cli_add_field_map_name(ctrl, items, &count, field_map_name,
+                                 flags.debug_no_goodset);
     if (err) {
         ret = 1;
         goto done;
@@ -557,6 +554,7 @@ static int do_curve_reset(int argc, char** argv)
     err = alltrax_write_assignments(ctrl, items, count, &opts);
     if (err) {
         cli_error(ctrl, err, "resetting curves");
+        cli_print_write_report(&report);
         ret = 1;
         goto done;
     }
@@ -564,15 +562,7 @@ static int do_curve_reset(int argc, char** argv)
         printf("Reset %s curve to factory defaults\n", items[i].curve->name);
     cli_field_map_written(items, count);
 
-    if (flags.reset) {
-        err = alltrax_reset_device(ctrl, &opts);
-        if (err) {
-            cli_error(ctrl, err, "resetting device");
-            ret = 1;
-            goto done;
-        }
-        printf("Device reset sent (controller will reboot)\n");
-    }
+    cli_print_write_report(&report);
 
 /* Read, write, and reset failures share cleanup for both buffers and the device. */
 done:

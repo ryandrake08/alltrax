@@ -25,6 +25,7 @@ struct alltrax_controller {
     alltrax_controller_type controller_type; /* Validated model family */
     uint32_t     boot_rev;     /* Read when the controller is identified */
     uint32_t     program_rev;
+    bool         bootloader_mode;
     bool         firmware_read_override;
     bool         allow_writes;
     char         error_detail[256];
@@ -98,6 +99,9 @@ struct alltrax_controller {
 
 /* RAM addresses */
 #define ADDR_RUN_MODE  0x2000FFFA
+#define ADDR_FIELD_MAP_DATE 0x2000F210
+#define ADDR_BACKUP_RAM     0x40006C00
+#define BACKUP_RAM_SIZE     20
 #define RUN_MODE_RUN   0x00
 #define RUN_MODE_CAL   0xFF
 #define RAM_BASE       0x20000000
@@ -122,6 +126,8 @@ void build_write_request(uint32_t addr, const uint8_t* data, uint8_t data_len,
     uint8_t buf[PACKET_SIZE]);
 void build_page_erase_request(uint8_t page, uint8_t buf[PACKET_SIZE]);
 void build_reset_request(uint8_t buf[PACKET_SIZE]);
+void build_flash_get_flag_request(uint8_t flag, uint8_t buf[PACKET_SIZE]);
+void build_flash_clear_flags_request(uint8_t flags, uint8_t buf[PACKET_SIZE]);
 alltrax_error parse_response(const uint8_t data[PACKET_SIZE],
     uint8_t expected_type, uint8_t* result, uint8_t* num_bytes,
     uint8_t payload[MAX_PAYLOAD]);
@@ -155,9 +161,11 @@ alltrax_error transport_write(alltrax_controller* ctrl,
     const uint8_t data[PACKET_SIZE]);
 alltrax_error transport_read(alltrax_controller* ctrl,
     uint8_t buf[PACKET_SIZE]);
+/* Discard pending reports until the open device's input is quiet. */
+alltrax_error transport_drain(alltrax_controller* ctrl);
 
-/* controller.c: read and validate the model and firmware revisions after USB
- * identity is established. */
+/* controller.c: validate the model and read revisions and startup mode after
+ * USB identity is established. */
 alltrax_error identify_controller(alltrax_controller* ctrl);
 
 /* Byte helpers */

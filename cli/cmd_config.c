@@ -785,9 +785,11 @@ static int do_load(int argc, char** argv)
     }
 
     int ret = 0;
-    alltrax_write_opts write_opts = cli_write_opts(&flags);
+    alltrax_write_report report;
+    alltrax_write_opts write_opts = cli_write_opts(&flags, &report);
     char field_map_name[33];
-    err = cli_add_field_map_name(ctrl, items, &n_items, field_map_name);
+    err = cli_add_field_map_name(ctrl, items, &n_items, field_map_name,
+                                 flags.debug_no_goodset);
     if (err) {
         ret = 1;
         goto done;
@@ -796,6 +798,7 @@ static int do_load(int argc, char** argv)
     err = alltrax_write_assignments(ctrl, items, n_items, &write_opts);
     if (err) {
         cli_error(ctrl, err, "writing settings");
+        cli_print_write_report(&report);
         ret = 1;
         goto done;
     }
@@ -808,15 +811,7 @@ static int do_load(int argc, char** argv)
     }
     cli_field_map_written(items, n_items);
 
-    if (flags.reset) {
-        err = alltrax_reset_device(ctrl, &write_opts);
-        if (err) {
-            cli_error(ctrl, err, "resetting device");
-            ret = 1;
-            goto done;
-        }
-        printf("Device reset sent (controller will reboot)\n");
-    }
+    cli_print_write_report(&report);
 
 /* Write/reset failures share cleanup with success; items reference entries. */
 done:

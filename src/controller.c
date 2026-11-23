@@ -2,13 +2,35 @@
  * controller.c — High-level operations: read/write/flash/reset
  */
 
+#define _POSIX_C_SOURCE 200809L
 #include "internal.h"
 #include <math.h>
 #include <stdlib.h>
+#include <time.h>
 
 /* ------------------------------------------------------------------ */
 /* Memory read/write                                                   */
 /* ------------------------------------------------------------------ */
+
+static alltrax_error exchange(alltrax_controller* ctrl,
+    const uint8_t request[PACKET_SIZE], uint8_t response[PACKET_SIZE])
+{
+    alltrax_error rc = transport_write(ctrl, request);
+    if (rc) return rc;
+    rc = transport_read(ctrl, response);
+    if (rc != ALLTRAX_ERR_TIMEOUT) return rc;
+
+    rc = transport_drain(ctrl);
+    if (rc) return rc;
+    rc = transport_write(ctrl, request);
+    if (!rc)
+        rc = transport_read(ctrl, response);
+
+    /* A late reply to the first send may have satisfied the second read.
+     * Discard any duplicate before issuing a different request. */
+    alltrax_error drain_rc = transport_drain(ctrl);
+    return drain_rc ? drain_rc : rc;
+}
 
 static alltrax_error read_memory(alltrax_controller* ctrl, uint32_t addr,
     size_t num_bytes, uint8_t* buf)
@@ -22,11 +44,8 @@ static alltrax_error read_memory(alltrax_controller* ctrl, uint32_t addr,
     uint8_t request[PACKET_SIZE];
     build_read_request(addr, (uint8_t)num_bytes, request);
 
-    alltrax_error rc = transport_write(ctrl, request);
-    if (rc) return rc;
-
     uint8_t response[PACKET_SIZE];
-    rc = transport_read(ctrl, response);
+    alltrax_error rc = exchange(ctrl, request, response);
     if (rc) return rc;
 
     uint8_t result, n;
@@ -88,11 +107,8 @@ static alltrax_error write_memory(alltrax_controller* ctrl, uint32_t addr,
     uint8_t request[PACKET_SIZE];
     build_write_request(addr, data, (uint8_t)len, request);
 
-    alltrax_error rc = transport_write(ctrl, request);
-    if (rc) return rc;
-
     uint8_t response[PACKET_SIZE];
-    rc = transport_read(ctrl, response);
+    alltrax_error rc = exchange(ctrl, request, response);
     if (rc) return rc;
 
     uint8_t result, n;
@@ -119,23 +135,6 @@ static alltrax_error write_memory(alltrax_controller* ctrl, uint32_t addr,
         return ALLTRAX_ERR_VERIFY;
     }
 
-    return ALLTRAX_OK;
-}
-
-/* Write an arbitrary number of bytes in 56-byte chunks */
-static alltrax_error write_memory_range(alltrax_controller* ctrl,
-    uint32_t addr, const uint8_t* data, size_t len)
-{
-    size_t offset = 0;
-    while (offset < len) {
-        size_t chunk = len - offset;
-        if (chunk > MAX_PAYLOAD) chunk = MAX_PAYLOAD;
-
-        alltrax_error rc = write_memory(ctrl, addr + (uint32_t)offset,
-                                                 data + offset, chunk);
-        if (rc) return rc;
-        offset += chunk;
-    }
     return ALLTRAX_OK;
 }
 
@@ -209,7 +208,11 @@ alltrax_error identify_controller(alltrax_controller* ctrl)
     rc = read_memory(ctrl, ADDR_PRGM_REV, sizeof(rev), rev);
     if (rc) return rc;
     ctrl->program_rev = get_le32(rev);
-    return ALLTRAX_OK;
+    uint8_t startup[2];
+    rc = read_memory(ctrl, SWITCH_ADDR, sizeof(startup), startup);
+    if (!rc)
+        ctrl->bootloader_mode = get_le16(startup) != 0;
+    return rc;
 }
 
 const char* alltrax_controller_type_name(alltrax_controller_type type)
@@ -285,9 +288,21 @@ static bool firmware_write_validated(uint32_t program_rev)
 
 /* Reads require firmware within V0.001-V5.999 unless the read override
  * is enabled. */
-static alltrax_error require_readable_firmware(alltrax_controller* ctrl)
+static alltrax_error require_program_mode(alltrax_controller* ctrl)
 {
     alltrax_error rc = require_xct_controller(ctrl);
+    if (rc) return rc;
+    if (ctrl->bootloader_mode) {
+        set_error_detail(ctrl, "Controller is in bootloader mode (StartUpSwitch "
+                         "is nonzero); only info is available");
+        return ALLTRAX_ERR_BOOTLOADER;
+    }
+    return ALLTRAX_OK;
+}
+
+static alltrax_error require_readable_firmware(alltrax_controller* ctrl)
+{
+    alltrax_error rc = require_program_mode(ctrl);
     if (rc || ctrl->firmware_read_override)
         return rc;
     if (!firmware_in_bounds(ctrl->controller_type, ctrl->boot_rev,
@@ -309,7 +324,7 @@ static alltrax_error require_readable_firmware(alltrax_controller* ctrl)
 static alltrax_error require_writable_firmware(alltrax_controller* ctrl,
     bool skip_fw_check)
 {
-    alltrax_error rc = require_xct_controller(ctrl);
+    alltrax_error rc = require_program_mode(ctrl);
     if (rc) return rc;
     char boot[16], prgm[16];
     format_rev(ctrl->boot_rev, boot, sizeof(boot));
@@ -348,6 +363,7 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
         return ALLTRAX_ERR_INVALID_ARG;
 
     memset(out, 0, sizeof(*out));
+    out->bootloader_mode = ctrl->bootloader_mode;
     alltrax_error rc;
     uint8_t buf[56];
 
@@ -595,43 +611,82 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
 /* Variable write (single CAL/RUN bracket for RAM + FLASH)             */
 /* ------------------------------------------------------------------ */
 
-static alltrax_error page_erase(alltrax_controller* ctrl, uint8_t page)
+static alltrax_error flash_command(alltrax_controller* ctrl,
+    const uint8_t request[PACKET_SIZE], uint8_t* n, uint8_t payload[MAX_PAYLOAD])
 {
-    if (page > 63) {
-        set_error_detail(ctrl, "Page must be 0-63, got %d", page);
-        return ALLTRAX_ERR_INVALID_ARG;
-    }
-
-    uint8_t request[PACKET_SIZE];
-    build_page_erase_request(page, request);
-
-    alltrax_error rc = transport_write(ctrl, request);
-    if (rc) return rc;
-
     uint8_t response[PACKET_SIZE];
-    rc = transport_read(ctrl, response);
+    alltrax_error rc = exchange(ctrl, request, response);
     if (rc) return rc;
 
-    uint8_t result, n;
-    uint8_t payload[MAX_PAYLOAD];
-    rc = parse_response(response, RESPONSE_TYPE_SP, &result, &n, payload);
-    if (rc) {
+    uint8_t result;
+    rc = parse_response(response, RESPONSE_TYPE_SP, &result, n, payload);
+    if (rc || response[5] != request[7]) {
         set_error_detail(ctrl,
-            "Malformed page erase response for page %u: type=0x%02X%s, "
-            "function=0x%02X, expected type=0x%02X",
-            (unsigned)page, response[4],
-            response[4] == RESPONSE_TYPE_UNK ? " (unknown semantics)" : "",
-            response[5], RESPONSE_TYPE_SP);
-        return rc;
+            "Malformed FLASH function %u response: type=0x%02X, function=0x%02X",
+            request[7], response[4], response[5]);
+        return ALLTRAX_ERR_PROTOCOL;
     }
 
     if (result != RESULT_PASS) {
-        set_error_detail(ctrl, "Page erase failed for page %d: result=0x%02X",
-                         page, result);
-        return ALLTRAX_ERR_FLASH;
+        set_error_detail(ctrl, "FLASH function %u failed: result=0x%02X",
+                         request[7], result);
+        return ALLTRAX_ERR_DEVICE_FAIL;
     }
 
     return ALLTRAX_OK;
+}
+
+static alltrax_error clear_flash_errors(alltrax_controller* ctrl)
+{
+    uint8_t request[PACKET_SIZE], payload[MAX_PAYLOAD], n;
+    build_flash_get_flag_request(FLASH_FLAG_WRPRTERR, request);
+    alltrax_error rc = flash_command(ctrl, request, &n, payload);
+    if (rc) return rc;
+    if (n < 4 || payload[3] > 1) {
+        set_error_detail(ctrl, "Malformed FLASH write-protection status");
+        return ALLTRAX_ERR_PROTOCOL;
+    }
+    bool protected = payload[3] != 0;
+
+    build_flash_clear_flags_request(
+        FLASH_FLAG_EOP | FLASH_FLAG_PGERR | FLASH_FLAG_WRPRTERR, request);
+    rc = flash_command(ctrl, request, &n, payload);
+    if (rc) return rc;
+    if (protected) {
+        set_error_detail(ctrl, "FLASH write protection is enabled (WRPRTERR)");
+        return ALLTRAX_ERR_FLASH;
+    }
+    return ALLTRAX_OK;
+}
+
+static bool flash_failure_can_retry(alltrax_error rc)
+{
+    return rc == ALLTRAX_ERR_DEVICE_FAIL || rc == ALLTRAX_ERR_TIMEOUT;
+}
+
+static alltrax_error page_erase(alltrax_controller* ctrl)
+{
+    uint8_t request[PACKET_SIZE], payload[MAX_PAYLOAD], n;
+    build_page_erase_request(VARSET_PAGE, request);
+    alltrax_error rc = flash_command(ctrl, request, &n, payload);
+    if (flash_failure_can_retry(rc)) {
+        rc = clear_flash_errors(ctrl);
+        if (!rc)
+            rc = flash_command(ctrl, request, &n, payload);
+    }
+    return rc == ALLTRAX_ERR_DEVICE_FAIL ? ALLTRAX_ERR_FLASH : rc;
+}
+
+static alltrax_error program_flash(alltrax_controller* ctrl, uint32_t addr,
+    const uint8_t* data, size_t len)
+{
+    alltrax_error rc = write_memory(ctrl, addr, data, len);
+    if (flash_failure_can_retry(rc)) {
+        rc = clear_flash_errors(ctrl);
+        if (!rc)
+            rc = write_memory(ctrl, addr, data, len);
+    }
+    return rc;
 }
 
 alltrax_error alltrax_reset_device(alltrax_controller* ctrl,
@@ -654,36 +709,25 @@ typedef struct { uint8_t data[MAX_PAYLOAD]; int len; uint32_t addr; } ram_encode
 #define MAX_RAM_WRITE_VARS    16
 #define MAX_FLASH_WRITE_VARS  96
 
-/* FLASH page cycle: read page → patch → erase → write → verify → clear GoodSet.
- * Called from within the CAL/RUN bracket in alltrax_write_vars(). */
-
-static alltrax_error write_flash_page(alltrax_controller* ctrl,
-    const flash_patch_t* patches, size_t count, bool skip_verify)
+/* Commit a complete page, keeping GoodSet invalid until verification. */
+static alltrax_error commit_varset_page(alltrax_controller* ctrl,
+    uint8_t page_data[VARSET_SIZE], bool skip_verify)
 {
-    uint8_t page_data[VARSET_SIZE];
-
-    /* Read full VARSET page (2048 bytes) */
-    alltrax_error rc = read_memory_range(ctrl, VARSET_ADDR, VARSET_SIZE,
-                                         page_data);
-    if (rc) return rc;
-
-    /* Patch all FLASH variables into page buffer */
-    for (size_t i = 0; i < count; i++) {
-        memcpy(page_data + patches[i].offset,
-               patches[i].data, (size_t)patches[i].len);
-    }
-
     /* Set GoodSet to 0xFFFF (write in progress) */
     page_data[0] = 0xFF;
     page_data[1] = 0xFF;
 
     /* Erase page */
-    rc = page_erase(ctrl, VARSET_PAGE);
+    alltrax_error rc = page_erase(ctrl);
     if (rc) return rc;
 
-    /* Write full page back */
-    rc = write_memory_range(ctrl, VARSET_ADDR, page_data, VARSET_SIZE);
-    if (rc) return rc;
+    for (size_t offset = 0; offset < VARSET_SIZE; offset += MAX_PAYLOAD) {
+        size_t chunk = VARSET_SIZE - offset;
+        if (chunk > MAX_PAYLOAD) chunk = MAX_PAYLOAD;
+        rc = program_flash(ctrl, VARSET_ADDR + (uint32_t)offset,
+                           page_data + offset, chunk);
+        if (rc) return rc;
+    }
 
     /* Read-back verification */
     if (!skip_verify) {
@@ -708,31 +752,84 @@ static alltrax_error write_flash_page(alltrax_controller* ctrl,
 
     /* Clear GoodSet (mark settings as valid) */
     uint8_t zeros[2] = { 0x00, 0x00 };
-    return write_memory(ctrl, VARSET_ADDR, zeros, 2);
+    return program_flash(ctrl, VARSET_ADDR, zeros, sizeof(zeros));
 }
 
-/* ------------------------------------------------------------------ */
-/* Shared FLASH write helpers                                          */
-/* ------------------------------------------------------------------ */
-
-static alltrax_error flash_prechecks(alltrax_controller* ctrl,
-    const alltrax_write_opts* opts)
+static alltrax_error check_goodset(alltrax_controller* ctrl, bool* recover)
 {
-    if (!opts->skip_goodset) {
-        uint8_t gs_buf[2];
-        alltrax_error rc = read_memory(ctrl, ADDR_V_GOODSET, 2, gs_buf);
-        if (rc) return rc;
-        uint16_t v_gs = get_le16(gs_buf);
+    uint8_t marker[2];
+    alltrax_error rc = read_memory(ctrl, ADDR_F_GOODSET, sizeof(marker), marker);
+    if (rc) return rc;
+    if (get_le16(marker) != 0) {
+        set_error_detail(ctrl, "Factory settings invalid (F_GoodSet=0x%04X, expected 0x0000)",
+                         get_le16(marker));
+        return ALLTRAX_ERR_FLASH;
+    }
+    rc = read_memory(ctrl, ADDR_V_GOODSET, sizeof(marker), marker);
+    if (!rc)
+        *recover = get_le16(marker) != 0;
+    return rc;
+}
 
-        if (v_gs != 0x0000) {
-            set_error_detail(ctrl,
-                "User settings invalid "
-                "(V_GoodSet=0x%04X, expected 0x0000). "
-                "Previous write may have been interrupted", v_gs);
-            return ALLTRAX_ERR_FLASH;
+static alltrax_error post_write_error(alltrax_controller* ctrl,
+    alltrax_error rc, const char* action)
+{
+    if (rc) {
+        char detail[sizeof(ctrl->error_detail)];
+        memcpy(detail, ctrl->error_detail, sizeof(detail));
+        set_error_detail(ctrl, "Assignments written, but %s failed: %.170s",
+                         action, detail);
+    }
+    return rc;
+}
+
+static alltrax_error post_write(alltrax_controller* ctrl,
+    const alltrax_assignment* items, size_t count, const alltrax_write_opts* opts,
+    alltrax_write_report* report)
+{
+    bool clear_autocal = false, stamp_date = false;
+    bool reset = opts->reset_after_write;
+    if (!opts->skip_post_write) {
+        for (size_t i = 0; i < count; i++) {
+            if (!items[i].var) continue;
+            const char* name = items[i].var->name;
+            if (!strcmp(name, "Throttle_Type") || !strcmp(name, "HPD"))
+                clear_autocal = true;
+            if (!strcmp(name, "Speed_Limit_On") || !strcmp(name, "Tach_4_8"))
+                reset = true;
+            if (!strcmp(name, "F_Table_Name"))
+                stamp_date = true;
         }
     }
 
+    if (stamp_date) {
+        time_t now = time(NULL);
+        struct tm date;
+        if (now == (time_t)-1 || !localtime_r(&now, &date)) {
+            set_error_detail(ctrl, "Assignments written, but local date is unavailable");
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
+        unsigned year = (unsigned)(date.tm_year + 1900);
+        uint8_t payload[] = { (uint8_t)year, (uint8_t)(year >> 8),
+                              (uint8_t)date.tm_mday, (uint8_t)(date.tm_mon + 1) };
+        alltrax_error rc = write_memory(ctrl, ADDR_FIELD_MAP_DATE, payload,
+                                        sizeof(payload));
+        if (rc) return post_write_error(ctrl, rc, "stamping FieldMap_Date");
+        report->date_stamped = true;
+    }
+    if (clear_autocal) {
+        const uint8_t zeros[BACKUP_RAM_SIZE] = {0};
+        alltrax_error rc = write_memory(ctrl, ADDR_BACKUP_RAM, zeros,
+                                        sizeof(zeros));
+        if (rc) return post_write_error(ctrl, rc, "clearing throttle auto-calibration");
+        report->autocal_cleared = true;
+        reset = true;
+    }
+    if (!reset)
+        return ALLTRAX_OK;
+    alltrax_error rc = alltrax_reset_device(ctrl, opts);
+    if (rc) return post_write_error(ctrl, rc, "resetting the controller");
+    report->reset_sent = true;
     return ALLTRAX_OK;
 }
 
@@ -742,11 +839,8 @@ static alltrax_error enter_cal(alltrax_controller* ctrl, bool* cal_attempted)
     alltrax_error rc = read_memory(ctrl, ADDR_RUN_MODE, 1, mode_buf);
     if (rc) return rc;
 
-    if (mode_buf[0] != RUN_MODE_RUN) {
-        set_error_detail(ctrl,
-            "Controller not in RUN mode (RunMode=0x%02X)", mode_buf[0]);
-        return ALLTRAX_ERR_NOT_RUN;
-    }
+    if (mode_buf[0] != RUN_MODE_RUN)
+        return ALLTRAX_OK;
 
     uint8_t cal = RUN_MODE_CAL;
     /* A failed transfer or echo cannot prove that CAL was not applied. */
@@ -1177,6 +1271,11 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
     const alltrax_assignment* items, size_t count,
     const alltrax_write_opts* opts)
 {
+    alltrax_write_report unused_report;
+    alltrax_write_report* report = opts && opts->report ? opts->report
+                                                        : &unused_report;
+    memset(report, 0, sizeof(*report));
+
     alltrax_error gate_rc = require_writable_firmware(ctrl,
         opts && opts->skip_fw_check);
     if (gate_rc) return gate_rc;
@@ -1208,6 +1307,18 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
     rc = check_overlaps(ctrl, items, count);
     if (rc) return rc;
 
+    /* Select the base page before voltage validation or any writes. */
+    bool recover = false;
+    uint8_t page_data[VARSET_SIZE];
+    if (flash_count && !opts->skip_goodset) {
+        rc = check_goodset(ctrl, &recover);
+        if (rc) return rc;
+        if (recover) {
+            rc = read_memory_range(ctrl, FACTSET_ADDR, sizeof(page_data), page_data);
+            if (rc) return rc;
+        }
+    }
+
     /* ---- 1c. Hardware limits ---- */
     /* Voltage settings are bounded by the rated voltage (the link check adds
      * BMS_Missing_HiBat_Vlim), and Throttle_Type by the version-gated
@@ -1225,6 +1336,8 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
     if (needs_info) {
         alltrax_info info;
         rc = alltrax_get_info(ctrl, &info);
+        if (rc) return rc;
+        rc = require_writable_firmware(ctrl, opts->skip_fw_check);
         if (rc) return rc;
         for (size_t i = 0; i < count; i++) {
             rc = check_hardware_limits(ctrl, &info, &items[i], opts);
@@ -1266,8 +1379,17 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
 
             if (n_reads > 0) {
                 alltrax_var_value read_out[4];
-                rc = alltrax_read_vars(ctrl, to_read, (size_t)n_reads,
-                                       read_out);
+                if (recover) {
+                    /* Decode user definitions against the factory page, whose
+                     * settings have the same offsets within the page. */
+                    for (int i = 0; i < n_reads; i++) {
+                        rc = alltrax_decode_var(page_data, sizeof(page_data),
+                            to_read[i], VARSET_ADDR, &read_out[i]);
+                        if (rc) return rc;
+                    }
+                } else {
+                    rc = alltrax_read_vars(ctrl, to_read, (size_t)n_reads, read_out);
+                }
                 if (rc) return rc;  /* Preserve the read failure diagnostic. */
                 for (int i = 0; i < n_reads; i++)
                     vlink_vals[read_idx[i]] = read_out[i].display;
@@ -1284,13 +1406,6 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
         }
     }
 
-    /* ---- 2. FLASH pre-checks (before entering CAL) ---- */
-
-    if (flash_count > 0) {
-        rc = flash_prechecks(ctrl, opts);
-        if (rc) return rc;
-    }
-
     /* ---- 3. Enter CAL mode (single bracket for all writes) ---- */
 
     bool cal_attempted = false;
@@ -1298,6 +1413,13 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
     if (!opts->skip_cal) {
         rc = enter_cal(ctrl, &cal_attempted);
         if (rc) return finish_cal_write(ctrl, cal_attempted, rc);
+    }
+
+    /* Restore a complete, valid base page before applying the batch. */
+    if (recover) {
+        rc = commit_varset_page(ctrl, page_data, opts->skip_verify);
+        if (rc) goto restore_run;
+        report->factory_restored = true;
     }
 
     /* ---- 4. Write RAM variables ---- */
@@ -1311,8 +1433,13 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
     /* ---- 5. FLASH page cycle ---- */
 
     if (flash_count > 0) {
-        rc = write_flash_page(ctrl, flash_patches, flash_count,
-                              opts->skip_verify);
+        rc = read_memory_range(ctrl, VARSET_ADDR, sizeof(page_data), page_data);
+        if (rc) goto restore_run;
+        for (size_t i = 0; i < flash_count; i++) {
+            memcpy(page_data + flash_patches[i].offset, flash_patches[i].data,
+                   (size_t)flash_patches[i].len);
+        }
+        rc = commit_varset_page(ctrl, page_data, opts->skip_verify);
         if (rc) goto restore_run;
     }
 
@@ -1321,7 +1448,8 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
 /* Success and write failures restore RUN if CAL was attempted;
  * cleanup preserves any write error. */
 restore_run:
-    return finish_cal_write(ctrl, cal_attempted, rc);
+    rc = finish_cal_write(ctrl, cal_attempted, rc);
+    return rc ? rc : post_write(ctrl, items, count, opts, report);
 }
 
 alltrax_error alltrax_write_vars(alltrax_controller* ctrl,

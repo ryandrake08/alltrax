@@ -28,6 +28,7 @@ int cmd_info(int argc, char** argv)
     printf("Controller Type:  %s\n",
            alltrax_controller_type_name(info.controller_type));
     printf("Model:            %s\n", info.model);
+    printf("Mode:             %s\n", info.bootloader_mode ? "Bootloader" : "Program");
     printf("Build Date:       %s\n", info.build_date);
     printf("Serial Number:    %u\n", info.serial_number);
     printf("Boot Rev:         %s\n", info.boot_rev_str);
@@ -72,7 +73,9 @@ int cmd_info(int argc, char** argv)
         printf("None");
     printf("\n");
 
-    if (!info.supported) {
+    if (info.bootloader_mode) {
+        printf("\nThe controller is in bootloader mode. Only info is available.\n");
+    } else if (!info.supported) {
         printf("\nWarning: firmware (boot %s, program %s) is outside "
                "V0.001-V5.999.\n", info.boot_rev_str, info.program_rev_str);
         printf("Other reads require 'alltrax --debug-ignore-fw-bounds <command>' and "

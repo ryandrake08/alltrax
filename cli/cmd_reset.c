@@ -14,7 +14,7 @@ int cmd_reset(int argc, char** argv)
         cli_print_options(stderr, CLI_OPT_ALLOW_UNVALIDATED);
         return 1;
     }
-    alltrax_write_opts opts = cli_write_opts(&flags);
+    alltrax_write_opts opts = cli_write_opts(&flags, NULL);
 
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, true);

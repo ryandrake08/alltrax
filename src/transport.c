@@ -5,12 +5,17 @@
  * containers without needing /dev/bus/usb passthrough).
  */
 
+#define _POSIX_C_SOURCE 200809L
 #include "internal.h"
+#include <errno.h>
 #include <hidapi.h>
 #include <stdlib.h>
+#include <time.h>
 
-/* Default read timeout in milliseconds */
-#define DEFAULT_TIMEOUT_MS 1000
+#define DEFAULT_TIMEOUT_MS 750
+#define HID_WRITE_ATTEMPTS 4
+#define DRAIN_QUIET_MS 32
+#define DRAIN_MAX_REPORTS 16
 
 alltrax_error alltrax_init(void)
 {
@@ -109,7 +114,16 @@ alltrax_error transport_write(alltrax_controller* ctrl,
         }
     }
 
+    /* Reset has no echo and a failed send could already have rebooted it. */
+    bool reset = data[0] == REPORT_ID_SPECIAL && data[5] == 0 &&
+                 data[6] == 0 && data[7] == FUNC_RESET;
     int written = hid_write(ctrl->hid, data, PACKET_SIZE);
+    for (int attempt = 1; written < 0 && !reset && attempt < HID_WRITE_ATTEMPTS;
+         attempt++) {
+        struct timespec delay = { .tv_nsec = 125000000 };
+        while (nanosleep(&delay, &delay) == -1 && errno == EINTR) {}
+        written = hid_write(ctrl->hid, data, PACKET_SIZE);
+    }
     if (written < 0) {
         set_error_detail(ctrl, "USB write failed: %ls",
                          hid_error(ctrl->hid));
@@ -123,6 +137,25 @@ alltrax_error transport_write(alltrax_controller* ctrl,
     }
 
     return ALLTRAX_OK;
+}
+
+/* Reports carry no transaction ID. Wait for one quiet USB polling interval
+ * and bound the drain in case the device keeps sending unsolicited reports. */
+alltrax_error transport_drain(alltrax_controller* ctrl)
+{
+    uint8_t discarded[PACKET_SIZE];
+    for (int i = 0; i < DRAIN_MAX_REPORTS; i++) {
+        int n = hid_read_timeout(ctrl->hid, discarded, sizeof(discarded),
+                                 DRAIN_QUIET_MS);
+        if (n == 0) return ALLTRAX_OK;
+        if (n < 0) {
+            set_error_detail(ctrl, "USB read failed while draining replies: %ls",
+                             hid_error(ctrl->hid));
+            return ALLTRAX_ERR_USB;
+        }
+    }
+    set_error_detail(ctrl, "USB input did not become quiet after draining replies");
+    return ALLTRAX_ERR_PROTOCOL;
 }
 
 alltrax_error transport_read(alltrax_controller* ctrl,
@@ -163,12 +196,12 @@ const char* alltrax_strerror(alltrax_error err)
     case ALLTRAX_ERR_VERIFY:      return "Write verification failed";
     case ALLTRAX_ERR_FIRMWARE:    return "Unknown firmware version";
     case ALLTRAX_ERR_FLASH:       return "FLASH operation failed";
-    case ALLTRAX_ERR_NOT_RUN:     return "Controller not in RUN mode";
     case ALLTRAX_ERR_INVALID_ARG: return "Invalid argument";
     case ALLTRAX_ERR_NO_DEVICE:   return "No Alltrax device found";
     case ALLTRAX_ERR_BLOCKED:     return "Write blocked (read-only mode)";
     case ALLTRAX_ERR_NO_MEMORY:   return "Memory allocation failed";
     case ALLTRAX_ERR_UNSUPPORTED: return "Unsupported device (requires Alltrax XCT family, USB 23d4:0002)";
+    case ALLTRAX_ERR_BOOTLOADER:  return "Controller is in bootloader mode";
     }
     return "Unknown error";
 }

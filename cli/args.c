@@ -36,11 +36,13 @@ static const struct {
     { "--debug-no-verify", CLI_OPT_DEBUG_NO_VERIFY, NULL,
       "Skip FLASH read-back verification" },
     { "--debug-no-goodset", CLI_OPT_DEBUG_NO_GOODSET, NULL,
-      "Skip the GoodSet check (writes over invalid settings)" },
+      "Skip GoodSet checks and factory recovery" },
+    { "--debug-no-post-write", CLI_OPT_DEBUG_NO_POST_WRITE, NULL,
+      "Skip automatic calibration clear, date stamp and reset" },
 };
 #define OPTION_COUNT (sizeof(options) / sizeof(options[0]))
 #define DEBUG_OPTIONS (CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | \
-                       CLI_OPT_DEBUG_NO_GOODSET)
+                       CLI_OPT_DEBUG_NO_GOODSET | CLI_OPT_DEBUG_NO_POST_WRITE)
 
 static unsigned option_bit(const char* arg)
 {
@@ -76,14 +78,29 @@ void cli_print_options(FILE* out, unsigned allowed)
     }
 }
 
-alltrax_write_opts cli_write_opts(const cli_flags* flags)
+void cli_print_write_report(const alltrax_write_report* report)
+{
+    if (report->factory_restored)
+        fprintf(stderr, "User settings were invalid; factory settings were "
+                "restored before writing.\n");
+    if (report->autocal_cleared)
+        printf("Cleared throttle auto-calibration\n");
+    if (report->reset_sent)
+        printf("Device reset sent (controller will reboot)\n");
+}
+
+alltrax_write_opts cli_write_opts(const cli_flags* flags,
+    alltrax_write_report* report)
 {
     return (alltrax_write_opts){
         .skip_cal = flags->debug_no_cal,
         .skip_verify = flags->debug_no_verify,
         .skip_goodset = flags->debug_no_goodset,
+        .skip_post_write = flags->debug_no_post_write,
         .skip_fw_check = flags->allow_unvalidated_firmware,
         .skip_voltage_link = flags->no_voltage_link,
+        .reset_after_write = flags->reset,
+        .report = report,
     };
 }
 
@@ -137,6 +154,7 @@ int cli_parse_args(int argc, char** argv, const char* command,
         case CLI_OPT_DEBUG_NO_CAL:      flags->debug_no_cal = true; break;
         case CLI_OPT_DEBUG_NO_VERIFY:   flags->debug_no_verify = true; break;
         case CLI_OPT_DEBUG_NO_GOODSET:  flags->debug_no_goodset = true; break;
+        case CLI_OPT_DEBUG_NO_POST_WRITE: flags->debug_no_post_write = true; break;
         default: break;
         }
     }

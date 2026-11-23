@@ -58,12 +58,12 @@ typedef enum {
     ALLTRAX_ERR_VERIFY      =  -5,  /* Write echo mismatch */
     ALLTRAX_ERR_FIRMWARE    =  -6,  /* Unknown firmware version */
     ALLTRAX_ERR_FLASH       =  -7,  /* FLASH operation failed */
-    ALLTRAX_ERR_NOT_RUN     =  -8,  /* Not in RUN mode */
-    ALLTRAX_ERR_INVALID_ARG =  -9,  /* Bad argument */
-    ALLTRAX_ERR_NO_DEVICE   = -10,  /* No Alltrax device found */
-    ALLTRAX_ERR_BLOCKED     = -11,  /* Write blocked (allow_writes=false) */
-    ALLTRAX_ERR_NO_MEMORY   = -12,  /* Memory allocation failed */
-    ALLTRAX_ERR_UNSUPPORTED = -13,  /* Unsupported USB identity or controller family */
+    ALLTRAX_ERR_INVALID_ARG =  -8,  /* Bad argument */
+    ALLTRAX_ERR_NO_DEVICE   =  -9,  /* No Alltrax device found */
+    ALLTRAX_ERR_BLOCKED     = -10,  /* Write blocked (allow_writes=false) */
+    ALLTRAX_ERR_NO_MEMORY   = -11,  /* Memory allocation failed */
+    ALLTRAX_ERR_UNSUPPORTED = -12,  /* Unsupported USB identity or controller family */
+    ALLTRAX_ERR_BOOTLOADER  = -13,  /* Settings and reset unavailable in bootloader mode */
 } alltrax_error;
 
 const char* alltrax_strerror(alltrax_error err);
@@ -116,7 +116,10 @@ alltrax_error alltrax_open(alltrax_controller** out,
 /* Close and free a controller handle. NULL is a no-op; a freed handle is invalid. */
 void alltrax_close(alltrax_controller* ctrl);
 
-/* Firmware policy. alltrax_open() reads the boot and program revisions.
+/* alltrax_open() reads the boot and program revisions and StartUpSwitch.
+ * Bootloader mode permits alltrax_get_info() and blocks other controller
+ * operations with ALLTRAX_ERR_BOOTLOADER, regardless of firmware overrides.
+ * Firmware policy in program mode:
  * - alltrax_get_info() works on any firmware.
  * - Other reads require XCT boot and program revisions within V0.001-V5.999
  *   and otherwise return ALLTRAX_ERR_FIRMWARE.
@@ -136,9 +139,7 @@ typedef struct {
     /* Controller type (detected from model prefix) */
     alltrax_controller_type controller_type;
 
-    /* True if boot and program revisions are within V0.001-V5.999, so
-     * reads are allowed without the firmware read override. Other device
-     * families are rejected by alltrax_open(). */
+    /* True if boot and program revisions are within V0.001-V5.999. */
     bool     supported;
 
     /* True if the program revision is validated for writes without
@@ -183,6 +184,7 @@ typedef struct {
     bool     has_user1;
     bool     can_high_side;
     bool     is_stock_mode;
+    bool     bootloader_mode;     /* StartUpSwitch was nonzero at open */
 } alltrax_info;
 
 /* Read identity, hardware capabilities, and firmware into caller-owned out
@@ -330,6 +332,15 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
 /* Write operations                                                    */
 /* ------------------------------------------------------------------ */
 
+/* Actions a write performed besides writing its batch. Each flag is set
+ * once its action succeeded, so a failed write reports what already ran. */
+typedef struct {
+    bool factory_restored;  /* Invalid user settings replaced by factory settings */
+    bool autocal_cleared;   /* Throttle auto-calibration cleared */
+    bool date_stamped;      /* FieldMap_Date written */
+    bool reset_sent;        /* Reset command sent; the controller reboots */
+} alltrax_write_report;
+
 /* Variable and curve writes attempt RUN restoration whenever CAL may have
  * been sent, including failed entry acknowledgements. If both the operation
  * and restoration fail, the original error is returned and error detail
@@ -338,11 +349,14 @@ typedef struct {
     /* Debug and development bypasses */
     bool skip_cal;           /* Skip CAL/RUN bracket and its restoration */
     bool skip_verify;        /* Skip read-back verification (FLASH only) */
-    bool skip_goodset;       /* Skip GoodSet pre-check (FLASH only) */
+    bool skip_goodset;       /* Skip GoodSet checks and factory recovery */
     /* User options */
     bool skip_fw_check;      /* Allow unvalidated firmware within V0.001-V5.999 */
     bool skip_voltage_link;  /* Skip voltage link validation, including the
                               * rated range for BMS_Missing_HiBat_Vlim */
+    bool skip_post_write;    /* Debug bypass: skip automatic calibration clear, date stamp and reset */
+    bool reset_after_write;  /* Send one reset after success, even with skip_post_write */
+    alltrax_write_report* report;  /* Optional; cleared, then filled by writes */
 } alltrax_write_opts;
 
 /* Write numeric/bool values in display units: alltrax_write_assignments()
@@ -430,16 +444,23 @@ typedef struct {
 
 /* Write a batch of variables, strings, and user curves. Every item is
  * validated and encoded before device I/O; any invalid item, or two items
- * writing the same bytes, rejects the whole batch. All writes share one
- * CAL/RUN bracket, and all FLASH items share one settings page cycle (one
- * erase). Limits: 16 RAM variables and 96 FLASH patches (each curve uses 2).
+ * writing the same bytes, rejects the whole batch. Writes share one CAL/RUN
+ * bracket if the controller starts in RUN. FLASH items share one page cycle.
+ * With GoodSet checks enabled, invalid factory settings stop the batch.
+ * Invalid user settings are restored from factory before applying the batch.
+ * Limits: 16 RAM variables and 96 FLASH patches (each curve uses 2).
  * Permissions and firmware policy apply as for alltrax_write_vars(). Batches
  * with a voltage setting or a nonzero Throttle_Type read the controller info
  * before writing: AnalogInputs_Threshold, LoBat_Vlim, and HiBat_Vlim (and
  * BMS_Missing_HiBat_Vlim unless skip_voltage_link) must lie within 16.0-62.0V
  * on 48V controllers or 20.0-90.0V on 72V controllers (other ratings cannot
  * write them), and the throttle type must be allowed by the version-gated
- * throttles_allowed. The voltage link check then applies. */
+ * throttles_allowed. The voltage link check then applies.
+ * After successful writes and RUN cleanup, F_Table_Name stamps FieldMap_Date,
+ * Throttle_Type or HPD clears throttle auto-calibration and requests a reset,
+ * and Speed_Limit_On or Tach_4_8 requests a reset. Triggering depends on
+ * presence in the batch. Automatic and explicit reset requests share one
+ * reset command. A post-write failure is reported after settings were written. */
 alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
     const alltrax_assignment* items, size_t count,
     const alltrax_write_opts* opts);

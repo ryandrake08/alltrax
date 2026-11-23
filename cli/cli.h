@@ -31,11 +31,13 @@ enum {
     CLI_OPT_DEBUG_NO_CAL      = 1u << 8,
     CLI_OPT_DEBUG_NO_VERIFY   = 1u << 9,
     CLI_OPT_DEBUG_NO_GOODSET  = 1u << 10,
+    CLI_OPT_DEBUG_NO_POST_WRITE = 1u << 11,
 };
 
 /* Options accepted by every command that writes settings */
 #define CLI_OPTS_WRITE (CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_RESET | \
-    CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | CLI_OPT_DEBUG_NO_GOODSET)
+    CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | CLI_OPT_DEBUG_NO_GOODSET | \
+    CLI_OPT_DEBUG_NO_POST_WRITE)
 
 /* Options parsed from argv */
 typedef struct {
@@ -48,6 +50,7 @@ typedef struct {
     bool debug_no_cal;
     bool debug_no_verify;
     bool debug_no_goodset;
+    bool debug_no_post_write;
     const char* file;    /* --file value, or NULL */
     const char* preset;  /* --preset value, or NULL */
 } cli_flags;
@@ -64,8 +67,12 @@ int cli_parse_args(int argc, char** argv, const char* command,
  * their own heading. */
 void cli_print_options(FILE* out, unsigned allowed);
 
-/* Library write options for the parsed flags */
-alltrax_write_opts cli_write_opts(const cli_flags* flags);
+/* Library write options for the parsed flags. report may be NULL. */
+alltrax_write_opts cli_write_opts(const cli_flags* flags,
+    alltrax_write_report* report);
+
+/* Print the actions a write performed besides writing its batch. */
+void cli_print_write_report(const alltrax_write_report* report);
 
 /* Open controller, printing errors to stderr. Returns ALLTRAX_OK on success. */
 alltrax_error cli_open(alltrax_controller** ctrl, bool writes);
@@ -85,10 +92,10 @@ int cli_check_field_map(const alltrax_assignment* items, size_t count,
     bool allowed);
 
 /* When the batch writes field-map data without F_Table_Name, append the
- * current name read from the controller (items needs room for one more).
+ * name from the page the write will use (items needs room for one more).
  * `name` holds the text for the appended item. */
 alltrax_error cli_add_field_map_name(alltrax_controller* ctrl,
-    alltrax_assignment* items, size_t* count, char name[33]);
+    alltrax_assignment* items, size_t* count, char name[33], bool skip_goodset);
 
 /* After a successful field-map write, remind the user about the pole count. */
 void cli_field_map_written(const alltrax_assignment* items, size_t count);

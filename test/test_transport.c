@@ -19,8 +19,12 @@ static struct {
     size_t opened_index;
     uint8_t request[PACKET_SIZE], mode;
     uint32_t program_rev;
+    uint16_t startup_switch;
     int model_reply_len; /* -1: timeout, -2: USB error; otherwise declared size */
     int write_result, read_result;
+    unsigned hid_write_errors, read_timeouts, drains, stale_reports;
+    bool enqueue_stale_on_timeout;
+    unsigned writes_with_queued_input;
 } mock;
 
 static void mock_reset(void)
@@ -108,7 +112,12 @@ int hid_write(hid_device* hid, const unsigned char* data, size_t size)
 {
     (void)hid;
     mock.writes++;
+    if (mock.stale_reports) mock.writes_with_queued_input++;
     if (size != PACKET_SIZE) return -1;
+    if (mock.hid_write_errors) {
+        mock.hid_write_errors--;
+        return -1;
+    }
     if (mock.write_result != PACKET_SIZE) return mock.write_result;
     memcpy(mock.request, data, size);
     if (data[0] != 0x01) mock.mutations++;
@@ -128,6 +137,8 @@ static uint8_t read_byte(size_t index, uint32_t addr)
     if (addr >= ADDR_PRGM_REV && addr < ADDR_PRGM_REV + 4)
         return (uint8_t)(mock.program_rev >> ((addr - ADDR_PRGM_REV) * 8));
     if (addr == ADDR_RUN_MODE) return mock.mode;
+    if (addr >= SWITCH_ADDR && addr < SWITCH_ADDR + 2)
+        return (uint8_t)(mock.startup_switch >> ((addr - SWITCH_ADDR) * 8));
     return 0;
 }
 
@@ -154,8 +165,20 @@ static int make_response(hid_device* hid, unsigned char* buf, size_t size)
 
 int hid_read_timeout(hid_device* hid, unsigned char* buf, size_t size, int timeout)
 {
-    (void)timeout;
     mock.reads++;
+    if (timeout == 32) {
+        mock.drains++;
+        if (!mock.stale_reports) return 0;
+        mock.stale_reports--;
+        memset(buf, 0xA5, size);
+        return PACKET_SIZE;
+    }
+    if (timeout != 750) return -1;
+    if (mock.read_timeouts) {
+        mock.read_timeouts--;
+        if (mock.enqueue_stale_on_timeout) mock.stale_reports++;
+        return 0;
+    }
     uint8_t reply[PACKET_SIZE];
     int rc = make_response(hid, reply, size);
     if (rc <= 0) return rc;
@@ -236,7 +259,7 @@ static int test_supported_models_open_and_read_info(void)
             ASSERT_EQ(ctrl->allow_writes, writes != 0);
             ASSERT_EQ(ctrl->boot_rev, 5002);
             ASSERT_EQ(ctrl->program_rev, 5005);
-            ASSERT_EQ(mock.reads, 3); /* Model, boot and program revisions. */
+            ASSERT_EQ(mock.reads, 4); /* Model, revisions and StartUpSwitch. */
             ASSERT_EQ(mock.mutations, 0);
             alltrax_info info;
             ASSERT_EQ(alltrax_get_info(ctrl, &info), ALLTRAX_OK);
@@ -324,7 +347,7 @@ static int test_info_rejects_changed_model_and_revokes_write_access(void)
     mock.models[0] = "SPM48400";
     alltrax_info info;
     ASSERT_EQ(alltrax_get_info(ctrl, &info), ALLTRAX_ERR_UNSUPPORTED);
-    ASSERT_EQ(mock.reads, 4); /* Open: model + revisions; info stops at model. */
+    ASSERT_EQ(mock.reads, 5); /* Open: four reads; info stops at model. */
     unsigned requests = mock.writes;
     const alltrax_var_def* hpd = alltrax_find_var("HPD");
     double value = 1;
@@ -497,7 +520,7 @@ static int test_read_errors_timeouts_and_full_reports_remain_distinct(void)
     ASSERT_TRUE(strstr(ctrl.error_detail, "USB read failed: simulated error") != NULL);
     mock.read_result = 0;
     ASSERT_EQ(transport_read(&ctrl, buf), ALLTRAX_ERR_TIMEOUT);
-    ASSERT_TRUE(strstr(ctrl.error_detail, "timed out after 1000ms") != NULL);
+    ASSERT_TRUE(strstr(ctrl.error_detail, "timed out after 750ms") != NULL);
     mock.read_result = 64;
     ASSERT_EQ(transport_read(&ctrl, buf), ALLTRAX_OK);
     ASSERT_EQ(buf[0], 0x04);
@@ -569,8 +592,9 @@ static int test_incomplete_identification_transfers_close_device(void)
             ASSERT_NULL(ctrl);
             ASSERT_EQ(mock.closes, 1);
             ASSERT_EQ(mock.frees, 1);
-            ASSERT_EQ(mock.writes, 1);
-            ASSERT_EQ(mock.reads, writing ? 0 : 1);
+            bool timeout = !writing && results[i] == 0;
+            ASSERT_EQ(mock.writes, timeout ? 2 : writing && results[i] < 0 ? 4 : 1);
+            ASSERT_EQ(mock.reads, timeout ? 4 : writing ? 0 : 1);
         }
     }
     return 0;
@@ -595,9 +619,69 @@ static int test_short_ram_write_does_not_wait_for_an_echo(void)
     return 0;
 }
 
+static int test_timeout_drains_stale_input_and_resends_once(void)
+{
+    mock_reset();
+    add_device("xct", 0x23D4, 2, "XCT48400-DCS");
+    alltrax_controller* ctrl = NULL;
+    mock.read_timeouts = 1;
+    mock.enqueue_stale_on_timeout = true;
+    ASSERT_EQ(alltrax_open(&ctrl, "xct", false), ALLTRAX_OK);
+    ASSERT_EQ(mock.writes, 5);
+    ASSERT_EQ(mock.drains, 3);
+    ASSERT_EQ(mock.writes_with_queued_input, 0);
+    alltrax_close(ctrl);
+    return 0;
+}
+
+static int test_hid_write_retries_negative_results(void)
+{
+    mock_reset();
+    alltrax_controller ctrl = {
+        .hid = &mock.handles[0], .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
+    };
+    uint8_t request[PACKET_SIZE];
+    build_read_request(ADDR_CONTROLLER_INFO, 15, request);
+    mock.hid_write_errors = 3;
+    ASSERT_EQ(transport_write(&ctrl, request), ALLTRAX_OK);
+    ASSERT_EQ(mock.writes, 4);
+    ASSERT_EQ(mock.reads, 0);
+    return 0;
+}
+
+static int test_bootloader_mode_allows_info_and_blocks_operations(void)
+{
+    mock_reset();
+    add_device("xct", 0x23D4, 2, "XCT48400-DCS");
+    alltrax_controller* ctrl = NULL;
+    mock.startup_switch = 0x0100; /* Must read both bytes. */
+    ASSERT_EQ(alltrax_open(&ctrl, "xct", true), ALLTRAX_OK);
+    alltrax_info info;
+    ASSERT_EQ(alltrax_get_info(ctrl, &info), ALLTRAX_OK);
+    ASSERT_TRUE(info.bootloader_mode);
+    ASSERT_EQ(alltrax_set_firmware_read_override(ctrl, true), ALLTRAX_OK);
+    unsigned writes = mock.writes;
+    const alltrax_var_def* hpd = alltrax_find_var("HPD");
+    alltrax_var_value out;
+    alltrax_monitor_data monitor;
+    double value = 1;
+    const alltrax_write_opts opts = { .skip_fw_check = true };
+    ASSERT_EQ(alltrax_read_vars(ctrl, &hpd, 1, &out), ALLTRAX_ERR_BOOTLOADER);
+    ASSERT_EQ(alltrax_read_monitor(ctrl, &monitor), ALLTRAX_ERR_BOOTLOADER);
+    ASSERT_EQ(alltrax_write_vars(ctrl, &hpd, &value, 1, &opts), ALLTRAX_ERR_BOOTLOADER);
+    ASSERT_EQ(alltrax_reset_device(ctrl, &opts), ALLTRAX_ERR_BOOTLOADER);
+    ASSERT_EQ(mock.writes, writes);
+    ASSERT_EQ(mock.mutations, 0);
+    alltrax_close(ctrl);
+    return 0;
+}
+
 int main(void)
 {
     printf("transport (simulated hidapi):\n");
+    RUN_TEST(test_timeout_drains_stale_input_and_resends_once);
+    RUN_TEST(test_hid_write_retries_negative_results);
+    RUN_TEST(test_bootloader_mode_allows_info_and_blocks_operations);
     RUN_TEST(test_no_devices_and_unknown_paths);
     RUN_TEST(test_explicit_paths_require_supported_usb_identity);
     RUN_TEST(test_auto_detection_skips_unsupported_devices);

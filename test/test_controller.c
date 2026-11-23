@@ -31,6 +31,14 @@ static struct {
     uint32_t orig_boot_rev, orig_program_rev;
     unsigned hw_config_reads, mode_writes;
     unsigned cal_attempts, run_attempts, fan_writes;
+    unsigned drains, date_writes, autocal_clears, resets;
+    unsigned erase_attempts, flag_checks, flag_clears, program_attempts;
+    unsigned erase_failures, program_failures;
+    bool write_protected;
+    uint8_t date[4];
+    char post_order[8];
+    unsigned post_steps;
+    uint8_t first_commit[VARSET_SIZE];
     bool cal_transfer_error, run_transfer_error, fan_transfer_error;
     bool cal_write_blocked;
     mode_reply_fault cal_reply, run_reply;
@@ -77,6 +85,12 @@ static void mock_fault(uint32_t addr, uint8_t request_len,
     mock.fault_request_len = request_len;
     mock.fault_reply_len = reply_len;
     mock.fault_occurrence = occurrence;
+}
+
+static void record_post_step(char step)
+{
+    if (mock.post_steps + 1 < sizeof(mock.post_order))
+        mock.post_order[mock.post_steps++] = step;
 }
 
 static uint8_t mock_read_byte(uint32_t addr)
@@ -142,12 +156,25 @@ alltrax_error transport_write(alltrax_controller* ctrl,
                 }
             } else if (data[8] == RUN_MODE_RUN) {
                 mock.run_attempts++;
+                record_post_step('R');
                 if (mock.run_transfer_error) {
                     set_error_detail(ctrl, "RUN transfer failure");
                     return ALLTRAX_ERR_USB;
                 }
             }
             mock.mode = data[8];
+            return ALLTRAX_OK;
+        }
+        if (addr == 0x2000F210 && data[1] == 4) {
+            mock.date_writes++;
+            memcpy(mock.date, data + 8, sizeof(mock.date));
+            record_post_step('D');
+            return ALLTRAX_OK;
+        }
+        if (addr == 0x40006C00 && data[1] == 20 &&
+            memcmp(data + 8, (uint8_t[20]){0}, 20) == 0) {
+            mock.autocal_clears++;
+            record_post_step('C');
             return ALLTRAX_OK;
         }
         if (addr == 0x2000F204 && data[1] == 1) {
@@ -164,24 +191,49 @@ alltrax_error transport_write(alltrax_controller* ctrl,
         }
         if (addr >= VARSET_ADDR && addr < VARSET_ADDR + VARSET_SIZE &&
             data[1] <= VARSET_ADDR + VARSET_SIZE - addr) {
+            mock.program_attempts++;
+            if (mock.program_failures)
+                return ALLTRAX_OK; /* Device rejects this packet. */
             memcpy(mock.page + (addr - VARSET_ADDR), data + 8, data[1]);
             if (mock.stuck_offset &&
                 mock.stuck_offset - 1 - (addr - VARSET_ADDR) < data[1])
                 mock.page[mock.stuck_offset - 1] = 0xFF;  /* Erased value */
             mock.settings_writes++;
-            if (addr == VARSET_ADDR && data[1] == 2 && data[8] == 0 && data[9] == 0)
-                mock.goodset_clears++;
+            if (addr == VARSET_ADDR && data[1] == 2 && data[8] == 0 && data[9] == 0 &&
+                ++mock.goodset_clears == 1)
+                memcpy(mock.first_commit, mock.page, sizeof(mock.page));
             return ALLTRAX_OK;
         }
     }
-    if (data[0] == 0x03 && addr == FUNC_RESET && data[1] == 0)
+    if (data[0] == 0x03 && addr == FUNC_RESET && data[1] == 0) {
+        mock.resets++;
+        record_post_step('X');
         return ALLTRAX_OK;
+    }
+    if (data[0] == 0x03 && addr == 10 && data[1] == 4 && data[11] == 0x10) {
+        mock.flag_checks++;
+        return ALLTRAX_OK;
+    }
+    if (data[0] == 0x03 && addr == 11 && data[1] == 4 && data[11] == 0x34) {
+        mock.flag_clears++;
+        return ALLTRAX_OK;
+    }
     if (data[0] == 0x03 && addr == 1 && data[1] == 4 && data[11] == VARSET_PAGE) {
+        mock.erase_attempts++;
+        if (mock.erase_failures)
+            return ALLTRAX_OK;
         memset(mock.page, 0xFF, sizeof(mock.page));
         mock.erases++;
         return ALLTRAX_OK;
     }
     return ALLTRAX_ERR_INVALID_ARG;
+}
+
+alltrax_error transport_drain(alltrax_controller* ctrl)
+{
+    (void)ctrl;
+    mock.drains++;
+    return ALLTRAX_OK;
 }
 
 alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
@@ -194,12 +246,26 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
         /* Captured successful page-erase reply, independent of constants. */
         const uint8_t header[] = { 0x04, 0x02, 0, 0, 0x03, 0x01, 0, 0, 0xD4, 0x29 };
         memcpy(buf, header, sizeof(header));
+        buf[5] = (uint8_t)request_address();
+        if (buf[5] == 1 && mock.erase_failures) {
+            mock.erase_failures--;
+            buf[6] = 1;
+        }
+        if (buf[5] == 10) {
+            buf[1] = 4;
+            buf[11] = mock.write_protected ? 1 : 0;
+        }
         return ALLTRAX_OK;
     }
     buf[1] = mock.request[1];
     buf[4] = 0x01;
     if (mock.request[0] == 0x02) {
         memcpy(buf + 8, mock.request + 8, buf[1]);
+        if (request_address() >= VARSET_ADDR &&
+            request_address() < VARSET_ADDR + VARSET_SIZE && mock.program_failures) {
+            mock.program_failures--;
+            buf[6] = 1;
+        }
         if (request_address() == ADDR_RUN_MODE) {
             bool cal = mock.request[8] == RUN_MODE_CAL;
             mode_reply_fault fault = cal ? mock.cal_reply : mock.run_reply;
@@ -769,7 +835,7 @@ static int test_failed_cal_entry_attempts_run_and_skips_requested_writes(void)
             if (fault == 7) mock.cal_transfer_error = true;
             else mock.cal_reply = (mode_reply_fault)fault;
             ASSERT_EQ(mode_test_write(op, NULL), fault == 7 ? ALLTRAX_ERR_USB : expected[fault]);
-            ASSERT_EQ(mock.cal_attempts, 1);
+            ASSERT_EQ(mock.cal_attempts, fault == MODE_REPLY_TIMEOUT ? 2 : 1);
             ASSERT_EQ(mock.run_attempts, 1);
             ASSERT_EQ(mock.mode, RUN_MODE_RUN);
             ASSERT_EQ(mock.fan_writes, 0);
@@ -784,7 +850,7 @@ static int test_failed_cal_entry_attempts_run_and_skips_requested_writes(void)
     return 0;
 }
 
-static int test_failures_before_cal_attempt_do_not_write_run(void)
+static int test_non_run_and_failed_entry_do_not_write_modes(void)
 {
     for (int op = 0; op < 3; op++) {
         for (int failure = 0; failure < 3; failure++) {
@@ -794,11 +860,13 @@ static int test_failures_before_cal_attempt_do_not_write_run(void)
             else mock.cal_write_blocked = true;
             ASSERT_EQ(mode_test_write(op, NULL),
                       failure == 0 ? ALLTRAX_ERR_PROTOCOL :
-                      failure == 1 ? ALLTRAX_ERR_NOT_RUN : ALLTRAX_ERR_BLOCKED);
+                      failure == 1 ? ALLTRAX_OK : ALLTRAX_ERR_BLOCKED);
             ASSERT_EQ(mock.cal_attempts, 0);
             ASSERT_EQ(mock.run_attempts, 0);
             ASSERT_EQ(mock.mode_writes, 0);
             ASSERT_EQ(mock.mode, failure == 1 ? RUN_MODE_CAL : RUN_MODE_RUN);
+            if (failure == 1)
+                ASSERT_EQ(op == 0 ? mock.fan_writes : mock.goodset_clears, 1);
         }
     }
     return 0;
@@ -837,7 +905,7 @@ static int test_body_and_run_failures_preserve_original_error(void)
             if (cleanup_failure) mock.run_reply = MODE_REPLY_TIMEOUT;
             ASSERT_EQ(mode_test_write(op, NULL), op == 0 ? ALLTRAX_ERR_USB : ALLTRAX_ERR_PROTOCOL);
             ASSERT_EQ(mock.cal_attempts, 1);
-            ASSERT_EQ(mock.run_attempts, 1);
+            ASSERT_EQ(mock.run_attempts, cleanup_failure ? 2 : 1);
             ASSERT_TRUE(strstr(mock.ctrl.error_detail,
                                op == 0 ? "Fan_On transfer failure" : "Read length mismatch") != NULL);
             if (cleanup_failure) {
@@ -858,7 +926,7 @@ static int test_run_failure_after_success_is_reported_explicitly(void)
             if (transfer_failure) mock.run_transfer_error = true;
             else mock.run_reply = MODE_REPLY_TIMEOUT;
             ASSERT_EQ(mode_test_write(op, NULL), transfer_failure ? ALLTRAX_ERR_USB : ALLTRAX_ERR_TIMEOUT);
-            ASSERT_EQ(mock.run_attempts, 1);
+            ASSERT_EQ(mock.run_attempts, transfer_failure ? 1 : 2);
             ASSERT_TRUE(strstr(mock.ctrl.error_detail, "RUN restoration failed") != NULL);
             ASSERT_EQ(mock.mode, transfer_failure ? RUN_MODE_CAL : RUN_MODE_RUN);
             ASSERT_EQ(mock.fan_writes, op == 0 ? 1 : 0);
@@ -1441,27 +1509,142 @@ static int test_flash_verification_mismatch_keeps_goodset_invalid(void)
     return 0;
 }
 
-static int test_invalid_goodset_blocks_writes_before_cal(void)
+static int test_goodset_recovery_copies_factory_before_patching(void)
 {
     mock_reset();
-    mock.page[0] = mock.page[1] = 0xFF;  /* Interrupted earlier write */
-    uint8_t original[VARSET_SIZE];
-    memcpy(original, mock.page, sizeof(original));
+    mock.page[0] = mock.page[1] = 0xFF;
+    memset(mock.factory + 2, 0x6A, sizeof(mock.factory) - 2);
+    alltrax_write_report report = { .reset_sent = true };  /* Cleared by the write */
+    const alltrax_write_opts recovery = { .report = &report };
     const alltrax_var_def* hpd = alltrax_find_var("HPD");
     double one = 1;
-    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &hpd, &one, 1, NULL), ALLTRAX_ERR_FLASH);
-    ASSERT_TRUE(strstr(mock.ctrl.error_detail, "V_GoodSet=0xFFFF") != NULL);
+    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &hpd, &one, 1, &recovery), ALLTRAX_OK);
+    ASSERT_TRUE(report.factory_restored);
+    ASSERT_TRUE(report.autocal_cleared && report.reset_sent);  /* HPD triggers both */
+    ASSERT_FALSE(report.date_stamped);
+    ASSERT_EQ(mock.erases, 2);
+    ASSERT_EQ(mock.goodset_clears, 2);
+    ASSERT_MEM_EQ(mock.first_commit, mock.factory, sizeof(mock.factory));
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, mock.factory, sizeof(expected));
+    expected[hpd->address - VARSET_ADDR] = 1;
+    ASSERT_MEM_EQ(mock.page, expected, sizeof(expected));
+    return 0;
+}
+
+static int test_invalid_factory_blocks_flash_writes_before_cal(void)
+{
+    mock_reset();
+    mock.factory[0] = mock.factory[1] = 0xFF;
+    uint8_t original[VARSET_SIZE];
+    memcpy(original, mock.page, sizeof(original));
+    ASSERT_EQ(write_hpd(), ALLTRAX_ERR_FLASH);
+    ASSERT_TRUE(strstr(mock.ctrl.error_detail, "F_GoodSet=0xFFFF") != NULL);
     ASSERT_EQ(mock.mode_writes, 0);
     ASSERT_EQ(mock.erases, 0);
     ASSERT_EQ(mock.settings_writes, 0);
     ASSERT_MEM_EQ(mock.page, original, sizeof(original));
 
+    mock.page[0] = mock.page[1] = 0xFF;
+    const alltrax_var_def* hpd = alltrax_find_var("HPD");
+    double one = 1;
     const alltrax_write_opts skip = { .skip_goodset = true };
     ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &hpd, &one, 1, &skip), ALLTRAX_OK);
     ASSERT_EQ(mock.erases, 1);
     ASSERT_EQ(mock.goodset_clears, 1);
     ASSERT_EQ(get_le16(mock.page), 0x0000);
     ASSERT_EQ(mock.page[hpd->address - VARSET_ADDR], 1);
+    return 0;
+}
+
+static int test_recovery_checks_voltage_links_against_factory_values(void)
+{
+    for (int invalid = 0; invalid <= 1; invalid++) {
+        mock_reset();
+        mock.page[0] = mock.page[1] = 0xFF;
+        const alltrax_var_def* ksi = alltrax_find_var("AnalogInputs_Threshold");
+        const alltrax_var_def* high = alltrax_find_var("HiBat_Vlim");
+        const alltrax_var_def* bms = alltrax_find_var("BMS_Missing_HiBat_Vlim");
+        ASSERT_EQ(alltrax_encode_var(ksi, 20, mock.factory + (ksi->address - VARSET_ADDR)), 2);
+        ASSERT_EQ(alltrax_encode_var(high, 60, mock.factory + (high->address - VARSET_ADDR)), 2);
+        ASSERT_EQ(alltrax_encode_var(bms, invalid ? 25 : 55,
+                                     mock.factory + (bms->address - VARSET_ADDR)), 2);
+        const alltrax_var_def* low = alltrax_find_var("LoBat_Vlim");
+        double value = 28;
+        ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &low, &value, 1, NULL),
+                  invalid ? ALLTRAX_ERR_INVALID_ARG : ALLTRAX_OK);
+        ASSERT_EQ(mock.erases, invalid ? 0 : 2);
+        ASSERT_EQ(mock.mode_writes, invalid ? 0 : 2);
+    }
+    return 0;
+}
+
+static int test_post_write_actions_and_single_reset(void)
+{
+    const alltrax_assignment items[] = {
+        { .var = alltrax_find_var("HPD") }, /* Already zero: presence triggers it. */
+        { .var = alltrax_find_var("Throttle_Type") },
+        { .var = alltrax_find_var("Speed_Limit_On") },
+        { .var = alltrax_find_var("Tach_4_8") },
+        { .var = alltrax_find_var("F_Table_Name"), .text = "TEST" },
+    };
+    for (size_t i = 0; i < sizeof(items) / sizeof(items[0]); i++) {
+        mock_reset();
+        alltrax_write_report report;
+        const alltrax_write_opts reporting = { .report = &report };
+        ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, &items[i], 1, &reporting),
+                  ALLTRAX_OK);
+        ASSERT_EQ(report.autocal_cleared, i < 2);
+        ASSERT_EQ(report.reset_sent, i < 4);
+        ASSERT_EQ(report.date_stamped, i == 4);
+        ASSERT_FALSE(report.factory_restored);
+        ASSERT_EQ(mock.autocal_clears, i < 2);
+        ASSERT_EQ(mock.resets, i < 4);
+        ASSERT_EQ(mock.date_writes, i == 4);
+        ASSERT_STR_EQ(mock.post_order, i < 2 ? "RCX" : i < 4 ? "RX" : "RD");
+        if (i == 4) {
+            ASSERT_TRUE(get_le16(mock.date) >= 2000);
+            ASSERT_TRUE(mock.date[2] >= 1 && mock.date[2] <= 31);
+            ASSERT_TRUE(mock.date[3] >= 1 && mock.date[3] <= 12);
+        }
+    }
+    for (int bypass = 0; bypass <= 1; bypass++) {
+        for (int explicit_reset = 0; explicit_reset <= 1; explicit_reset++) {
+            mock_reset();
+            const alltrax_write_opts opts = {
+                .reset_after_write = explicit_reset != 0,
+                .skip_post_write = bypass != 0,
+            };
+            ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items,
+                sizeof(items) / sizeof(items[0]), &opts), ALLTRAX_OK);
+            ASSERT_EQ(mock.resets, !bypass || explicit_reset);
+            ASSERT_STR_EQ(mock.post_order, !bypass ? "RDCX" :
+                          explicit_reset ? "RX" : "R");
+        }
+    }
+    return 0;
+}
+
+static int test_flash_recovery_checks_and_clears_flags(void)
+{
+    for (int programming = 0; programming <= 1; programming++) {
+        for (int protected = 0; protected <= 1; protected++) {
+            mock_reset();
+            mock.erase_failures = !programming;
+            mock.program_failures = programming;
+            mock.write_protected = protected;
+            ASSERT_EQ(write_hpd(), protected ? ALLTRAX_ERR_FLASH : ALLTRAX_OK);
+            ASSERT_EQ(mock.flag_checks, 1);
+            ASSERT_EQ(mock.flag_clears, 1);
+            ASSERT_EQ(mock.erase_attempts, 1 + (!programming && !protected));
+            ASSERT_EQ(mock.program_attempts, protected ? (unsigned)programming :
+                      mock.settings_writes + (unsigned)programming);
+            ASSERT_EQ(mock.goodset_clears, !protected);
+            ASSERT_EQ(mock.resets, !protected);
+            if (protected)
+                ASSERT_TRUE(strstr(mock.ctrl.error_detail, "WRPRTERR") != NULL);
+        }
+    }
     return 0;
 }
 
@@ -1575,7 +1758,7 @@ int main(void)
     RUN_TEST(test_non_catalog_curves_rejected_before_io);
     RUN_TEST(test_all_canonical_variable_groups_remain_readable);
     RUN_TEST(test_failed_cal_entry_attempts_run_and_skips_requested_writes);
-    RUN_TEST(test_failures_before_cal_attempt_do_not_write_run);
+    RUN_TEST(test_non_run_and_failed_entry_do_not_write_modes);
     RUN_TEST(test_cal_and_run_failures_preserve_both_diagnostics);
     RUN_TEST(test_body_and_run_failures_preserve_original_error);
     RUN_TEST(test_run_failure_after_success_is_reported_explicitly);
@@ -1592,7 +1775,11 @@ int main(void)
     RUN_TEST(test_batch_flash_patch_limit);
     RUN_TEST(test_batch_keeps_voltage_link_checks);
     RUN_TEST(test_flash_verification_mismatch_keeps_goodset_invalid);
-    RUN_TEST(test_invalid_goodset_blocks_writes_before_cal);
+    RUN_TEST(test_goodset_recovery_copies_factory_before_patching);
+    RUN_TEST(test_invalid_factory_blocks_flash_writes_before_cal);
+    RUN_TEST(test_recovery_checks_voltage_links_against_factory_values);
+    RUN_TEST(test_post_write_actions_and_single_reset);
+    RUN_TEST(test_flash_recovery_checks_and_clears_flags);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }
