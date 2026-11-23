@@ -66,6 +66,7 @@ Alltrax Controller Monitor
 | `alltrax write var=value [...]` | Write settings |
 | `alltrax reset [--no-wait]` | Reboot controller and wait for it to reconnect |
 | `alltrax clear-autocal [--no-wait]` | Clear learned throttle calibration and reboot |
+| `alltrax restore-defaults [--keep-throttle] [--keep-field-map] [--no-wait]` | Restore factory settings and reboot |
 | `alltrax fan-test` | Start a timed fan test with the keyswitch on |
 | `alltrax monitor` | Live polling display (Ctrl+C to stop) |
 | `alltrax errors` | Active error flags and error history |
@@ -91,7 +92,8 @@ point source: x,y pairs, `--file`, or `--preset`.
 | Outside V0.001-V5.999 | Yes | With `alltrax --debug-ignore-fw-bounds <command>` | Never |
 
 `--allow-unvalidated-firmware` is accepted by the write commands (`write`,
-`reset`, `clear-autocal`, `fan-test`, `config load`, `curve set`, `curve reset`).
+`reset`, `clear-autocal`, `restore-defaults`, `fan-test`, `config load`,
+`curve set`, `curve reset`).
 `--debug-ignore-fw-bounds`
 is a debug option placed before the command; it affects reads only.
 
@@ -119,6 +121,28 @@ resets the controller wait up to 7.5 seconds for it to reconnect. Use
 `--no-wait` to return after sending the reset. If USB passthrough leaves the device node stale, the command
 reports a warning and exits successfully after the reset was sent. Unplug
 and reconnect the USB cable to restore access in that case.
+
+### Restore factory defaults
+
+```sh
+alltrax restore-defaults
+alltrax restore-defaults --keep-throttle --keep-field-map
+```
+
+`restore-defaults` replaces the user settings with the controller's factory
+settings and checks that the factory page is valid before writing. Use
+`--keep-throttle` to preserve the throttle type, name, linearization curve,
+and absolute throttle calibration if selected. HPD comes from the factory page.
+Use `--keep-field-map` to preserve the map name, both curves, and field
+settings. The speed sensor pole count comes from the factory page. Both
+keep options require a valid user settings page. The result is written in
+one verified page write. Throttle auto-calibration is cleared when the throttle
+type or HPD changes, and with `--keep-throttle`.
+
+The command updates the field-map date and sends one reset on success.
+Use `--no-wait` to return after sending it. Before using the controller,
+check that the field map matches the installed motor and that the speed
+sensor pole count is correct.
 
 ### Write examples
 

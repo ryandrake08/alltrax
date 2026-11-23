@@ -29,6 +29,8 @@ enum {
     CLI_OPT_PRESET              = 1u << 7,  /* takes a value */
     CLI_OPT_NO_WAIT             = 1u << 8,
     CLI_OPT_FACTORY             = 1u << 9,
+    CLI_OPT_KEEP_THROTTLE       = 1u << 10,
+    CLI_OPT_KEEP_FIELD_MAP      = 1u << 11,
 
     /* Debug and development bypasses */
     CLI_OPT_DEBUG_NO_CAL        = 1u << 16,
@@ -52,6 +54,8 @@ typedef struct {
     bool plot;
     bool no_wait;
     bool factory;
+    bool keep_throttle;
+    bool keep_field_map;
     bool debug_no_cal;
     bool debug_no_verify;
     bool debug_no_goodset;
@@ -122,6 +126,7 @@ int cmd_get(int argc, char** argv);
 int cmd_write(int argc, char** argv);
 int cmd_reset(int argc, char** argv);
 int cmd_clear_autocal(int argc, char** argv);
+int cmd_restore_defaults(int argc, char** argv);
 int cmd_fan_test(int argc, char** argv);
 int cmd_devices(int argc, char** argv);
 int cmd_monitor(int argc, char** argv);

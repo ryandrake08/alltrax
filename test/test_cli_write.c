@@ -1313,6 +1313,29 @@ static void set_page_bytes(const char* name, const char* bytes, size_t len)
     memcpy(device.page + (var->address - VARSET_ADDR), bytes, len);
 }
 
+static int test_restore_defaults_cli_keep_flags_and_no_wait(void)
+{
+    char* argv[] = { "restore-defaults", "--keep-field-map", "--no-wait", "--keep-throttle" };
+    writable_device_reset();
+    set_page_bytes("Throttle_Type", "\3", 1);
+    set_page_bytes("F_Table_Name", "KEPT", 4);
+    set_page_bytes("HPD", "\1", 1);
+    reconnect_waits = 0;
+    ASSERT_EQ(run_writable(cmd_restore_defaults, 4, argv), 0);
+    ASSERT_EQ(device.page[0xA0], 3);
+    ASSERT_MEM_EQ(device.page + 0x200, "KEPT", 4);
+    ASSERT_EQ(device.page[0xA4], 0);
+    ASSERT_EQ(device.erases, 1);
+    ASSERT_EQ(device.backup_clears, 1);
+    ASSERT_EQ(device.resets, 1);
+    ASSERT_EQ(reconnect_waits, 0);
+
+    char* extra[] = { "restore-defaults", "unexpected", "--keep-throttle" };
+    ASSERT_EQ(run_writable(cmd_restore_defaults, 3, extra), 1);
+    ASSERT_EQ(open_calls, 0);
+    return 0;
+}
+
 static int run_settings_write(const char* a, const char* b, const char* c)
 {
     const char* args[] = { a, b, c };
@@ -1529,6 +1552,7 @@ int main(void)
     RUN_TEST(test_fan_test_requires_keyswitch_and_writes_once);
     RUN_TEST(test_clear_autocal_sends_one_reset_after_clear);
     RUN_TEST(test_reset_wait_timeout_does_not_resend_reset);
+    RUN_TEST(test_restore_defaults_cli_keep_flags_and_no_wait);
     RUN_TEST(test_field_map_writes_require_flag);
     RUN_TEST(test_field_map_writes_include_current_name);
     RUN_TEST(test_field_map_recovery_uses_factory_name);

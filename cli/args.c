@@ -29,6 +29,10 @@ static const struct {
       "Return after sending the reset command" },
     { "--factory", CLI_OPT_FACTORY, NULL,
       "Read the factory settings page" },
+    { "--keep-throttle", CLI_OPT_KEEP_THROTTLE, NULL,
+      "Preserve the throttle type, name, linearization and ABS calibration" },
+    { "--keep-field-map", CLI_OPT_KEEP_FIELD_MAP, NULL,
+      "Preserve the field-map name, curves and settings" },
     { "--plot", CLI_OPT_PLOT, NULL,
       "Show an ASCII plot instead of a table" },
     { "--file", CLI_OPT_FILE, "<f.csv>",
@@ -173,6 +177,8 @@ int cli_parse_args(int argc, char** argv, const char* command,
         case CLI_OPT_RESET:             flags->reset = true; break;
         case CLI_OPT_NO_WAIT:           flags->no_wait = true; break;
         case CLI_OPT_FACTORY:           flags->factory = true; break;
+        case CLI_OPT_KEEP_THROTTLE:     flags->keep_throttle = true; break;
+        case CLI_OPT_KEEP_FIELD_MAP:    flags->keep_field_map = true; break;
         case CLI_OPT_PLOT:              flags->plot = true; break;
         case CLI_OPT_DEBUG_NO_CAL:      flags->debug_no_cal = true; break;
         case CLI_OPT_DEBUG_NO_VERIFY:   flags->debug_no_verify = true; break;

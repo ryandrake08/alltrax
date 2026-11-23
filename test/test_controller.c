@@ -33,6 +33,7 @@ static struct {
     unsigned cal_attempts, run_attempts, fan_writes;
     unsigned drains, date_writes, autocal_clears, resets;
     unsigned erase_attempts, flag_checks, flag_clears, program_attempts;
+    uint32_t first_program_addr;
     unsigned erase_failures, program_failures;
     bool write_protected;
     uint8_t date[4];
@@ -192,6 +193,7 @@ alltrax_error transport_write(alltrax_controller* ctrl,
         if (addr >= VARSET_ADDR && addr < VARSET_ADDR + VARSET_SIZE &&
             data[1] <= VARSET_ADDR + VARSET_SIZE - addr) {
             mock.program_attempts++;
+            if (mock.program_attempts == 1) mock.first_program_addr = addr;
             if (mock.program_failures)
                 return ALLTRAX_OK; /* Device rejects this packet. */
             memcpy(mock.page + (addr - VARSET_ADDR), data + 8, data[1]);
@@ -1579,6 +1581,167 @@ static int test_recovery_checks_voltage_links_against_factory_values(void)
     return 0;
 }
 
+static int test_restore_defaults_copies_factory_page_and_resets(void)
+{
+    mock_reset();
+    for (size_t i = 2; i < VARSET_SIZE; i++)
+        mock.factory[i] = (uint8_t)(i * 13);
+    /* Recover even if the current settings are invalid. */
+    mock.page[0] = 0xFF;
+    alltrax_write_report report;
+    const alltrax_write_opts opts = { .report = &report };
+    ASSERT_EQ(alltrax_restore_defaults(&mock.ctrl, false, false, &opts), ALLTRAX_OK);
+    ASSERT_MEM_EQ(mock.page, mock.factory, VARSET_SIZE);
+    ASSERT_EQ(mock.erases, 1);
+    ASSERT_EQ(mock.goodset_clears, 1);
+    ASSERT_EQ(mock.first_program_addr, VARSET_ADDR);
+    ASSERT_EQ(mock.mode_writes, 0);
+    ASSERT_STR_EQ(mock.post_order, "DX");
+    ASSERT_TRUE(report.factory_restored && report.date_stamped && report.reset_sent);
+    ASSERT_FALSE(report.autocal_cleared);
+    return 0;
+}
+
+static int test_restore_defaults_preserves_selected_settings(void)
+{
+    for (int mask = 1; mask < 4; mask++) {
+        for (int abs = 0; abs <= 1; abs++) {
+            mock_reset();
+            mock.page[0xA0] = abs ? 11 : 3;
+            mock.page[0xA4] = 1; /* HPD still comes from factory. */
+            uint8_t expected[VARSET_SIZE] = {0};
+            if (mask & 1) {
+                expected[0xA0] = mock.page[0xA0];
+                memcpy(expected + 0xC0, mock.page + 0xC0, 16); /* throttle name */
+                memcpy(expected + 0x100, mock.page + 0x100, 64); /* linearization */
+                if (abs) memcpy(expected + 0xAA, mock.page + 0xAA, 16);
+            }
+            if (mask & 2) {
+                memcpy(expected + 0x1C0, mock.page + 0x1C0, 160); /* curves and name */
+                memcpy(expected + 0x400, mock.page + 0x400, 9); /* field settings */
+            }
+            ASSERT_EQ(alltrax_restore_defaults(&mock.ctrl, (mask & 1) != 0,
+                      (mask & 2) != 0, NULL), ALLTRAX_OK);
+            ASSERT_MEM_EQ(mock.page, expected, VARSET_SIZE);
+            ASSERT_EQ(mock.erases, 1);
+            ASSERT_EQ(mock.goodset_clears, 1);
+            ASSERT_EQ(mock.cal_attempts, 1);
+            ASSERT_EQ(mock.run_attempts, 1);
+            /* Keeping the throttle, or a changed type/HPD, clears calibration. */
+            ASSERT_STR_EQ(mock.post_order, "RDCX");
+            ASSERT_EQ(mock.resets, 1);
+        }
+    }
+    return 0;
+}
+
+static int test_restore_defaults_uses_original_revision_for_legacy_fixups(void)
+{
+    const uint32_t revs[] = { 1006, 1007, UINT32_MAX };  /* UINT32_MAX: unprogrammed */
+    for (size_t r = 0; r < sizeof(revs) / sizeof(revs[0]); r++) {
+        uint32_t rev = revs[r];
+        mock_reset();
+        mock.orig_program_rev = rev;
+        mock.factory[0xBE] = 2; /* UserInputs_State */
+        mock.factory[0xA2] = 93; /* Normal throttle rate, already in raw units. */
+        ASSERT_EQ(alltrax_restore_defaults(&mock.ctrl, false, false, NULL), ALLTRAX_OK);
+        bool legacy = rev != 1007;
+        ASSERT_EQ(mock.erases, 1);
+        ASSERT_EQ(get_le16(mock.page + 0xBE), legacy ? 0 : 2);
+        ASSERT_EQ(get_le16(mock.page + 0x74), legacy ? 93 : 0);
+        ASSERT_EQ(get_le16(mock.page + 0x94), legacy ? 93 : 0);
+        for (size_t offset = 0x58; offset <= 0x98; offset += 0x20) {
+            ASSERT_EQ(get_le16(mock.page + offset), legacy ? 100 : 0);
+            ASSERT_EQ(get_le16(mock.page + offset + 2), legacy ? 100 : 0);
+        }
+        ASSERT_EQ(mock.resets, 1);
+    }
+    return 0;
+}
+
+static int test_restore_defaults_refuses_bad_sources_before_erase(void)
+{
+    for (int failure = 0; failure < 4; failure++) {
+        mock_reset();
+        mock.page[0xA0] = 4;
+        alltrax_error expected = ALLTRAX_ERR_FLASH;
+        switch (failure) {
+        case 0: mock.factory[0] = 0xFF; break;
+        case 1: mock.page[0] = 0xFF; break;
+        case 2:
+            mock_fault(FACTSET_ADDR + 2, MAX_PAYLOAD, 0, 1);
+            expected = ALLTRAX_ERR_PROTOCOL;
+            break;
+        case 3:
+            mock.throttles_allowed &= ~(1u << 3);
+            expected = ALLTRAX_ERR_INVALID_ARG;
+            break;
+        }
+        ASSERT_EQ(alltrax_restore_defaults(&mock.ctrl, true, false, NULL), expected);
+        ASSERT_EQ(mock.erases, 0);
+        ASSERT_EQ(mock.mode_writes, 0);
+        ASSERT_EQ(mock.resets, 0);
+    }
+    return 0;
+}
+
+static int test_restore_defaults_stops_if_factory_copy_does_not_verify(void)
+{
+    mock_reset();
+    mock.stuck_offset = 3;
+    alltrax_write_report report;
+    const alltrax_write_opts opts = { .skip_verify = true, .report = &report };
+    ASSERT_EQ(alltrax_restore_defaults(&mock.ctrl, false, false, &opts), ALLTRAX_ERR_FLASH);
+    ASSERT_EQ(get_le16(mock.page), 0xFFFF);
+    ASSERT_EQ(mock.date_writes, 0);
+    ASSERT_EQ(mock.resets, 0);
+    ASSERT_FALSE(report.factory_restored);
+    return 0;
+}
+
+static int test_restore_defaults_cal_failure_leaves_user_page(void)
+{
+    mock_reset();
+    mock.page[0xA0] = 3;
+    mock.cal_transfer_error = true;
+    uint8_t original[VARSET_SIZE];
+    memcpy(original, mock.page, sizeof(original));
+    alltrax_write_report report;
+    const alltrax_write_opts opts = { .report = &report };
+    ASSERT_EQ(alltrax_restore_defaults(&mock.ctrl, true, false, &opts), ALLTRAX_ERR_USB);
+    ASSERT_FALSE(report.factory_restored || report.date_stamped ||
+                 report.autocal_cleared || report.reset_sent);
+    ASSERT_MEM_EQ(mock.page, original, VARSET_SIZE);
+    ASSERT_EQ(mock.erases, 0);
+    ASSERT_EQ(mock.run_attempts, 1);
+    ASSERT_EQ(mock.resets, 0);
+    return 0;
+}
+
+/* Without keep options, calibration is cleared only when the restored
+ * throttle type or HPD differs from the running one. */
+static int test_restore_defaults_clears_calibration_on_throttle_change(void)
+{
+    const struct { uint8_t type, hpd; bool clear; } cases[] = {
+        { 3, 0, false }, { 4, 0, true }, { 3, 1, true },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        mock_reset();
+        mock.factory[0xA0] = 3;
+        mock.factory[0xA4] = 0;
+        memcpy(mock.page + 2, mock.factory + 2, VARSET_SIZE - 2);
+        mock.page[0xA0] = cases[i].type;
+        mock.page[0xA4] = cases[i].hpd;
+        alltrax_write_report report;
+        const alltrax_write_opts opts = { .report = &report };
+        ASSERT_EQ(alltrax_restore_defaults(&mock.ctrl, false, false, &opts), ALLTRAX_OK);
+        ASSERT_EQ(report.autocal_cleared, cases[i].clear);
+        ASSERT_EQ(mock.autocal_clears, cases[i].clear);
+        ASSERT_EQ(mock.resets, 1);
+    }
+    return 0;
+}
+
 static int test_post_write_actions_and_single_reset(void)
 {
     const alltrax_assignment items[] = {
@@ -1802,6 +1965,13 @@ int main(void)
     RUN_TEST(test_invalid_factory_blocks_flash_writes_before_cal);
     RUN_TEST(test_recovery_checks_voltage_links_against_factory_values);
     RUN_TEST(test_post_write_actions_and_single_reset);
+    RUN_TEST(test_restore_defaults_copies_factory_page_and_resets);
+    RUN_TEST(test_restore_defaults_preserves_selected_settings);
+    RUN_TEST(test_restore_defaults_uses_original_revision_for_legacy_fixups);
+    RUN_TEST(test_restore_defaults_refuses_bad_sources_before_erase);
+    RUN_TEST(test_restore_defaults_stops_if_factory_copy_does_not_verify);
+    RUN_TEST(test_restore_defaults_cal_failure_leaves_user_page);
+    RUN_TEST(test_restore_defaults_clears_calibration_on_throttle_change);
     RUN_TEST(test_flash_recovery_checks_and_clears_flags);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;

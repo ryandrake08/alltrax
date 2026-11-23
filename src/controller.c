@@ -803,16 +803,23 @@ static alltrax_error commit_varset_page(alltrax_controller* ctrl,
     return program_flash(ctrl, VARSET_ADDR, zeros, sizeof(zeros));
 }
 
-static alltrax_error check_goodset(alltrax_controller* ctrl, bool* recover)
+static alltrax_error read_factory_marker(alltrax_controller* ctrl, uint8_t marker[2])
 {
-    uint8_t marker[2];
-    alltrax_error rc = read_memory(ctrl, ADDR_F_GOODSET, sizeof(marker), marker);
+    alltrax_error rc = read_memory(ctrl, ADDR_F_GOODSET, 2, marker);
     if (rc) return rc;
     if (get_le16(marker) != 0) {
         set_error_detail(ctrl, "Factory settings invalid (F_GoodSet=0x%04X, expected 0x0000)",
                          get_le16(marker));
         return ALLTRAX_ERR_FLASH;
     }
+    return ALLTRAX_OK;
+}
+
+static alltrax_error check_goodset(alltrax_controller* ctrl, bool* recover)
+{
+    uint8_t marker[2];
+    alltrax_error rc = read_factory_marker(ctrl, marker);
+    if (rc) return rc;
     rc = read_memory(ctrl, ADDR_V_GOODSET, sizeof(marker), marker);
     if (!rc)
         *recover = get_le16(marker) != 0;
@@ -829,6 +836,20 @@ static alltrax_error post_write_error(alltrax_controller* ctrl,
                          action, detail);
     }
     return rc;
+}
+
+static alltrax_error stamp_field_map_date(alltrax_controller* ctrl)
+{
+    time_t now = time(NULL);
+    struct tm date;
+    if (now == (time_t)-1 || !localtime_r(&now, &date)) {
+        set_error_detail(ctrl, "Local date is unavailable");
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+    unsigned year = (unsigned)(date.tm_year + 1900);
+    uint8_t payload[] = { (uint8_t)year, (uint8_t)(year >> 8),
+                          (uint8_t)date.tm_mday, (uint8_t)(date.tm_mon + 1) };
+    return write_memory(ctrl, ADDR_FIELD_MAP_DATE, payload, sizeof(payload));
 }
 
 static alltrax_error post_write(alltrax_controller* ctrl,
@@ -851,17 +872,7 @@ static alltrax_error post_write(alltrax_controller* ctrl,
     }
 
     if (stamp_date) {
-        time_t now = time(NULL);
-        struct tm date;
-        if (now == (time_t)-1 || !localtime_r(&now, &date)) {
-            set_error_detail(ctrl, "Assignments written, but local date is unavailable");
-            return ALLTRAX_ERR_INVALID_ARG;
-        }
-        unsigned year = (unsigned)(date.tm_year + 1900);
-        uint8_t payload[] = { (uint8_t)year, (uint8_t)(year >> 8),
-                              (uint8_t)date.tm_mday, (uint8_t)(date.tm_mon + 1) };
-        alltrax_error rc = write_memory(ctrl, ADDR_FIELD_MAP_DATE, payload,
-                                        sizeof(payload));
+        alltrax_error rc = stamp_field_map_date(ctrl);
         if (rc) return post_write_error(ctrl, rc, "stamping FieldMap_Date");
         report->date_stamped = true;
     }
@@ -1496,6 +1507,147 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
 restore_run:
     rc = finish_cal_write(ctrl, cal_attempted, rc);
     return rc ? rc : post_write(ctrl, items, count, opts, report);
+}
+
+static void copy_restore_var(uint8_t page[VARSET_SIZE],
+    const uint8_t saved[VARSET_SIZE], const alltrax_var_def* var)
+{
+    size_t off = var->address - VARSET_ADDR;
+    memcpy(page + off, saved + off, alltrax_var_byte_size(var));
+}
+
+static void copy_restore_curve(uint8_t page[VARSET_SIZE],
+    const uint8_t saved[VARSET_SIZE], const char* name)
+{
+    const alltrax_curve_def* curve = alltrax_find_curve(name);
+    size_t x = curve->x_address - VARSET_ADDR;
+    size_t y = curve->y_address - VARSET_ADDR;
+    memcpy(page + x, saved + x, 2 * ALLTRAX_CURVE_POINTS);
+    memcpy(page + y, saved + y, 2 * ALLTRAX_CURVE_POINTS);
+}
+
+alltrax_error alltrax_restore_defaults(alltrax_controller* ctrl,
+    bool keep_throttle, bool keep_field_map, const alltrax_write_opts* opts)
+{
+    const alltrax_write_opts defaults = {0};
+    if (!opts) opts = &defaults;
+    alltrax_write_report unused;
+    alltrax_write_report* report = opts->report ? opts->report : &unused;
+    *report = (alltrax_write_report){0};
+
+    alltrax_error rc = require_writable_firmware(ctrl, opts->skip_fw_check);
+    if (rc) return rc;
+
+    uint8_t factory[VARSET_SIZE], saved[VARSET_SIZE], page[VARSET_SIZE];
+    rc = read_factory_marker(ctrl, factory);
+    if (rc) return rc;
+    rc = read_memory_range(ctrl, FACTSET_ADDR + 2, sizeof(factory) - 2, factory + 2);
+    if (rc) return rc;
+    rc = read_memory_range(ctrl, VARSET_ADDR, sizeof(saved), saved);
+    if (rc) return rc;
+
+    uint8_t rev[4];
+    const alltrax_var_def* original = alltrax_find_var("OriginalPrgmRev");
+    rc = read_memory(ctrl, original->address, sizeof(rev), rev);
+    if (rc) return rc;
+
+    /* Build the final page: factory values, fixes for older controllers
+     * (an unprogrammed revision reads as -1), then any kept settings. */
+    memcpy(page, factory, sizeof(page));
+    if ((int32_t)get_le32(rev) < 1007) {
+        const alltrax_var_def* rate = alltrax_find_var("N_Throttle_Rate");
+        const uint8_t* factory_rate = page + (rate->address - VARSET_ADDR);
+        const char* const names[] = {
+            "UserInputs_State", "U1_Throttle_Rate", "U2_Throttle_Rate",
+            "N_Forward_Speed", "N_Forward_Speed_Max", "U1_Forward_Speed",
+            "U1_Forward_Speed_Max", "U2_Forward_Speed", "U2_Forward_Speed_Max",
+        };
+        const uint8_t zero[] = {0, 0};
+        const uint8_t full[] = {100, 0};
+        const uint8_t* const values[] = {
+            zero, factory_rate, factory_rate, full, full, full, full, full, full,
+        };
+        for (size_t i = 0; i < sizeof(names) / sizeof(names[0]); i++) {
+            const alltrax_var_def* var = alltrax_find_var(names[i]);
+            memcpy(page + (var->address - VARSET_ADDR), values[i], 2);
+        }
+    }
+
+    /* Kept settings are copied as raw spans from the user page so strings,
+     * calibration and curves retain their original bytes. */
+    if ((keep_throttle || keep_field_map) && get_le16(saved) != 0) {
+        set_error_detail(ctrl, "Cannot keep invalid user settings (V_GoodSet=0x%04X)",
+                         (unsigned)get_le16(saved));
+        return ALLTRAX_ERR_FLASH;
+    }
+    if (keep_throttle) {
+        /* The kept throttle type must still be supported by this hardware. */
+        const alltrax_var_def* type = alltrax_find_var("Throttle_Type");
+        uint8_t selected = saved[type->address - VARSET_ADDR];
+        rc = alltrax_validate_var_value(type, selected);
+        if (rc) {
+            set_error_detail(ctrl, "Cannot keep unknown throttle type %u", (unsigned)selected);
+            return rc;
+        }
+        if (selected != 0) {
+            alltrax_info info;
+            rc = alltrax_get_info(ctrl, &info);
+            if (rc) return rc;
+            const alltrax_assignment assignment = { .var = type, .number = selected };
+            rc = check_hardware_limits(ctrl, &info, &assignment, opts);
+            if (rc) return rc;
+        }
+        copy_restore_var(page, saved, type);
+        copy_restore_var(page, saved, alltrax_find_var("Throttle_Type_Name"));
+        copy_restore_curve(page, saved, "linearization");
+        if (selected == 11) {
+            size_t count;
+            const alltrax_var_def* defs = alltrax_get_var_defs(ALLTRAX_VARS_THROTTLE, &count);
+            for (size_t i = 0; i < count; i++)
+                if (strncmp(defs[i].name, "ABS_", 4) == 0 && defs[i].writable)
+                    copy_restore_var(page, saved, &defs[i]);
+        }
+    }
+    if (keep_field_map) {
+        size_t count;
+        const alltrax_var_def* defs = alltrax_get_var_defs(ALLTRAX_VARS_FIELD, &count);
+        for (size_t i = 0; i < count; i++)
+            if (defs[i].writable)
+                copy_restore_var(page, saved, &defs[i]);
+        copy_restore_curve(page, saved, "field");
+        copy_restore_curve(page, saved, "genfield");
+    }
+
+    /* The firmware runs on factory values while the user page is invalid.
+     * Learned calibration belongs to the running throttle type and HPD. */
+    const uint8_t* running = get_le16(saved) == 0 ? saved : factory;
+    size_t type = alltrax_find_var("Throttle_Type")->address - VARSET_ADDR;
+    size_t hpd = alltrax_find_var("HPD")->address - VARSET_ADDR;
+    bool throttle_changed = page[type] != running[type] || page[hpd] != running[hpd];
+    bool patched = memcmp(page, factory, sizeof(page)) != 0;
+
+    /* One verified page write. A plain factory copy runs without a CAL
+     * bracket; a patched page is written under CAL like other settings. */
+    bool cal_attempted = false;
+    if (patched)
+        rc = enter_cal(ctrl, &cal_attempted);
+    if (!rc)
+        rc = commit_varset_page(ctrl, page, false);
+    rc = finish_cal_write(ctrl, cal_attempted, rc);
+    if (rc) return rc;
+    report->factory_restored = true;
+
+    rc = stamp_field_map_date(ctrl);
+    if (rc) return rc;
+    report->date_stamped = true;
+    if (keep_throttle || throttle_changed) {
+        rc = clear_backup_ram(ctrl);
+        if (rc) return rc;
+        report->autocal_cleared = true;
+    }
+    rc = alltrax_reset_device(ctrl, opts);
+    if (!rc) report->reset_sent = true;
+    return rc;
 }
 
 alltrax_error alltrax_write_vars(alltrax_controller* ctrl,

@@ -351,7 +351,7 @@ alltrax_error alltrax_read_factory_vars(alltrax_controller* ctrl,
 /* Actions a write performed besides writing its batch. Each flag is set
  * once its action succeeded, so a failed write reports what already ran. */
 typedef struct {
-    bool factory_restored;  /* Invalid user settings replaced by factory settings */
+    bool factory_restored;  /* Factory settings copied to the user page */
     bool autocal_cleared;   /* Throttle auto-calibration cleared */
     bool date_stamped;      /* FieldMap_Date written */
     bool reset_sent;        /* Reset command sent; the controller reboots */
@@ -565,8 +565,8 @@ alltrax_error alltrax_reset_device(alltrax_controller* ctrl,
     const alltrax_write_opts* opts);
 
 /* Wait up to timeout_ms for the controller to re-enumerate after a reset
- * sent through this handle (by alltrax_reset_device(), alltrax_clear_autocal()
- * or a write that reset it). The controller is matched by model and serial
+ * sent through this handle (by a reset, factory restore, auto-calibration
+ * clear, or write). The controller is matched by model and serial
  * number using read-only requests. Returns ALLTRAX_OK when it answers,
  * ALLTRAX_ERR_TIMEOUT if it does not, and ALLTRAX_ERR_INVALID_ARG if no reset
  * was sent. The handle stays stale: close it and open a new one. */
@@ -577,6 +577,16 @@ alltrax_error alltrax_wait_for_reconnect(alltrax_controller* ctrl,
  * firmware/write gates as reset. No CAL bracket or wait for re-enumeration. */
 alltrax_error alltrax_clear_autocal(alltrax_controller* ctrl,
     const alltrax_write_opts* opts);
+
+/* Replace the user settings with the factory settings in one verified page
+ * write, applying fixes for older controllers (original program revision
+ * below V1.007) and keeping the selected user settings. Keeping settings
+ * requires a valid user page. Afterwards, stamp FieldMap_Date, clear throttle
+ * auto-calibration if keep_throttle or if the throttle type or HPD changes,
+ * and send one reset. Only skip_fw_check and report are used from opts,
+ * which may be NULL. */
+alltrax_error alltrax_restore_defaults(alltrax_controller* ctrl,
+    bool keep_throttle, bool keep_field_map, const alltrax_write_opts* opts);
 
 #ifdef __cplusplus
 }
