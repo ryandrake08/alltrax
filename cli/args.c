@@ -39,6 +39,10 @@ static const struct {
       "Read or write curve points as CSV" },
     { "--preset", CLI_OPT_PRESET, "<name>",
       "Use a built-in preset curve" },
+    { "--default-curve", CLI_OPT_DEFAULT_CURVE, NULL,
+      "Install the default linearization even when the throttle type is unchanged" },
+    { "--no-hpd", CLI_OPT_NO_HPD, NULL,
+      "Turn high pedal disable (HPD) off" },
     { "--debug-no-cal", CLI_OPT_DEBUG_NO_CAL, NULL,
       "Skip the CAL/RUN mode bracket" },
     { "--debug-no-verify", CLI_OPT_DEBUG_NO_VERIFY, NULL,
@@ -179,6 +183,8 @@ int cli_parse_args(int argc, char** argv, const char* command,
         case CLI_OPT_FACTORY:           flags->factory = true; break;
         case CLI_OPT_KEEP_THROTTLE:     flags->keep_throttle = true; break;
         case CLI_OPT_KEEP_FIELD_MAP:    flags->keep_field_map = true; break;
+        case CLI_OPT_DEFAULT_CURVE:     flags->default_curve = true; break;
+        case CLI_OPT_NO_HPD:            flags->no_hpd = true; break;
         case CLI_OPT_PLOT:              flags->plot = true; break;
         case CLI_OPT_DEBUG_NO_CAL:      flags->debug_no_cal = true; break;
         case CLI_OPT_DEBUG_NO_VERIFY:   flags->debug_no_verify = true; break;

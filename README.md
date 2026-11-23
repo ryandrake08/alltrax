@@ -77,6 +77,8 @@ Alltrax Controller Monitor
 | `alltrax curve set <type>` | Write curve table to device |
 | `alltrax curve diff <type>` | Compare user vs factory curve |
 | `alltrax curve reset <type>` | Restore factory curve |
+| `alltrax throttle list` | List throttle labels supported by the connected controller; `*` marks the current one |
+| `alltrax throttle set <name> [--default-curve] [--no-hpd]` | Select a throttle and reboot |
 
 Command options may appear before or after arguments. Unknown options, options
 a command does not accept, missing option values, and extra arguments are
@@ -93,7 +95,7 @@ point source: x,y pairs, `--file`, or `--preset`.
 
 `--allow-unvalidated-firmware` is accepted by the write commands (`write`,
 `reset`, `clear-autocal`, `restore-defaults`, `fan-test`, `config load`,
-`curve set`, `curve reset`).
+`curve set`, `curve reset`, `throttle set`).
 `--debug-ignore-fw-bounds`
 is a debug option placed before the command; it affects reads only.
 
@@ -143,6 +145,29 @@ The command updates the field-map date and sends one reset on success.
 Use `--no-wait` to return after sending it. Before using the controller,
 check that the field map matches the installed motor and that the speed
 sensor pole count is correct.
+
+### Throttle selection
+
+```sh
+alltrax throttle list
+alltrax throttle set "0-5K 2 Wire"
+alltrax throttle set "0-5K 2 Wire" --default-curve
+```
+
+Choose a label from the connected controller's list. Names are case
+insensitive, and an unambiguous prefix also works. The stored label is
+limited to 16 characters. In the list, `*` marks the current throttle: the
+entry of the stored type whose label starts with the stored name, otherwise
+the first entry of that type. Selecting a different throttle type installs
+its default linearization. Selecting another label for the same type
+keeps the current curve unless you pass `--default-curve`. An Absolute
+throttle that is already selected always keeps its curve, so
+`--default-curve` is refused for it.
+
+The command turns high pedal disable (HPD) on unless you pass `--no-hpd`.
+HPD is always off for Pump and USB, and `--no-hpd` is refused for them.
+The command clears learned throttle calibration and sends one reset. Use `--no-wait` to return after the reset is sent. For an absolute
+throttle, verify its calibration before operating the controller.
 
 ### Write examples
 
@@ -1190,10 +1215,10 @@ and reboots the controller.
 | 2 | 5k-0 ohm (2-wire, reversed) |
 | 3 | 0-5V |
 | 4 | EZGO ITS |
-| 5 | Yamaha (0-1k ohm) |
-| 6 | Taylor-Dunn |
-| 7 | Club Car (5k, 3-wire) |
-| 8 | Digital |
+| 5 | 0-5K 3 Wire (includes Yamaha and Club Car labels) |
+| 6 | Taylor Dunn |
+| 7 | 5K-0 3 Wire (includes Club Car labels) |
+| 8 | Alltrax Digital |
 | 9 | Pump |
 | 10 | USB |
 | 11 | Absolute |

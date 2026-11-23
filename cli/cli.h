@@ -31,6 +31,8 @@ enum {
     CLI_OPT_FACTORY             = 1u << 9,
     CLI_OPT_KEEP_THROTTLE       = 1u << 10,
     CLI_OPT_KEEP_FIELD_MAP      = 1u << 11,
+    CLI_OPT_DEFAULT_CURVE       = 1u << 12,
+    CLI_OPT_NO_HPD              = 1u << 13,
 
     /* Debug and development bypasses */
     CLI_OPT_DEBUG_NO_CAL        = 1u << 16,
@@ -56,6 +58,8 @@ typedef struct {
     bool factory;
     bool keep_throttle;
     bool keep_field_map;
+    bool default_curve;
+    bool no_hpd;
     bool debug_no_cal;
     bool debug_no_verify;
     bool debug_no_goodset;
@@ -133,5 +137,6 @@ int cmd_monitor(int argc, char** argv);
 int cmd_errors(int argc, char** argv);
 int cmd_config(int argc, char** argv);
 int cmd_curve(int argc, char** argv);
+int cmd_throttle(int argc, char** argv);
 
 #endif /* ALLTRAX_CLI_H */

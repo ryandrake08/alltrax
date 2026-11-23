@@ -56,6 +56,7 @@ static void print_usage(void)
         "  errors            Error flags and history\n"
         "  config            Save/load config files\n"
         "  curve             Read/write curve tables\n"
+        "  throttle          List or select a throttle\n"
     );
 }
 
@@ -124,6 +125,8 @@ int main(int argc, char** argv)
         rc = cmd_config(sub_argc, sub_argv);
     else if (strcmp(cmd, "curve") == 0)
         rc = cmd_curve(sub_argc, sub_argv);
+    else if (strcmp(cmd, "throttle") == 0)
+        rc = cmd_throttle(sub_argc, sub_argv);
     else {
         fprintf(stderr, "Unknown command: %s\n", cmd);
         print_usage();

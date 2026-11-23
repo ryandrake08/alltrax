@@ -85,6 +85,9 @@ static struct {
     uint8_t page[VARSET_SIZE];
     uint8_t factory[FLASH_PAGE_SIZE];
     uint8_t mode;
+    const char* model;
+    uint32_t throttle_mask;
+    bool filter_throttles;
 } device;
 
 static uint32_t request_addr(void)
@@ -135,14 +138,14 @@ alltrax_error transport_write(alltrax_controller* ctrl,
 /* A 48V XCT on write-validated firmware with every throttle type allowed. */
 static uint8_t identity_byte(uint32_t a)
 {
-    static const char model[] = "XCT48400-DCS";
+    const char* model = device.model ? device.model : "XCT48400-DCS";
     const struct { uint32_t addr; uint32_t value; } words[] = {
         { ADDR_CONTROLLER_INFO + 0x24, 5002 }, { ADDR_CONTROLLER_INFO + 0x28, 5005 },
         { ADDR_HARDWARE_CONFIG, 48 | (400u << 16) },
-        { ADDR_HARDWARE_CONFIG + 16, 0x7FF },
+        { ADDR_HARDWARE_CONFIG + 16, device.filter_throttles ? device.throttle_mask : 0x7FF },
         { ADDR_BOOT_REV, 5002 }, { ADDR_PRGM_REV, fake_ctrl.program_rev },
     };
-    if (a >= ADDR_CONTROLLER_INFO && a < ADDR_CONTROLLER_INFO + sizeof(model) - 1)
+    if (a >= ADDR_CONTROLLER_INFO && a - ADDR_CONTROLLER_INFO < strlen(model))
         return (uint8_t)model[a - ADDR_CONTROLLER_INFO];
     for (size_t w = 0; w < sizeof(words) / sizeof(words[0]); w++) {
         if (a - words[w].addr < 4)
@@ -1140,7 +1143,8 @@ static int test_reset_flag_sends_no_reset_after_failure(void)
     return 0;
 }
 
-static int capture_get(int argc, char** argv, char* out, size_t out_size)
+static int capture_cli(int (*cmd)(int, char**), int argc, char** argv,
+    char* out, size_t out_size)
 {
     FILE* file = tmpfile();
     if (!file) return -1;
@@ -1149,7 +1153,7 @@ static int capture_get(int argc, char** argv, char* out, size_t out_size)
     int rc = -1;
     if (saved_out >= 0 && saved_err >= 0 &&
         dup2(fileno(file), STDOUT_FILENO) >= 0 && dup2(fileno(file), STDERR_FILENO) >= 0)
-        rc = run_writable(cmd_get, argc, argv);
+        rc = run_writable(cmd, argc, argv);
     fflush(NULL);
     if (saved_out >= 0) { dup2(saved_out, STDOUT_FILENO); close(saved_out); }
     if (saved_err >= 0) { dup2(saved_err, STDERR_FILENO); close(saved_err); }
@@ -1158,6 +1162,11 @@ static int capture_get(int argc, char** argv, char* out, size_t out_size)
     out[n] = '\0';
     fclose(file);
     return rc;
+}
+
+static int capture_get(int argc, char** argv, char* out, size_t out_size)
+{
+    return capture_cli(cmd_get, argc, argv, out, out_size);
 }
 
 /* Set the raw value of a named variable and capture get output. */
@@ -1311,6 +1320,199 @@ static void set_page_bytes(const char* name, const char* bytes, size_t len)
 {
     const alltrax_var_def* var = alltrax_find_var(name);
     memcpy(device.page + (var->address - VARSET_ADDR), bytes, len);
+}
+
+static int test_throttle_list_filters_by_model_and_mask(void)
+{
+    char out[640];
+    char* argv[] = { "throttle", "list" };
+    writable_device_reset();
+    device.filter_throttles = true;
+    device.throttle_mask = (1u << 3) | (1u << 4) | (1u << 7) | (1u << 8);
+    ASSERT_EQ(capture_cli(cmd_throttle, 2, argv, out, sizeof(out)), 0);
+    ASSERT_STR_EQ(out, "   4  EZGO ITS\n   5  Club Car IQ/i2 (MCOR)\n"
+                      "   5  Yamaha G19/G22\n   5  0-5K 3 Wire\n   9  Pump\n");
+    ASSERT_EQ(device.mutations, 0);
+
+    device.model = "SRX";
+    device.filter_throttles = false;
+    ASSERT_EQ(capture_cli(cmd_throttle, 2, argv, out, sizeof(out)), 0);
+    ASSERT_STR_EQ(out, "   4  EZGO ITS\n   3  0-5V\n   1  0-5K 2 Wire\n   2  5K-0 2 Wire\n"
+                      "   5  0-5K 3 Wire\n   7  5K-0 3 Wire\n   9  Pump\n  10  USB\n  11  Absolute\n");
+    ASSERT_EQ(device.mutations, 0);
+    return 0;
+}
+
+/* The stored name selects among entries sharing the stored type; without a
+ * matching name the first entry of that type is current. */
+static int test_throttle_list_marks_current_entry(void)
+{
+    char out[640];
+    char* argv[] = { "throttle", "list" };
+    writable_device_reset();
+    set_page_bytes("Throttle_Type", "\5", 1);
+    set_page_bytes("Throttle_Type_Name", "Yamaha G19/G22  ", 16);
+    ASSERT_EQ(capture_cli(cmd_throttle, 2, argv, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "\n*  5  Yamaha G19/G22\n") != NULL);
+    ASSERT_TRUE(strstr(out, "\n   5  Club Car IQ/i2 (MCOR)\n") != NULL);
+
+    set_page_bytes("Throttle_Type_Name", "Custom          ", 16);
+    ASSERT_EQ(capture_cli(cmd_throttle, 2, argv, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "\n*  5  Club Car IQ/i2 (MCOR)\n") != NULL);
+    ASSERT_TRUE(strstr(out, "\n   5  Yamaha G19/G22\n") != NULL);
+
+    /* Invalid user settings: the factory page is the one in effect. */
+    device.page[0] = 0xFF;
+    device.factory[0xA0] = 7;
+    ASSERT_EQ(capture_cli(cmd_throttle, 2, argv, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "\n*  7  Club Car PD+ (V-Glide)\n") != NULL);
+    ASSERT_EQ(device.mutations, 0);
+    return 0;
+}
+
+static int test_throttle_set_refuses_ambiguous_unknown_and_unavailable(void)
+{
+    char out[256];
+    char* unknown[] = { "throttle", "set", "unknown" };
+    char* ambiguous[] = { "throttle", "set", "Club Car" };
+    char* pump[] = { "throttle", "set", "Pump" };
+    char* alias[] = { "throttle", "set", "Yamaha G19/G22" };
+    writable_device_reset();
+    ASSERT_EQ(capture_cli(cmd_throttle, 3, unknown, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "unknown throttle") != NULL);
+    ASSERT_EQ(open_calls, 0);
+    ASSERT_EQ(capture_cli(cmd_throttle, 3, ambiguous, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "ambiguous throttle") != NULL);
+    ASSERT_EQ(open_calls, 0);
+    device.filter_throttles = true;
+    device.throttle_mask = 1;
+    ASSERT_EQ(capture_cli(cmd_throttle, 3, pump, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "not available") != NULL);
+    ASSERT_EQ(device.mutations, 0);
+    device.model = "SRX";
+    device.filter_throttles = false;
+    ASSERT_EQ(capture_cli(cmd_throttle, 3, alias, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "not available") != NULL);
+    ASSERT_EQ(device.mutations, 0);
+    return 0;
+}
+
+static int test_throttle_set_curve_and_label_in_one_batch(void)
+{
+    writable_device_reset();
+    set_page_bytes("Throttle_Type", "\3", 1);
+    char* select[] = { "throttle", "set", "club car iq/i2 (mcor)", "--reset", "--no-wait" };
+    ASSERT_EQ(run_writable(cmd_throttle, 5, select), 0);
+    ASSERT_EQ(device.erases, 1);
+    ASSERT_EQ(device.backup_clears, 1);
+    ASSERT_EQ(device.resets, 1);
+    ASSERT_EQ(device.page[0xA0], 5);
+    ASSERT_EQ(device.page[0xA4], 1);
+    ASSERT_MEM_EQ(device.page + 0xC0, "Club Car IQ/i2 (", 16);
+    ASSERT_EQ(get_le16(device.page + 0x102), 40); /* Truncated 1% */
+    ASSERT_EQ(get_le16(device.page + 0x104), 3276); /* Type 5: 80% */
+    ASSERT_EQ(get_le16(device.page + 0x124), 4095);
+
+    char* same[] = { "throttle", "set", "--no-wait", "Yamaha G19" };
+    device.page[0x104] = 123;
+    device.page[0x105] = 0;
+    ASSERT_EQ(run_writable(cmd_throttle, 4, same), 0);
+    ASSERT_MEM_EQ(device.page + 0xC0, "Yamaha G19/G22  ", 16);
+    ASSERT_EQ(get_le16(device.page + 0x104), 123);
+
+    char* force[] = { "throttle", "set", "--default-curve", "Yamaha G19/G22", "--no-wait" };
+    ASSERT_EQ(run_writable(cmd_throttle, 5, force), 0);
+    ASSERT_EQ(get_le16(device.page + 0x104), 3276);
+    return 0;
+}
+
+static int test_throttle_set_preserves_factory_curve_on_recovery(void)
+{
+    writable_device_reset();
+    device.page[0] = 0xFF;
+    device.page[0xA0] = 3;
+    device.factory[0xA0] = 5;
+    device.factory[0x104] = 123;
+    char* argv[] = { "throttle", "set", "Yamaha G19/G22", "--no-wait" };
+    ASSERT_EQ(run_writable(cmd_throttle, 4, argv), 0);
+    ASSERT_EQ(device.erases, 2);
+    ASSERT_EQ(get_le16(device.page + 0x104), 123);
+    ASSERT_EQ(device.resets, 1);
+    return 0;
+}
+
+static int test_throttle_set_uses_type_specific_preset(void)
+{
+    const struct { char* label; uint16_t x1, x2, y2; } cases[] = {
+        { "0-5K 2 Wire", 40, 532, 81 },
+        { "5K-0 2 Wire", 40, 368, 1105 },
+        { "5K-0 3 Wire", 204, 4054, 4095 },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        writable_device_reset();
+        char* argv[] = { "throttle", "set", cases[i].label, "--no-wait" };
+        ASSERT_EQ(run_writable(cmd_throttle, 4, argv), 0);
+        ASSERT_EQ(get_le16(device.page + 0x102), cases[i].x1);
+        ASSERT_EQ(get_le16(device.page + 0x104), cases[i].x2);
+        ASSERT_EQ(get_le16(device.page + 0x124), cases[i].y2);
+    }
+    return 0;
+}
+
+static int test_throttle_set_no_hpd_turns_hpd_off(void)
+{
+    char out[256];
+    writable_device_reset();
+    set_page_bytes("HPD", "\1", 1);
+    char* argv[] = { "throttle", "set", "0-5V", "--no-hpd", "--no-wait" };
+    ASSERT_EQ(run_writable(cmd_throttle, 5, argv), 0);
+    ASSERT_EQ(device.page[0xA0], 3);
+    ASSERT_EQ(device.page[0xA4], 0);
+
+    char* pump[] = { "throttle", "set", "Pump", "--no-hpd" };
+    open_calls = 0;
+    ASSERT_EQ(capture_cli(cmd_throttle, 4, pump, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "HPD is always off") != NULL);
+    ASSERT_EQ(open_calls, 0);
+    return 0;
+}
+
+static int test_throttle_set_keeps_absolute_curve(void)
+{
+    char out[256];
+    writable_device_reset();
+    set_page_bytes("Throttle_Type", "\13", 1);
+    device.page[0x104] = 123;
+    device.page[0x105] = 0;
+    char* force[] = { "throttle", "set", "Absolute", "--default-curve", "--no-wait" };
+    ASSERT_EQ(capture_cli(cmd_throttle, 5, force, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "--default-curve is not available") != NULL);
+    ASSERT_EQ(device.mutations, 0);
+
+    char* same[] = { "throttle", "set", "Absolute", "--no-wait" };
+    ASSERT_EQ(capture_cli(cmd_throttle, 4, same, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "Set throttle to Absolute (11), HPD on") != NULL);
+    ASSERT_EQ(get_le16(device.page + 0x104), 123);
+    return 0;
+}
+
+static int test_throttle_set_disables_hpd_for_pump_and_usb(void)
+{
+    char* labels[] = { "Pump", "USB", "Absolute" };
+    for (size_t i = 0; i < sizeof(labels) / sizeof(labels[0]); i++) {
+        writable_device_reset();
+        set_page_bytes("Throttle_Type", "\3", 1);
+        set_page_bytes("HPD", "\1", 1);
+        set_page_bytes("ABS_Lo_Throt_Min", "\x34\x02", 2);
+        char* argv[] = { "throttle", "set", labels[i], "--no-wait" };
+        ASSERT_EQ(run_writable(cmd_throttle, 4, argv), 0);
+        ASSERT_EQ(device.page[0xA0], 9 + i);
+        ASSERT_EQ(device.page[0xA4], i == 2);
+        ASSERT_EQ(get_le16(device.page + 0xAA), 0x0234);
+        ASSERT_EQ(get_le16(device.page + 0x104), 4054); /* Linear: truncated 99% */
+        ASSERT_EQ(device.resets, 1);
+    }
+    return 0;
 }
 
 static int test_restore_defaults_cli_keep_flags_and_no_wait(void)
@@ -1553,6 +1755,15 @@ int main(void)
     RUN_TEST(test_clear_autocal_sends_one_reset_after_clear);
     RUN_TEST(test_reset_wait_timeout_does_not_resend_reset);
     RUN_TEST(test_restore_defaults_cli_keep_flags_and_no_wait);
+    RUN_TEST(test_throttle_list_filters_by_model_and_mask);
+    RUN_TEST(test_throttle_list_marks_current_entry);
+    RUN_TEST(test_throttle_set_refuses_ambiguous_unknown_and_unavailable);
+    RUN_TEST(test_throttle_set_curve_and_label_in_one_batch);
+    RUN_TEST(test_throttle_set_preserves_factory_curve_on_recovery);
+    RUN_TEST(test_throttle_set_uses_type_specific_preset);
+    RUN_TEST(test_throttle_set_no_hpd_turns_hpd_off);
+    RUN_TEST(test_throttle_set_keeps_absolute_curve);
+    RUN_TEST(test_throttle_set_disables_hpd_for_pump_and_usb);
     RUN_TEST(test_field_map_writes_require_flag);
     RUN_TEST(test_field_map_writes_include_current_name);
     RUN_TEST(test_field_map_recovery_uses_factory_name);

@@ -61,7 +61,7 @@ BUILD := build/$(VARIANT)
 # --- Sources ---
 
 LIB_SRC  := src/protocol.c src/transport.c src/controller.c src/variables.c
-CLI_SRC  := cli/main.c cli/args.c cli/current.c cli/field_map.c cli/cmd_info.c cli/cmd_devices.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_monitor.c cli/cmd_errors.c cli/cmd_config.c cli/cmd_curve.c
+CLI_SRC  := cli/main.c cli/args.c cli/current.c cli/field_map.c cli/cmd_info.c cli/cmd_devices.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_monitor.c cli/cmd_errors.c cli/cmd_config.c cli/cmd_curve.c cli/cmd_throttle.c
 TEST_SRC := test/test_main.c test/test_protocol.c test/test_variables.c test/test_curves.c
 
 LIB_OBJ  := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(LIB_SRC)))
@@ -83,7 +83,7 @@ ifeq ($(BUILD_CLI),yes)
   ALL_SRC := $(LIB_SRC) $(CLI_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c
   all: $(CLI) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
 else
-  ALL_SRC := $(LIB_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c cli/args.c cli/current.c cli/field_map.c cli/cmd_get.c cli/cmd_write.c cli/cmd_curve.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_devices.c
+  ALL_SRC := $(LIB_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c cli/args.c cli/current.c cli/field_map.c cli/cmd_get.c cli/cmd_write.c cli/cmd_curve.c cli/cmd_throttle.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_devices.c
   all: $(LIB) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
 endif
 
@@ -108,7 +108,7 @@ ifeq ($(BUILD_CLI),yes)
   CLI_TEST_CONFIG_LIBS := $(CRYPTO_LIBS) $(XML_LIBS)
   $(BUILD)/test_cli_write.o: CPPFLAGS += -DTEST_CONFIG=1
 endif
-$(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(BUILD)/args.o $(BUILD)/current.o $(BUILD)/field_map.o $(BUILD)/cmd_get.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(BUILD)/cmd_reset.o $(BUILD)/cmd_restore_defaults.o $(BUILD)/cmd_fan_test.o $(CLI_TEST_CONFIG_OBJ) $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
+$(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(BUILD)/args.o $(BUILD)/current.o $(BUILD)/field_map.o $(BUILD)/cmd_get.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(BUILD)/cmd_throttle.o $(BUILD)/cmd_reset.o $(BUILD)/cmd_restore_defaults.o $(BUILD)/cmd_fan_test.o $(CLI_TEST_CONFIG_OBJ) $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
 	$(CC) $(LDFLAGS) -o $@ $^ $(CLI_TEST_CONFIG_LIBS) -lm
 
 # Transport tests supply hidapi symbols; never link the real USB library.
