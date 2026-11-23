@@ -20,25 +20,50 @@
 #include "cli.h"
 
 /* ------------------------------------------------------------------ */
-/* 3DES key and IV                                                    */
+/* Built-in 3DES key and IV (make EMBEDDED_KEYS=0 omits them)         */
 /* ------------------------------------------------------------------ */
 
-static const unsigned char DES3_KEY[24] = {
-    248, 184, 42, 77, 161, 89, 116, 236, 75, 162,
-    82, 159, 46, 236, 212, 89, 30, 199, 23, 166,
-    168, 153, 90, 182
+#ifdef ALLTRAX_EMBEDDED_KEYS
+static const cli_key embedded_config_key = {
+    .encrypt = true,
+    .key = {
+        248, 184, 42, 77, 161, 89, 116, 236, 75, 162,
+        82, 159, 46, 236, 212, 89, 30, 199, 23, 166,
+        168, 153, 90, 182
+    },
+    .iv = {
+        250, 217, 74, 37, 158, 170, 24, 231
+    },
 };
+#define EMBEDDED_CONFIG_KEY (&embedded_config_key)
+#else
+#define EMBEDDED_CONFIG_KEY NULL
+#endif
 
-static const unsigned char DES3_IV[8] = {
-    250, 217, 74, 37, 158, 170, 24, 231
-};
+static int resolve_config_key(const char* command, const cli_flags* flags,
+    cli_key* key)
+{
+    return cli_resolve_key(command, "--config-key", flags->config_key,
+                           "ALLTRAX_CONFIG_KEY", EMBEDDED_CONFIG_KEY, key);
+}
+
+static void print_key_status(FILE* out)
+{
+#ifdef ALLTRAX_EMBEDDED_KEYS
+    const char* built_in = "yes";
+#else
+    const char* built_in = "no";
+#endif
+    fprintf(out, "\nBuilt-in config key: %s. ALLTRAX_CONFIG_KEY=<key>:<iv> "
+            "supplies a key for auto.\n", built_in);
+}
 
 /* ------------------------------------------------------------------ */
 /* 3DES-CBC encrypt / decrypt                                          */
 /* ------------------------------------------------------------------ */
 
-static unsigned char* des3_encrypt(const char* plain, size_t plain_len,
-    size_t* out_len)
+static unsigned char* des3_encrypt(const cli_key* key, const char* plain,
+    size_t plain_len, size_t* out_len)
 {
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return NULL;
@@ -48,7 +73,7 @@ static unsigned char* des3_encrypt(const char* plain, size_t plain_len,
 
     int len = 0, total = 0;
 
-    if (!EVP_EncryptInit_ex(ctx, EVP_des_ede3_cbc(), NULL, DES3_KEY, DES3_IV))
+    if (!EVP_EncryptInit_ex(ctx, EVP_des_ede3_cbc(), NULL, key->key, key->iv))
         goto fail;
     if (!EVP_EncryptUpdate(ctx, out, &len,
                          (const unsigned char*)plain, (int)plain_len))
@@ -69,8 +94,8 @@ fail:
     return NULL;
 }
 
-static char* des3_decrypt(const unsigned char* cipher, size_t cipher_len,
-    size_t* out_len)
+static char* des3_decrypt(const cli_key* key, const unsigned char* cipher,
+    size_t cipher_len, size_t* out_len)
 {
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
     if (!ctx) return NULL;
@@ -80,7 +105,7 @@ static char* des3_decrypt(const unsigned char* cipher, size_t cipher_len,
 
     int len = 0, total = 0;
 
-    if (!EVP_DecryptInit_ex(ctx, EVP_des_ede3_cbc(), NULL, DES3_KEY, DES3_IV))
+    if (!EVP_DecryptInit_ex(ctx, EVP_des_ede3_cbc(), NULL, key->key, key->iv))
         goto fail;
     if (!EVP_DecryptUpdate(ctx, (unsigned char*)out, &len,
                          cipher, (int)cipher_len))
@@ -556,7 +581,7 @@ invalid_config:
     return NULL;
 }
 
-#define LOAD_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_NO_CRYPT | \
+#define LOAD_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_CONFIG_KEY | \
                       CLI_OPT_NO_VOLTAGE_LINK | CLI_OPT_FIELD_MAP)
 
 /* ------------------------------------------------------------------ */
@@ -566,13 +591,16 @@ invalid_config:
 static int do_save(int argc, char** argv)
 {
     cli_flags flags;
-    if (cli_parse_args(argc, argv, "config save", CLI_OPT_NO_CRYPT, 1, 1,
+    if (cli_parse_args(argc, argv, "config save", CLI_OPT_CONFIG_KEY, 1, 1,
                        &flags) < 0) {
         fprintf(stderr, "Usage: alltrax config save [options] <file>\n");
-        cli_print_options(stderr, CLI_OPT_NO_CRYPT);
+        cli_print_options(stderr, CLI_OPT_CONFIG_KEY);
+        print_key_status(stderr);
         return 1;
     }
     const char* filepath = argv[1];
+    cli_key key;
+    if (resolve_config_key("config save", &flags, &key)) return 1;
 
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, false);
@@ -593,8 +621,8 @@ static int do_save(int argc, char** argv)
     const void* data = xml;
     size_t data_len = strlen(xml);
     unsigned char* cipher = NULL;
-    if (!flags.no_crypt) {
-        cipher = des3_encrypt(xml, data_len, &data_len);
+    if (key.encrypt) {
+        cipher = des3_encrypt(&key, xml, data_len, &data_len);
         if (!cipher) {
             free(xml);
             fprintf(stderr, "Error: 3DES encryption failed; no file written\n");
@@ -632,8 +660,9 @@ static int do_save(int argc, char** argv)
         return 1;
     }
 
-    printf("Saved %zu variables + %zu curves to %s\n",
-           total_vars, total_curves, filepath);
+    printf("Saved %zu variables + %zu curves to %s (%s)\n",
+           total_vars, total_curves, filepath,
+           key.encrypt ? "encrypted" : "plain XML");
     return 0;
 }
 
@@ -651,9 +680,12 @@ static int do_load(int argc, char** argv)
             "\n"
             "Field-map entries are skipped unless --field-map is given.\n");
         cli_print_options(stderr, LOAD_OPTIONS);
+        print_key_status(stderr);
         return 1;
     }
     const char* filepath = argv[1];
+    cli_key key;
+    if (resolve_config_key("config load", &flags, &key)) return 1;
 
     /* Read file */
     FILE* f = fopen(filepath, "rb");
@@ -692,15 +724,16 @@ static int do_load(int argc, char** argv)
     size_t xml_len;
     char* xml;
 
-    if (flags.no_crypt) {
+    if (!key.encrypt) {
         xml = (char*)file_data;
         xml_len = nread;
     } else {
-        xml = des3_decrypt(file_data, nread, &xml_len);
+        xml = des3_decrypt(&key, file_data, nread, &xml_len);
+        bool plain = file_data[0] == '<';
         free(file_data);
         if (!xml) {
-            fprintf(stderr,
-                "Error: 3DES decryption failed (wrong key or corrupt file)\n");
+            fprintf(stderr, "Error: 3DES decryption failed (wrong key or corrupt file)%s\n",
+                    plain ? "; the file looks like plain XML, so use --config-key none" : "");
             return 1;
         }
     }
@@ -835,6 +868,7 @@ int cmd_config(int argc, char** argv)
             "  load [options] <file>  Load config file, write settings to device\n"
             "\n"
             "Run 'alltrax config save' or 'alltrax config load' for options.\n");
+        print_key_status(stderr);
         return 1;
     }
 

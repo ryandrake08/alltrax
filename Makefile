@@ -7,6 +7,8 @@
 #   make test         — build and run tests (combine with the variables above)
 #   make CC=clang-22 VARIANT=clang test — build and test with clang in its own
 #                       directory (use a distinct VARIANT per compiler)
+#   make EMBEDDED_KEYS=0 — build without the built-in config key
+#                       (build/<variant>-nokeys/)
 #   make clean        — remove build directory
 
 CC       ?= gcc
@@ -56,7 +58,15 @@ else
   BUILD_CLI     :=
 endif
 
-BUILD := build/$(VARIANT)
+# Built-in keys
+EMBEDDED_KEYS ?= 1
+ifeq ($(EMBEDDED_KEYS),1)
+  KEY_CPPFLAGS := -DALLTRAX_EMBEDDED_KEYS
+  CPPFLAGS += $(KEY_CPPFLAGS)
+  BUILD := build/$(VARIANT)
+else
+  BUILD := build/$(VARIANT)-nokeys
+endif
 
 # --- Sources ---
 
@@ -74,6 +84,7 @@ TEST_BIN := $(BUILD)/test_alltrax
 CONTROLLER_TEST_BIN := $(BUILD)/test_controller
 CLI_WRITE_TEST_BIN := $(BUILD)/test_cli_write
 TRANSPORT_TEST_BIN := $(BUILD)/test_transport
+NOKEYS_TEST_BIN := $(if $(filter yes1,$(BUILD_CLI)$(EMBEDDED_KEYS)),$(BUILD)/test_cli_write_nokeys)
 
 # --- Targets ---
 
@@ -81,7 +92,7 @@ COMPDB  := $(BUILD)/compile_commands.json
 
 ifeq ($(BUILD_CLI),yes)
   ALL_SRC := $(LIB_SRC) $(CLI_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c
-  all: $(CLI) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
+  all: $(CLI) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(NOKEYS_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
 else
   ALL_SRC := $(LIB_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c cli/args.c cli/current.c cli/field_map.c cli/cmd_get.c cli/cmd_write.c cli/cmd_curve.c cli/cmd_throttle.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_devices.c
   all: $(LIB) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
@@ -108,17 +119,29 @@ ifeq ($(BUILD_CLI),yes)
   CLI_TEST_CONFIG_LIBS := $(CRYPTO_LIBS) $(XML_LIBS)
   $(BUILD)/test_cli_write.o: CPPFLAGS += -DTEST_CONFIG=1
 endif
-$(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(BUILD)/args.o $(BUILD)/current.o $(BUILD)/field_map.o $(BUILD)/cmd_get.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(BUILD)/cmd_throttle.o $(BUILD)/cmd_reset.o $(BUILD)/cmd_restore_defaults.o $(BUILD)/cmd_fan_test.o $(CLI_TEST_CONFIG_OBJ) $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
+CLI_WRITE_TEST_OBJ := $(BUILD)/args.o $(BUILD)/current.o $(BUILD)/field_map.o $(BUILD)/cmd_get.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(BUILD)/cmd_throttle.o $(BUILD)/cmd_reset.o $(BUILD)/cmd_restore_defaults.o $(BUILD)/cmd_fan_test.o $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
+$(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(CLI_TEST_CONFIG_OBJ) $(CLI_WRITE_TEST_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(CLI_TEST_CONFIG_LIBS) -lm
+
+# A keyed build also tests config handling as built without the keys.
+ifeq ($(BUILD_CLI)$(EMBEDDED_KEYS),yes1)
+$(NOKEYS_TEST_BIN): $(BUILD)/test_cli_write_nokeys.o $(BUILD)/cmd_config_nokeys.o $(CLI_WRITE_TEST_OBJ)
+	$(CC) $(LDFLAGS) -o $@ $^ $(CLI_TEST_CONFIG_LIBS) -lm
+
+$(BUILD)/test_cli_write_nokeys.o: CPPFLAGS += -DTEST_CONFIG=1
+$(BUILD)/%_nokeys.o: %.c | $(BUILD)
+	$(CC) $(CFLAGS) $(filter-out $(KEY_CPPFLAGS),$(CPPFLAGS)) $(CRYPTO_CFLAGS) $(XML_CFLAGS) -MMD -MP -c -o $@ $<
+endif
 
 # Transport tests supply hidapi symbols; never link the real USB library.
 $(TRANSPORT_TEST_BIN): $(BUILD)/test_transport.o $(BUILD)/cmd_devices.o $(BUILD)/args.o $(LIB)
 	$(CC) $(LDFLAGS) -o $@ $^ -lm
 
-test: $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(TRANSPORT_TEST_BIN)
+test: $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(NOKEYS_TEST_BIN) $(TRANSPORT_TEST_BIN)
 	./$(TEST_BIN)
 	./$(CONTROLLER_TEST_BIN)
 	./$(CLI_WRITE_TEST_BIN)
+	$(if $(NOKEYS_TEST_BIN),./$(NOKEYS_TEST_BIN))
 	./$(TRANSPORT_TEST_BIN)
 
 clean:

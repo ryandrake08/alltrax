@@ -22,7 +22,7 @@ enum {
     CLI_OPT_NO_VOLTAGE_LINK     = 1u << 0,
     CLI_OPT_ALLOW_UNVALIDATED   = 1u << 1,
     CLI_OPT_FIELD_MAP           = 1u << 2,
-    CLI_OPT_NO_CRYPT            = 1u << 3,
+    CLI_OPT_CONFIG_KEY          = 1u << 3,  /* takes a value */
     CLI_OPT_RESET               = 1u << 4,
     CLI_OPT_PLOT                = 1u << 5,
     CLI_OPT_FILE                = 1u << 6,  /* takes a value */
@@ -51,7 +51,6 @@ typedef struct {
     bool no_voltage_link;
     bool allow_unvalidated_firmware;
     bool field_map;
-    bool no_crypt;
     bool reset;
     bool plot;
     bool no_wait;
@@ -66,7 +65,26 @@ typedef struct {
     bool debug_no_post_write;
     const char* file;    /* --file value, or NULL */
     const char* preset;  /* --preset value, or NULL */
+    const char* config_key;  /* --config-key value, or NULL */
 } cli_flags;
+
+/* A 3DES-CBC key and IV. encrypt is false when files are read and
+ * written unencrypted. */
+typedef struct {
+    bool encrypt;
+    unsigned char key[24];
+    unsigned char iv[8];
+} cli_key;
+
+/* Resolve the key for `option` from its value (NULL means "auto"):
+ *   none         unencrypted files
+ *   <key>:<iv>   48 and 16 hex digits, used as given
+ *   auto         the key in environment variable `env`, else `embedded`
+ *                (NULL when no key is built in), else an error
+ * The environment variable must hold <key>:<iv>; an empty one is ignored.
+ * Returns 0, or 1 after printing an error naming `command`. */
+int cli_resolve_key(const char* command, const char* option, const char* value,
+    const char* env, const cli_key* embedded, cli_key* out);
 
 /* Parse options anywhere in argv[1..argc-1]. Arguments starting with "--" are
  * options; only those in `allowed` are accepted. Positional arguments are moved

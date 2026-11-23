@@ -246,21 +246,21 @@ alltrax curve reset field --field-map
 ### Config save/load
 
 Save and restore controller settings to a file. By default, files are 3DES
-encrypted for compatibility with the Windows Alltrax Toolkit. Use `--no-crypt`
-for plain XML.
+encrypted for compatibility with the Windows Alltrax Toolkit. Use
+`--config-key none` for plain XML.
 
 ```sh
 # Save settings (encrypted, Toolkit-compatible)
 alltrax config save settings.txt
 
 # Save settings (plain XML, human-readable)
-alltrax config save --no-crypt settings.xml
+alltrax config save --config-key none settings.xml
 
 # Load settings from file and write to controller
 alltrax config load settings.txt
 
 # Load plain XML and reboot controller after writing
-alltrax config load --no-crypt --reset settings.xml
+alltrax config load --config-key none --reset settings.xml
 ```
 
 `config save` writes every writable setting and curve, including the field
@@ -284,11 +284,26 @@ that is too long or not ASCII.
 
 Config files saved by the Alltrax Toolkit ("Save All Settings") can be loaded
 with `alltrax config load`. Config files saved by the CLI can be loaded by the
-Toolkit (unless `--no-crypt` was used).
+Toolkit (unless `--config-key none` was used).
+
+`--config-key` selects how files are encrypted:
+
+- `auto` (the default) uses the key in the `ALLTRAX_CONFIG_KEY` environment
+  variable, otherwise the key built into the CLI. If neither is available,
+  the command fails before the controller is opened.
+- `<key>:<iv>` uses the given 3DES key: 48 hex digits, a colon, and 16 hex
+  digits (either case). It overrides `ALLTRAX_CONFIG_KEY`.
+- `none` reads and writes plain XML. This is the only way to skip encryption.
+
+`ALLTRAX_CONFIG_KEY` holds a `<key>:<iv>` value only; `auto`, `none`, or a
+malformed value there is an error, and an empty value is ignored. Malformed
+`--config-key` values also fail before the controller is opened. `config save`
+reports whether the file was written encrypted or as plain XML, and the usage
+text of `config save` and `config load` shows whether a key is built in.
 
 | Option | Applies to | Effect |
 |--------|-----------|--------|
-| `--no-crypt` | save, load | Plain XML instead of 3DES encrypted |
+| `--config-key auto\|<key>:<iv>\|none` | save, load | Encryption key, or plain XML with `none` |
 | `--no-voltage-link` | load | Skip the voltage relationship check |
 | `--allow-unvalidated-firmware` | load | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | load | Also write the file's field-map entries |
@@ -467,6 +482,8 @@ brew install hidapi openssl libxml2
 make            # builds CLI + library + tests (or library + tests if deps missing)
 make test       # runs tests
 make clean      # removes build/
+make EMBEDDED_KEYS=0   # builds without the built-in config key
+                       # (build/<variant>-nokeys/)
 
 make DEBUG=1 test      # debug build with AddressSanitizer (build/debug/)
 make SANITIZE=1 test   # AddressSanitizer + UndefinedBehaviorSanitizer,
@@ -475,6 +492,8 @@ make CC=clang-22 VARIANT=clang test   # clang in its own build directory
 ```
 
 The automated tests never access USB hardware; they use simulated transports.
+In a build with the built-in config key, `make test` also runs the CLI tests
+against config handling compiled without it.
 
 ## USB permissions
 

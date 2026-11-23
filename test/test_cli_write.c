@@ -10,6 +10,9 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#ifdef TEST_CONFIG
+#include <openssl/evp.h>
+#endif
 
 int test_pass_count;
 int test_fail_count;
@@ -371,8 +374,8 @@ static int run_curve_file(const char* contents, bool config)
     int rc;
     if (config) {
 #ifdef TEST_CONFIG
-        char* argv[] = { "config", "load", "--no-crypt", path };
-        rc = cmd_config(4, argv);
+        char* argv[] = { "config", "load", "--config-key", "none", path };
+        rc = cmd_config(5, argv);
 #else
         rc = -1;
 #endif
@@ -639,13 +642,19 @@ static int test_fw_flag_reaches_write_options_in_any_position(void)
 }
 
 #ifdef TEST_CONFIG
-/* Run `config save [--no-crypt] <path>` against the simulated device. */
+/* Keys used only by these tests. */
+#define TEST_KEY_A "0123456789abcdef0123456789ABCDEF0123456789abcdef:0011223344556677"
+#define TEST_KEY_B "fedcba9876543210fedcba9876543210fedcba9876543210:8899aabbccddeeff"
+
+/* Run `config save <path> [--config-key <key>]` against the simulated device;
+ * a NULL key omits the option. */
 static int run_config_save_as(const char* path, uint32_t program_rev,
-    bool encrypt)
+    const char* key)
 {
-    char file[256];
+    char file[256], key_text[128];
     snprintf(file, sizeof(file), "%s", path);
-    char* argv[] = { "config", "save", encrypt ? file : "--no-crypt", file };
+    snprintf(key_text, sizeof(key_text), "%s", key ? key : "");
+    char* argv[] = { "config", "save", file, "--config-key", key_text };
     fake_ctrl = (alltrax_controller) {
         .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
         .controller_type = ALLTRAX_CONTROLLER_XCT,
@@ -655,7 +664,7 @@ static int run_config_save_as(const char* path, uint32_t program_rev,
     device.enabled = true;
     device.reads = device.mutations = 0;
     open_succeeds = true;
-    int rc = cmd_config(encrypt ? 3 : 4, argv);
+    int rc = cmd_config(key ? 5 : 3, argv);
     open_succeeds = false;
     device.enabled = false;
     return rc;
@@ -663,7 +672,7 @@ static int run_config_save_as(const char* path, uint32_t program_rev,
 
 static int run_config_save(const char* path, uint32_t program_rev)
 {
-    return run_config_save_as(path, program_rev, false);
+    return run_config_save_as(path, program_rev, "none");
 }
 
 /* Returns the file contents (caller frees), or NULL if it cannot be read. */
@@ -805,7 +814,7 @@ static int test_config_save_encrypts_before_writing(void)
     char path[64];
     ASSERT_EQ(make_temp_path(path), 0);
     memset(&device, 0, sizeof(device));
-    ASSERT_EQ(run_config_save_as(path, 5005, true), 0);
+    ASSERT_EQ(run_config_save_as(path, 5005, TEST_KEY_A), 0);
     struct stat st;
     ASSERT_EQ(stat(path, &st), 0);
     char* contents = read_file(path);
@@ -818,8 +827,121 @@ static int test_config_save_encrypts_before_writing(void)
     return 0;
 }
 
+/* True if the file decrypts with `key_text` to a config document. */
+static bool saved_with(const char* path, const char* key_text)
+{
+    cli_key key;
+    if (cli_resolve_key("test", "--key", key_text, "ALLTRAX_TEST_UNSET", NULL, &key))
+        return false;
+    FILE* f = fopen(path, "rb");
+    if (!f) return false;
+    static unsigned char data[65536];
+    size_t n = fread(data, 1, sizeof(data), f);
+    fclose(f);
+    static char plain[65536 + 8];
+    int len = 0, total = 0;
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    bool ok = ctx && EVP_DecryptInit_ex(ctx, EVP_des_ede3_cbc(), NULL, key.key, key.iv) &&
+              EVP_DecryptUpdate(ctx, (unsigned char*)plain, &len, data, (int)n);
+    total = len;
+    ok = ok && EVP_DecryptFinal_ex(ctx, (unsigned char*)plain + total, &len);
+    EVP_CIPHER_CTX_free(ctx);
+    if (!ok) return false;
+    plain[total + len] = '\0';
+    return strstr(plain, "<XCT") != NULL;
+}
+
+/* An explicit key wins over ALLTRAX_CONFIG_KEY, which wins over the built-in
+ * key; without either, a build with no key fails before opening the device. */
+static int test_config_key_precedence(void)
+{
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    memset(&device, 0, sizeof(device));
+    setenv("ALLTRAX_CONFIG_KEY", TEST_KEY_B, 1);
+    ASSERT_EQ(run_config_save_as(path, 5005, TEST_KEY_A), 0);
+    ASSERT_TRUE(saved_with(path, TEST_KEY_A));
+    ASSERT_EQ(run_config_save_as(path, 5005, NULL), 0);
+    ASSERT_TRUE(saved_with(path, TEST_KEY_B));
+    ASSERT_EQ(run_config_save_as(path, 5005, "auto"), 0);
+    ASSERT_TRUE(saved_with(path, TEST_KEY_B));
+    ASSERT_EQ(run_config_save_as(path, 5005, "none"), 0);
+    char* plain = read_file(path);
+    ASSERT_TRUE(plain != NULL && strstr(plain, "<XCT") != NULL);
+    free(plain);
+
+    /* An empty variable counts as unset. */
+    setenv("ALLTRAX_CONFIG_KEY", "", 1);
+    int rc = run_config_save_as(path, 5005, NULL);
+    unsetenv("ALLTRAX_CONFIG_KEY");
+#ifdef ALLTRAX_EMBEDDED_KEYS
+    ASSERT_EQ(rc, 0);
+    ASSERT_FALSE(saved_with(path, TEST_KEY_A) || saved_with(path, TEST_KEY_B));
+    struct stat st;
+    ASSERT_EQ(stat(path, &st), 0);
+    ASSERT_EQ(st.st_size % 8, 0);
+    plain = read_file(path);
+    ASSERT_TRUE(plain != NULL && strstr(plain, "<XCT") == NULL);
+    free(plain);
+#else
+    ASSERT_EQ(rc, 1);
+    ASSERT_EQ(open_calls, 0);
+#endif
+    remove(path);
+    return 0;
+}
+
+static int test_config_key_rejects_bad_values_before_open(void)
+{
+    const char* bad[] = {
+        "AUTO", "None", "",
+        "0123456789abcdef0123456789ABCDEF0123456789abcde:0011223344556677",   /* 47 */
+        "0123456789abcdef0123456789ABCDEF0123456789abcdef:001122334455667",   /* 15 */
+        TEST_KEY_A "0",
+        "0123456789abcdef0123456789ABCDEF0123456789abcdef0011223344556677",   /* no ':' */
+        "0123456789abcdef0123456789ABCDEF0123456789abcdeg:0011223344556677",  /* 'g' */
+        "0123456789abcdef0123456789ABCDEF0123456789abcdef:00112233445566 7",
+    };
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    remove(path);
+    unsetenv("ALLTRAX_CONFIG_KEY");
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        ASSERT_EQ(run_config_save_as(path, 5005, bad[i]), 1);
+        ASSERT_EQ(open_calls, 0);
+        ASSERT_EQ(access(path, F_OK), -1);
+    }
+
+    /* The variable holds a key only; an explicit option ignores it. */
+    const char* bad_env[] = { "auto", "none", "0123" };
+    for (size_t i = 0; i < sizeof(bad_env) / sizeof(bad_env[0]); i++) {
+        setenv("ALLTRAX_CONFIG_KEY", bad_env[i], 1);
+        ASSERT_EQ(run_config_save_as(path, 5005, NULL), 1);
+        ASSERT_EQ(open_calls, 0);
+        ASSERT_EQ(run_config_save_as(path, 5005, "auto"), 1);
+        ASSERT_EQ(open_calls, 0);
+        ASSERT_EQ(access(path, F_OK), -1);
+        char* load[] = { "config", "load", path };
+        open_calls = 0;
+        ASSERT_EQ(cmd_config(3, load), 1);
+        ASSERT_EQ(open_calls, 0);
+    }
+    ASSERT_EQ(run_config_save_as(path, 5005, TEST_KEY_A), 0);
+    unsetenv("ALLTRAX_CONFIG_KEY");
+    remove(path);
+
+    char* repeated[] = { "config", "save", path, "--config-key", "none", "--config-key", "none" };
+    char* missing[] = { "config", "save", path, "--config-key" };
+    open_calls = 0;
+    ASSERT_EQ(cmd_config(7, repeated), 1);
+    ASSERT_EQ(cmd_config(4, missing), 1);
+    ASSERT_EQ(open_calls, 0);
+    ASSERT_EQ(access(path, F_OK), -1);
+    return 0;
+}
+
 /* Run the save with a file size limit (bytes). */
-static int run_config_save_size_limited(const char* path, bool encrypt,
+static int run_config_save_size_limited(const char* path, const char* key,
     rlim_t limit)
 {
     struct rlimit saved;
@@ -828,7 +950,7 @@ static int run_config_save_size_limited(const char* path, bool encrypt,
     limited.rlim_cur = limit;
     void (*old_handler)(int) = signal(SIGXFSZ, SIG_IGN);
     if (setrlimit(RLIMIT_FSIZE, &limited) != 0) return -1;
-    int rc = run_config_save_as(path, 5005, encrypt);
+    int rc = run_config_save_as(path, 5005, key);
     setrlimit(RLIMIT_FSIZE, &saved);
     signal(SIGXFSZ, old_handler);
     return rc;
@@ -838,17 +960,18 @@ static int run_config_save_size_limited(const char* path, bool encrypt,
  * file lets fwrite() succeed and fails only the final flush in fclose(). */
 static int test_config_save_write_failure_removes_partial_file(void)
 {
-    for (int encrypt = 0; encrypt <= 1; encrypt++) {
+    const char* keys[] = { "none", TEST_KEY_A };
+    for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
         char path[64];
         ASSERT_EQ(make_temp_path(path), 0);
         memset(&device, 0, sizeof(device));
-        ASSERT_EQ(run_config_save_as(path, 5005, encrypt != 0), 0);
+        ASSERT_EQ(run_config_save_as(path, 5005, keys[k]), 0);
         struct stat st;
         ASSERT_EQ(stat(path, &st), 0);
         const rlim_t limits[] = { 64, (rlim_t)st.st_size - 1 };
         for (size_t i = 0; i < sizeof(limits) / sizeof(limits[0]); i++) {
             ASSERT_EQ(write_file(path, "previous backup"), 0);
-            ASSERT_EQ(run_config_save_size_limited(path, encrypt != 0,
+            ASSERT_EQ(run_config_save_size_limited(path, keys[k],
                                                    limits[i]), 1);
             ASSERT_EQ(access(path, F_OK), -1);
             ASSERT_EQ(device.mutations, 0);
@@ -952,8 +1075,8 @@ static int test_config_round_trip_restores_strings_in_one_erase(void)
         set_page_string("F_Table_Name", "CHANGED");
         set_page_string("Throttle_Type_Name", "CHANGED");
         device.erases = device.mutations = 0;
-        char* argv[] = { "config", "load", "--no-crypt", path, "--field-map" };
-        int rc = run_writable(cmd_config, 5, argv);
+        char* argv[] = { "config", "load", "--config-key", "none", path, "--field-map" };
+        int rc = run_writable(cmd_config, 6, argv);
         remove(path);
         ASSERT_EQ(rc, 0);
         ASSERT_EQ(device.erases, 1);
@@ -973,8 +1096,8 @@ static int test_config_load_reset_flag_sends_one_reset(void)
         if (fail)
             device.fact_goodset = 0xFFFF;
         device.erases = device.resets = 0;
-        char* argv[] = { "config", "load", "--no-crypt", path, "--reset" };
-        int rc = run_writable(cmd_config, 5, argv);
+        char* argv[] = { "config", "load", "--config-key", "none", path, "--reset" };
+        int rc = run_writable(cmd_config, 6, argv);
         remove(path);
         ASSERT_EQ(rc, fail ? 1 : 0);
         ASSERT_EQ(device.erases, fail ? 0u : 1u);
@@ -998,8 +1121,8 @@ static int test_config_load_rejects_invalid_strings_before_open(void)
         ASSERT_EQ(make_temp_path(path), 0);
         ASSERT_EQ(write_file(path, xml), 0);
         writable_device_reset();
-        char* argv[] = { "config", "load", "--no-crypt", path };
-        int rc = run_writable(cmd_config, 4, argv);
+        char* argv[] = { "config", "load", "--config-key", "none", path };
+        int rc = run_writable(cmd_config, 5, argv);
         remove(path);
         ASSERT_EQ(rc, 1);
         ASSERT_EQ(open_calls, 0);
@@ -1639,13 +1762,40 @@ static int test_field_map_recovery_uses_factory_name(void)
 }
 
 #ifdef TEST_CONFIG
+static int test_config_key_load_round_trip(void)
+{
+    char out[512];
+    char path[64];
+    unsetenv("ALLTRAX_CONFIG_KEY");
+    writable_device_reset();
+    ASSERT_EQ(make_temp_path(path), 0);
+    ASSERT_EQ(run_config_save_as(path, 5005, TEST_KEY_A), 0);
+
+    char* wrong[] = { "config", "load", path, "--config-key", TEST_KEY_B };
+    char* plain[] = { "config", "load", path, "--config-key", "none" };
+    char* right[] = { "config", "load", path, "--config-key", TEST_KEY_A };
+    device.erases = device.mutations = 0;
+    ASSERT_EQ(capture_cli(cmd_config, 5, wrong, out, sizeof(out)), 1);
+    ASSERT_EQ(capture_cli(cmd_config, 5, plain, out, sizeof(out)), 1);
+    ASSERT_EQ(device.mutations, 0);
+    ASSERT_EQ(capture_cli(cmd_config, 5, right, out, sizeof(out)), 0);
+    ASSERT_EQ(device.erases, 1);
+
+    /* A plain file given a key gets a hint. */
+    ASSERT_EQ(run_config_save_as(path, 5005, "none"), 0);
+    ASSERT_EQ(capture_cli(cmd_config, 5, right, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "use --config-key none") != NULL);
+    remove(path);
+    return 0;
+}
+
 /* Load a plain XML file into the writable device. */
 static int run_config_load(const char* xml, bool field_map)
 {
     char path[64];
     if (make_temp_path(path) || write_file(path, xml)) return -1;
-    char* argv[] = { "config", "load", "--no-crypt", path, "--field-map" };
-    int rc = run_writable(cmd_config, field_map ? 5 : 4, argv);
+    char* argv[] = { "config", "load", "--config-key", "none", path, "--field-map" };
+    int rc = run_writable(cmd_config, field_map ? 6 : 5, argv);
     remove(path);
     return rc;
 }
@@ -1782,6 +1932,9 @@ int main(void)
     RUN_TEST(test_config_save_rejects_invalid_settings);
     RUN_TEST(test_config_save_on_unreadable_firmware_preserves_destination);
     RUN_TEST(test_config_save_encrypts_before_writing);
+    RUN_TEST(test_config_key_precedence);
+    RUN_TEST(test_config_key_rejects_bad_values_before_open);
+    RUN_TEST(test_config_key_load_round_trip);
     RUN_TEST(test_config_save_write_failure_removes_partial_file);
     RUN_TEST(test_config_save_write_failure_keeps_device_paths);
     RUN_TEST(test_config_round_trip_restores_strings_in_one_erase);

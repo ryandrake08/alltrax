@@ -3,6 +3,7 @@
  */
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include "cli.h"
 
@@ -21,8 +22,8 @@ static const struct {
       "Write to firmware V0.001-V5.999 not yet validated for writes" },
     { "--field-map", CLI_OPT_FIELD_MAP, NULL,
       "Allow writing field-map data (must match the installed motor)" },
-    { "--no-crypt", CLI_OPT_NO_CRYPT, NULL,
-      "Plain XML file instead of encrypted (not Toolkit-compatible)" },
+    { "--config-key", CLI_OPT_CONFIG_KEY, "<key>",
+      "auto (default), none for plain XML, or <48 hex>:<16 hex>" },
     { "--reset", CLI_OPT_RESET, NULL,
       "Reboot the controller after writing" },
     { "--no-wait", CLI_OPT_NO_WAIT, NULL,
@@ -156,9 +157,11 @@ int cli_parse_args(int argc, char** argv, const char* command,
             return -1;
         }
 
-        if (bit == CLI_OPT_FILE || bit == CLI_OPT_PRESET) {
-            const char** value = bit == CLI_OPT_FILE ? &flags->file
-                                                     : &flags->preset;
+        const char** value = bit == CLI_OPT_FILE ? &flags->file
+                           : bit == CLI_OPT_PRESET ? &flags->preset
+                           : bit == CLI_OPT_CONFIG_KEY ? &flags->config_key
+                           : NULL;
+        if (value) {
             if (i + 1 >= argc || strncmp(argv[i + 1], "--", 2) == 0) {
                 fprintf(stderr, "Error: %s: %s requires a value\n",
                         command, arg);
@@ -177,7 +180,6 @@ int cli_parse_args(int argc, char** argv, const char* command,
         case CLI_OPT_NO_VOLTAGE_LINK:   flags->no_voltage_link = true; break;
         case CLI_OPT_ALLOW_UNVALIDATED: flags->allow_unvalidated_firmware = true; break;
         case CLI_OPT_FIELD_MAP:         flags->field_map = true; break;
-        case CLI_OPT_NO_CRYPT:          flags->no_crypt = true; break;
         case CLI_OPT_RESET:             flags->reset = true; break;
         case CLI_OPT_NO_WAIT:           flags->no_wait = true; break;
         case CLI_OPT_FACTORY:           flags->factory = true; break;
@@ -204,4 +206,65 @@ int cli_parse_args(int argc, char** argv, const char* command,
         return -1;
     }
     return npos;
+}
+
+static int hex_digit(char c)
+{
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+static bool parse_hex(const char* text, unsigned char* out, size_t len)
+{
+    for (size_t i = 0; i < len; i++) {
+        int hi = hex_digit(text[2 * i]), lo = hex_digit(text[2 * i + 1]);
+        if (hi < 0 || lo < 0) return false;
+        out[i] = (unsigned char)(hi << 4 | lo);
+    }
+    return true;
+}
+
+/* Parse "<48 hex digits>:<16 hex digits>". */
+static bool parse_key(const char* text, cli_key* out)
+{
+    const char* colon = strchr(text, ':');
+    if (!colon || colon - text != 2 * (long)sizeof(out->key) ||
+        strlen(colon + 1) != 2 * sizeof(out->iv))
+        return false;
+    out->encrypt = true;
+    return parse_hex(text, out->key, sizeof(out->key)) &&
+           parse_hex(colon + 1, out->iv, sizeof(out->iv));
+}
+
+int cli_resolve_key(const char* command, const char* option, const char* value,
+    const char* env, const cli_key* embedded, cli_key* out)
+{
+    memset(out, 0, sizeof(*out));
+    if (value && strcmp(value, "none") == 0)
+        return 0;
+    if (value && strcmp(value, "auto") != 0) {
+        if (parse_key(value, out)) return 0;
+        fprintf(stderr, "Error: %s: %s must be auto, none, or "
+                "<48 hex digits>:<16 hex digits>\n", command, option);
+        return 1;
+    }
+
+    const char* text = getenv(env);
+    if (text && *text) {
+        if (parse_key(text, out)) return 0;
+        fprintf(stderr, "Error: %s: %s must hold <48 hex digits>:<16 hex digits>\n",
+                command, env);
+        return 1;
+    }
+    if (embedded) {
+        *out = *embedded;
+        out->encrypt = true;
+        return 0;
+    }
+    fprintf(stderr, "Error: %s: no key is built in. Use %s <48 hex digits>:<16 hex digits>, "
+            "set %s, or use %s none for an unencrypted file\n",
+            command, option, env, option);
+    return 1;
 }
