@@ -118,8 +118,9 @@ static uint8_t identity_byte(uint32_t a)
     static const char model[] = "XCT48400-DCS";
     const struct { uint32_t addr; uint32_t value; } words[] = {
         { ADDR_CONTROLLER_INFO + 0x24, 5002 }, { ADDR_CONTROLLER_INFO + 0x28, 5005 },
-        { ADDR_HARDWARE_CONFIG, 48 }, { ADDR_HARDWARE_CONFIG + 16, 0x7FF },
-        { ADDR_BOOT_REV, 5002 }, { ADDR_PRGM_REV, 5005 },
+        { ADDR_HARDWARE_CONFIG, 48 | (400u << 16) },
+        { ADDR_HARDWARE_CONFIG + 16, 0x7FF },
+        { ADDR_BOOT_REV, 5002 }, { ADDR_PRGM_REV, fake_ctrl.program_rev },
     };
     if (a >= ADDR_CONTROLLER_INFO && a < ADDR_CONTROLLER_INFO + sizeof(model) - 1)
         return (uint8_t)model[a - ADDR_CONTROLLER_INFO];
@@ -1192,6 +1193,16 @@ static int test_get_keeps_scaled_formatting(void)
     return 0;
 }
 
+static int test_get_profile_current_shows_amps_and_signed_percent(void)
+{
+    char out[256];
+    ASSERT_EQ(run_get("N_Max_Arm_Motor_Amps", 4095, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "100.0 % (400.0 A)") != NULL);
+    ASSERT_EQ(run_get("U2_Max_Arm_Regen_Amps", (uint16_t)-2048, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "-50.0 % (200.0 A)") != NULL);
+    return 0;
+}
+
 static int test_get_lists_settings_without_factory_copies(void)
 {
     static char out[16384];
@@ -1207,6 +1218,44 @@ static void set_page_bytes(const char* name, const char* bytes, size_t len)
 {
     const alltrax_var_def* var = alltrax_find_var(name);
     memcpy(device.page + (var->address - VARSET_ADDR), bytes, len);
+}
+
+static int run_settings_write(const char* a, const char* b, const char* c)
+{
+    const char* args[] = { a, b, c };
+    char text[3][80];
+    char* argv[4] = { "write" };
+    int argc = 1;
+    for (size_t i = 0; i < 3 && args[i]; i++) {
+        snprintf(text[i], sizeof(text[i]), "%s", args[i]);
+        argv[argc++] = text[i];
+    }
+    return run_writable(cmd_write, argc, argv);
+}
+
+static int test_write_amp_suffix(void)
+{
+    const struct { const char* arg; bool ok; } cases[] = {
+        { "N_Max_Arm_Motor_Amps=400A", true },
+        { "N_Max_Arm_Motor_Amps=400.01A", false },
+        { "N_Max_Arm_Regen_Amps=-10A", false },
+        { "N_Max_Arm_Motor_Amps=250AA", false },
+        { "N_Max_Arm_Motor_Amps=nanA", false },
+        { "N_Throttle_Rate=50A", false },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        writable_device_reset();
+        ASSERT_EQ(run_settings_write(cases[i].arg, NULL, NULL), cases[i].ok ? 0 : 1);
+        if (!cases[i].ok) ASSERT_EQ(device.mutations, 0);
+    }
+    writable_device_reset();
+    ASSERT_EQ(run_settings_write("N_Max_Arm_Motor_Amps=250A",
+                                  "N_Max_Arm_Regen_Amps=200A", NULL), 0);
+    const alltrax_var_def* motor = alltrax_find_var("N_Max_Arm_Motor_Amps");
+    const alltrax_var_def* regen = alltrax_find_var("N_Max_Arm_Regen_Amps");
+    ASSERT_EQ(get_le16(device.page + (motor->address - VARSET_ADDR)), 2559);
+    ASSERT_EQ((int16_t)get_le16(device.page + (regen->address - VARSET_ADDR)), -2048);
+    return 0;
 }
 
 static int test_field_map_writes_require_flag(void)
@@ -1359,6 +1408,7 @@ static int test_config_save_writes_only_settings_in_toolkit_nodes(void)
     free(xml);
     return 0;
 }
+
 #endif
 
 int main(void)
@@ -1380,10 +1430,12 @@ int main(void)
     RUN_TEST(test_reset_flag_sends_no_reset_after_failure);
     RUN_TEST(test_get_prints_full_integer_range);
     RUN_TEST(test_get_keeps_scaled_formatting);
+    RUN_TEST(test_get_profile_current_shows_amps_and_signed_percent);
     RUN_TEST(test_get_lists_settings_without_factory_copies);
     RUN_TEST(test_field_map_writes_require_flag);
     RUN_TEST(test_field_map_writes_include_current_name);
     RUN_TEST(test_field_map_recovery_uses_factory_name);
+    RUN_TEST(test_write_amp_suffix);
     RUN_TEST(test_options_accepted_before_and_after_positionals);
     RUN_TEST(test_invalid_options_and_argument_counts_rejected);
     RUN_TEST(test_write_options_map_to_library_options);

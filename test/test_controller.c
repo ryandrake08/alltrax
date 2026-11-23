@@ -1727,6 +1727,28 @@ static int test_non_catalog_curves_rejected_before_io(void)
     return 0;
 }
 
+static int test_factory_reads_use_matching_factory_offsets(void)
+{
+    mock_reset();
+    const alltrax_var_def* limit = alltrax_find_var("N_Speed_Limit");
+    size_t offset = limit->address - VARSET_ADDR;
+    mock.factory[offset] = 0xA0; mock.factory[offset + 1] = 0x0F;  /* 4000 */
+    alltrax_var_value value;
+    ASSERT_EQ(alltrax_read_factory_vars(&mock.ctrl, &limit, 1, &value), ALLTRAX_OK);
+    ASSERT_EQ(value.raw.i16, 4000);
+
+    const alltrax_var_def* outside[] = {
+        alltrax_find_var("BPlus_Volts"), alltrax_find_var("SerialNum"),
+    };
+    for (size_t i = 0; i < 2; i++) {
+        mock.requests = 0;
+        ASSERT_EQ(alltrax_read_factory_vars(&mock.ctrl, &outside[i], 1, &value),
+                  ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_EQ(mock.requests, 0);
+    }
+    return 0;
+}
+
 int main(void)
 {
     printf("controller (simulated transport):\n");
@@ -1752,6 +1774,7 @@ int main(void)
     RUN_TEST(test_throttle_none_bypasses_hardware_mask);
     RUN_TEST(test_repeated_and_overlapping_targets_reject_batch_before_io);
     RUN_TEST(test_old_firmware_throttle_default_excludes_ezgo);
+    RUN_TEST(test_factory_reads_use_matching_factory_offsets);
     RUN_TEST(test_voltage_settings_bounded_by_rated_voltage);
     RUN_TEST(test_throttle_mask_uses_encoded_value);
     RUN_TEST(test_non_catalog_variables_rejected_before_io);

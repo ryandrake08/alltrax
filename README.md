@@ -93,6 +93,9 @@ is a debug option placed before the command; it affects reads only.
 
 ### Write examples
 
+`alltrax write [options] var=value ...` takes one or more assignments. Each
+variable may appear once per batch.
+
 ```sh
 # Write a single FLASH setting
 alltrax write LoBat_Vlim=28.1
@@ -111,36 +114,35 @@ alltrax write Throttle_Type_Name="0-5K 2 Wire" HPD=1
 
 # Clear a string setting (stored as spaces)
 alltrax write Throttle_Type_Name=
+
+# Set a current in amps
+alltrax write N_Max_Arm_Motor_Amps=250A
+
+# Set two related values in the same batch
+alltrax write Speed_Limit_On=1 N_Speed_Limit=4500
 ```
 
-String settings take the text after `=` literally: printable ASCII, at most the
-field size (`Throttle_Type_Name` 16, `F_Table_Name` 32). Trailing spaces are
-ignored.
+Quote string values that contain spaces. Strings accept printable ASCII up
+to the field size and ignore trailing spaces.
 
-Each variable or curve may appear only once per write. Voltage settings
-(`AnalogInputs_Threshold`, `LoBat_Vlim`, `HiBat_Vlim`, and
-`BMS_Missing_HiBat_Vlim` unless `--no-voltage-link` is given) must lie within
-16.0–62.0 V on 48 V controllers and 20.0–90.0 V on 72 V controllers; other
-ratings cannot write them. `Throttle_Type` must be allowed by the controller's
-hardware (older controllers allow every type except EZGO ITS).
-
-Writing `Throttle_Type` or `HPD` clears the learned throttle calibration and
-reboots the controller. Writing `Speed_Limit_On` or `Tach_4_8` also reboots it.
-Writing `F_Table_Name` updates the field-map date. These actions run even if the
-assigned values are unchanged. Adding `--reset` still sends only one reset.
+`write` validates the batch against the controller's hardware, firmware, and
+batch values before making changes. Some settings trigger a reset automatically, even when the
+assigned value is unchanged. Adding `--reset` still sends only one reset.
+See the [variable reference](#variable-reference) for units, limits, and
+side effects.
 The command prints each action it performed, such as "Cleared throttle
 auto-calibration" and "Device reset sent", including after a failed write.
 
 Before a FLASH write, the tool checks both settings pages. If the factory
 page is invalid, it refuses the write. If only the user settings page is
-invalid, it announces the recovery, restores the factory page to user
-settings, then applies the requested changes.
+invalid, it restores the factory page to user settings, applies the
+requested changes, and reports the recovery.
 
 ### Write options
 
 | Option | Effect |
 |--------|--------|
-| `--no-voltage-link` | Skip the KSI/under-voltage/over-voltage relationship check (KSI + 1 V ≤ under-voltage ≤ over-voltage − 1 V, with the BMS-missing limit between them) |
+| `--no-voltage-link` | Skip the [voltage link checks](#voltage) |
 | `--allow-unvalidated-firmware` | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | Allow writing field-map data (see [Field maps](#field-maps)) |
 | `--reset` | Reboot controller after a successful write |
@@ -298,9 +300,9 @@ points are set to 0,0.
 
 Curve points must be finite and round into the supported raw bounds: 0–4095
 for both throttle axes (0–100%), and 0–7500 X / 0–5000 Y for field curves
-(0–750A / 0–50A). Zero padding and repeated points are allowed. Malformed
+(0–750 A / 0–50 A). Zero padding and repeated points are allowed. Malformed
 values and more than 16 points are rejected. Config import validates every
-curve before applying any settings; malformed or incomplete curve arrays
+curve before applying any settings. Malformed or incomplete curve arrays
 cause the import to fail.
 
 ```csv
@@ -661,6 +663,11 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
 Reads one or more variables from the controller. `vars` is an array of
 pointers to variable definitions, `count` is the number of variables, and `out`
 is a caller-allocated array of `alltrax_var_value` structs to receive results.
+
+`alltrax_read_factory_vars()` takes the same arguments and reads the factory
+values of user settings: each entry must lie in the user settings page and is
+read from the same offset in the factory settings page. Other entries return
+`ALLTRAX_ERR_INVALID_ARG` before device I/O.
 
 **`alltrax_var_value` fields:**
 
@@ -1040,18 +1047,28 @@ Battery voltage limits and analog input threshold.
 | `HiBat_Vlim` | High battery voltage cutoff | V |
 | `BMS_Missing_HiBat_Vlim` | High battery voltage cutoff when BMS is missing | V |
 
-Writes are limited to 16.0–62.0 V on 48 V controllers and 20.0–90.0 V on 72 V
-controllers (see [Write examples](#write-examples)).
+The allowed range is 16.0–62.0 V on 48 V controllers and 20.0–90.0 V on 72 V
+controllers. The rated-voltage check rejects other ratings. The voltage link
+check requires the analog threshold to be at least 1 V below the low cutoff
+and the high cutoff to be at least 1 V above the low cutoff. `BMS_Missing_HiBat_Vlim`
+must be at least 1 V above the low cutoff and
+at or below the high cutoff. `--no-voltage-link` skips these relationships
+and the rated-voltage check for the BMS-missing cutoff.
 
 #### User Profiles (Normal, User 1, User 2)
 
 Three user profiles with identical structure. The **Normal** profile uses the
 `N_` prefix, **User 1** uses `U1_`, and **User 2** uses `U2_`. The active
-profile is selected by the User input switches (requires firmware V1.005+).
+profile is selected by the user inputs.
 
-Amp values are percentages of the controller's rated current. For a 400A
-controller, 100% = 400A. The `_Max` suffix variables define the upper limit of
-the user-adjustable range. A value of **-1 means no user-adjustable range**.
+Profile current is expressed as a percentage of the controller's rated
+current. For a 400 A controller, 100% is 400 A. `write` accepts a bare
+number as a signed percentage or a current magnitude with an `A` suffix.
+Regen and plug braking use negative percentages and positive amp magnitudes.
+`get` shows both units when the rating is known.
+
+The `_Max` variables set the upper end of the adjustable range in analog
+modes. Older settings can store -1 as a placeholder on some maximum fields.
 
 The table below shows the Normal profile (`N_` prefix). User 1 (`U1_`) and
 User 2 (`U2_`) have the same variables at different addresses.
@@ -1069,7 +1086,7 @@ User 2 (`U2_`) have the same variables at different addresses.
 | `N_Hunting_Buggy` | Hunting Buggy Mode | bool | |
 | `N_Max_Arm_Regen_Amps_Max` | Max regen amps user-adjustable ceiling | % | -100 – 0 |
 | `N_Speed_Limit_Max` | Speed limit user-adjustable ceiling (-1 = disabled) | RPM | -1 – 8000 |
-| `N_Forward_Speed` | Max forward speed (vehicles without speed sensor) | % | 0 – 100 |
+| `N_Forward_Speed` | Max forward speed when speed limiting is off | % | 0 – 100 |
 | `N_Forward_Speed_Max` | Forward speed user-adjustable ceiling (-1 = disabled) | % | -1 – 100 |
 | `N_Throttle_Rate` | Throttle acceleration rate | MU | 0.5 – 16383.5 |
 | `N_Throttle_Rate_Max` | Throttle rate user-adjustable ceiling (-1 = disabled) | MU | -0.5 – 16383.5 |
@@ -1082,8 +1099,12 @@ Throttle type selection, calibration values, and related settings.
 
 Assignments must be integral values from 0 through 11; fractions and undefined
 types are rejected. Each nonzero type must be allowed by the controller's
-hardware mask. Type 0 (None) is always allowed and does not require a mask
-read. Write options cannot bypass these checks.
+hardware mask. On older hardware without a programmed mask, the fallback
+allows every type except EZGO ITS. Type 0 (None) is always allowed and does
+not require a mask read. Write options cannot bypass these checks.
+
+Writing `Throttle_Type` or `HPD` clears the learned throttle calibration
+and reboots the controller.
 
 | Value | Type |
 |-------|------|
@@ -1139,6 +1160,8 @@ Speed sensor settings and their read-only factory copies.
 | `F_Speed_Limit_On` | Speed limiting enabled (factory) | bool |
 | `F_Tach_4_8` | Speed sensor type (factory) | bool |
 
+Writing `Speed_Limit_On` or `Tach_4_8` reboots the controller.
+
 #### Field
 
 Field weakening and turbo parameters control how the controller drives the motor
@@ -1155,6 +1178,8 @@ defaults.
 | `Max_Field_Weaken_Amps` | Field current threshold for weakening | A | 0 – 10.00 |
 | `Turbo_Start_RPM` | RPM at which field weakening begins | RPM | 1000 – 8000 |
 | `Turbo_Weaken_Percent` | Field current reduction amount at turbo speed | % | 0 – 75 |
+
+Writing `F_Table_Name` updates the field-map date.
 
 Factory defaults (read-only):
 

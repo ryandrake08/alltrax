@@ -528,8 +528,9 @@ static alltrax_error validate_var_for_io(alltrax_controller* ctrl,
     return ALLTRAX_OK;
 }
 
-alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
-    const alltrax_var_def** vars, size_t count, alltrax_var_value* out)
+static alltrax_error read_vars(alltrax_controller* ctrl,
+    const alltrax_var_def** vars, size_t count, alltrax_var_value* out,
+    bool factory)
 {
     alltrax_error gate_rc = require_readable_firmware(ctrl);
     if (gate_rc) return gate_rc;
@@ -546,6 +547,12 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
     for (size_t i = 0; i < count; i++) {
         alltrax_error rc = validate_var_for_io(ctrl, vars[i], false);
         if (rc) return rc;
+        if (factory && (!vars[i]->is_flash ||
+            !address_span_fits(vars[i]->address, alltrax_var_byte_size(vars[i]),
+                               VARSET_ADDR, VARSET_SIZE))) {
+            set_error_detail(ctrl, "%s has no user settings page offset", vars[i]->name);
+            return ALLTRAX_ERR_INVALID_ARG;
+        }
     }
 
     /* Build sorted index array (indices into vars[]/out[]) */
@@ -592,7 +599,9 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
         /* Read the coalesced block */
         size_t span = block_end - base_addr;
         uint8_t buf[MAX_PAYLOAD];
-        alltrax_error rc = read_memory(ctrl, base_addr, span, buf);
+        uint32_t read_addr = factory ? FACTSET_ADDR + (base_addr - VARSET_ADDR)
+                                     : base_addr;
+        alltrax_error rc = read_memory(ctrl, read_addr, span, buf);
         if (rc) return rc;
 
         /* Decode each variable from the block buffer */
@@ -605,6 +614,18 @@ alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
     }
 
     return ALLTRAX_OK;
+}
+
+alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
+    const alltrax_var_def** vars, size_t count, alltrax_var_value* out)
+{
+    return read_vars(ctrl, vars, count, out, false);
+}
+
+alltrax_error alltrax_read_factory_vars(alltrax_controller* ctrl,
+    const alltrax_var_def** vars, size_t count, alltrax_var_value* out)
+{
+    return read_vars(ctrl, vars, count, out, true);
 }
 
 /* ------------------------------------------------------------------ */

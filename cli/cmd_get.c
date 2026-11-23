@@ -3,11 +3,13 @@
  */
 
 #include <inttypes.h>
+#include <math.h>
 #include <stdio.h>
 #include <string.h>
 #include "cli.h"
 
-static void print_var(const alltrax_var_value* val)
+static int print_var(alltrax_controller* ctrl, const alltrax_var_value* val,
+    alltrax_info* info, bool* have_info)
 {
     const alltrax_var_def* def = val->def;
 
@@ -15,6 +17,19 @@ static void print_var(const alltrax_var_value* val)
         printf("%-30s %s\n", def->name, val->raw.b ? "Yes" : "No");
     } else if (def->type == ALLTRAX_TYPE_STRING) {
         printf("%-30s %s\n", def->name, val->raw.str);
+    } else if (cli_is_profile_current(def)) {
+        if (!*have_info) {
+            alltrax_error err = alltrax_get_info(ctrl, info);
+            if (err) {
+                cli_error(ctrl, err, "reading rated current");
+                return 1;
+            }
+            *have_info = true;
+        }
+        printf("%-30s %.1f %%", def->name, val->display);
+        if (info->rated_amps)
+            printf(" (%.1f A)", fabs(val->display) * info->rated_amps / 100.0);
+        printf("\n");
     } else if (def->scale != 1.0 || def->offset != 0) {
         printf("%-30s %.1f %s\n", def->name, val->display,
                def->unit ? def->unit : "");
@@ -22,6 +37,7 @@ static void print_var(const alltrax_var_value* val)
         printf("%-30s %" PRId64 " %s\n", def->name,
                alltrax_var_raw_int64(val), def->unit ? def->unit : "");
     }
+    return 0;
 }
 
 int cmd_get(int argc, char** argv)
@@ -34,6 +50,9 @@ int cmd_get(int argc, char** argv)
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, false);
     if (err) return 1;
+    alltrax_info info;
+    bool have_info = false;
+    int ret = 1;
 
     if (nargs == 0) {
         /* No args: print the writable settings (not factory copies) */
@@ -64,12 +83,12 @@ int cmd_get(int argc, char** argv)
             err = alltrax_read_vars(ctrl, ptrs, n, vals);
             if (err) {
                 cli_error(ctrl, err, "reading variables");
-                alltrax_close(ctrl);
-                return 1;
+                goto done;
             }
 
             for (size_t i = 0; i < n; i++)
-                print_var(&vals[i]);
+                if (print_var(ctrl, &vals[i], &info, &have_info))
+                    goto done;
         }
     } else {
         /* Specific variables by name */
@@ -77,22 +96,23 @@ int cmd_get(int argc, char** argv)
             const alltrax_var_def* var = alltrax_find_var(argv[i]);
             if (!var) {
                 fprintf(stderr, "Unknown variable: %s\n", argv[i]);
-                alltrax_close(ctrl);
-                return 1;
+                goto done;
             }
 
             alltrax_var_value val;
             err = alltrax_read_vars(ctrl, &var, 1, &val);
             if (err) {
                 cli_error(ctrl, err, argv[i]);
-                alltrax_close(ctrl);
-                return 1;
+                goto done;
             }
 
-            print_var(&val);
+            if (print_var(ctrl, &val, &info, &have_info))
+                goto done;
         }
     }
 
+    ret = 0;
+done:
     alltrax_close(ctrl);
-    return 0;
+    return ret;
 }

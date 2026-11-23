@@ -328,6 +328,13 @@ int64_t alltrax_var_raw_int64(const alltrax_var_value* val);
 alltrax_error alltrax_read_vars(alltrax_controller* ctrl,
     const alltrax_var_def** vars, size_t count, alltrax_var_value* out);
 
+/* Read the factory values of user settings: like alltrax_read_vars(), but
+ * each entry must lie in the user settings page and is read from the same
+ * offset in the factory settings page. Other entries return
+ * ALLTRAX_ERR_INVALID_ARG before I/O. */
+alltrax_error alltrax_read_factory_vars(alltrax_controller* ctrl,
+    const alltrax_var_def** vars, size_t count, alltrax_var_value* out);
+
 /* ------------------------------------------------------------------ */
 /* Write operations                                                    */
 /* ------------------------------------------------------------------ */

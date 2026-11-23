@@ -100,6 +100,12 @@ alltrax_error cli_add_field_map_name(alltrax_controller* ctrl,
 /* After a successful field-map write, remind the user about the pole count. */
 void cli_field_map_written(const alltrax_assignment* items, size_t count);
 
+/* Profile current fields are stored as percentages of rated current. */
+bool cli_is_profile_current(const alltrax_var_def* var);
+int cli_convert_profile_currents(alltrax_controller* ctrl,
+    alltrax_assignment* items, const bool* in_amps, size_t count,
+    alltrax_info* info, bool* have_info);
+
 /* Subcommand handlers — each returns 0 on success, 1 on error */
 int cmd_info(int argc, char** argv);
 int cmd_get(int argc, char** argv);
