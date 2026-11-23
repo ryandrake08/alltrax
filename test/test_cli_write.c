@@ -17,6 +17,8 @@ static unsigned open_calls, unexpected_calls;
 static bool open_succeeds;
 static alltrax_controller fake_ctrl;
 static unsigned error_calls, close_calls, transport_calls;
+static unsigned reconnect_waits, reconnect_timeout;
+static bool reconnect_succeeds;
 static alltrax_error reported_error;
 static char reported_detail[256];
 
@@ -46,6 +48,17 @@ void alltrax_close(alltrax_controller* ctrl)
     if (ctrl != &fake_ctrl || !open_succeeds) unexpected_calls++;
 }
 
+alltrax_error alltrax_wait_for_reconnect(alltrax_controller* ctrl,
+    unsigned timeout_ms)
+{
+    if (ctrl != &fake_ctrl || !ctrl->reset_sent ||
+        strcmp(ctrl->reset_model, "XCT48400-DCS") != 0)
+        unexpected_calls++;
+    reconnect_waits++;
+    reconnect_timeout = timeout_ms;
+    return reconnect_succeeds ? ALLTRAX_OK : ALLTRAX_ERR_TIMEOUT;
+}
+
 /* Config export references this transport-owned formatter; these preflight
  * tests never export or invoke it. */
 const char* alltrax_strerror(alltrax_error err)
@@ -65,6 +78,8 @@ static struct {
     bool enabled, writable;
     uint8_t request[PACKET_SIZE];
     unsigned reads, mutations, fail_read_at, erases, resets;
+    unsigned backup_clears, fan_triggers;
+    bool keyswitch;
     uint16_t var_goodset, fact_goodset;
     uint32_t value_addr, value;
     uint8_t page[VARSET_SIZE];
@@ -107,6 +122,11 @@ alltrax_error transport_write(alltrax_controller* ctrl,
     }
     if (addr == ADDR_RUN_MODE)
         device.mode = data[8];
+    else if (addr == ADDR_BACKUP_RAM && data[1] == BACKUP_RAM_SIZE &&
+             memcmp(data + 8, (uint8_t[BACKUP_RAM_SIZE]){0}, BACKUP_RAM_SIZE) == 0)
+        device.backup_clears++;
+    else if (addr == 0x2000F204 && data[1] == 1 && data[8] == 1)
+        device.fan_triggers++;
     else if (addr >= VARSET_ADDR && addr - VARSET_ADDR + data[1] <= VARSET_SIZE)
         memcpy(device.page + (addr - VARSET_ADDR), data + 8, data[1]);
     return ALLTRAX_OK;
@@ -174,6 +194,7 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
             buf[8 + i] = device.factory[a - FACTSET_ADDR];
         if (device.value_addr && a - device.value_addr < 4)
             buf[8 + i] = (uint8_t)(device.value >> ((a - device.value_addr) * 8));
+        if (a == 0x2000F090) buf[8 + i] = device.keyswitch;
     }
     return ALLTRAX_OK;
 }
@@ -605,10 +626,10 @@ static int test_fw_flag_reaches_write_options_in_any_position(void)
                           after ? "--allow-unvalidated-firmware" : assign };
         ASSERT_EQ(run_on_unvalidated_firmware(cmd_write, 3, write), ALLTRAX_ERR_USB);
     }
-    char* reset[] = { "reset", "--allow-unvalidated-firmware" };
-    ASSERT_EQ(run_on_unvalidated_firmware(cmd_reset, 2, reset), ALLTRAX_ERR_USB);
-    char* reset_default[] = { "reset" };
-    ASSERT_EQ(run_on_unvalidated_firmware(cmd_reset, 1, reset_default),
+    char* reset[] = { "reset", "--no-wait", "--allow-unvalidated-firmware" };
+    ASSERT_EQ(run_on_unvalidated_firmware(cmd_reset, 3, reset), ALLTRAX_ERR_USB);
+    char* reset_default[] = { "reset", "--no-wait" };
+    ASSERT_EQ(run_on_unvalidated_firmware(cmd_reset, 2, reset_default),
               ALLTRAX_ERR_FIRMWARE);
     ASSERT_EQ(transport_calls, 0);
     return 0;
@@ -1119,8 +1140,27 @@ static int test_reset_flag_sends_no_reset_after_failure(void)
     return 0;
 }
 
-/* Run `get <name>` against the simulated device with `value` at the
- * variable's address, returning its stdout line in `out`. */
+static int capture_get(int argc, char** argv, char* out, size_t out_size)
+{
+    FILE* file = tmpfile();
+    if (!file) return -1;
+    fflush(NULL);
+    int saved_out = dup(STDOUT_FILENO), saved_err = dup(STDERR_FILENO);
+    int rc = -1;
+    if (saved_out >= 0 && saved_err >= 0 &&
+        dup2(fileno(file), STDOUT_FILENO) >= 0 && dup2(fileno(file), STDERR_FILENO) >= 0)
+        rc = run_writable(cmd_get, argc, argv);
+    fflush(NULL);
+    if (saved_out >= 0) { dup2(saved_out, STDOUT_FILENO); close(saved_out); }
+    if (saved_err >= 0) { dup2(saved_err, STDERR_FILENO); close(saved_err); }
+    rewind(file);
+    size_t n = fread(out, 1, out_size - 1, file);
+    out[n] = '\0';
+    fclose(file);
+    return rc;
+}
+
+/* Set the raw value of a named variable and capture get output. */
 static int run_get(const char* name, uint32_t value, char* out, size_t out_size)
 {
     const alltrax_var_def* var = name ? alltrax_find_var(name) : NULL;
@@ -1128,36 +1168,10 @@ static int run_get(const char* name, uint32_t value, char* out, size_t out_size)
     char arg[64];
     snprintf(arg, sizeof(arg), "%s", name ? name : "");
     char* argv[] = { "get", arg };
-    fake_ctrl = (alltrax_controller) {
-        .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
-        .controller_type = ALLTRAX_CONTROLLER_XCT,
-        .boot_rev = 5002, .program_rev = 5005,
-    };
     memset(&device, 0, sizeof(device));
-    device.enabled = true;
     device.value_addr = var ? var->address : 0;
     device.value = value;
-    open_succeeds = true;
-
-    char path[] = "/tmp/alltrax-get-test-XXXXXX";
-    int fd = mkstemp(path);
-    if (fd < 0) return -1;
-    fflush(stdout);
-    int saved = dup(STDOUT_FILENO);
-    dup2(fd, STDOUT_FILENO);
-    int rc = cmd_get(name ? 2 : 1, argv);
-    fflush(stdout);
-    dup2(saved, STDOUT_FILENO);
-    close(saved);
-
-    open_succeeds = false;
-    device.enabled = false;
-    lseek(fd, 0, SEEK_SET);
-    ssize_t n = read(fd, out, out_size - 1);
-    close(fd);
-    remove(path);
-    out[n > 0 ? n : 0] = '\0';
-    return rc;
+    return capture_get(name ? 2 : 1, argv, out, out_size);
 }
 
 static int test_get_prints_full_integer_range(void)
@@ -1211,6 +1225,85 @@ static int test_get_lists_settings_without_factory_copies(void)
     ASSERT_TRUE(strstr(out, "Tach_4_8") != NULL);
     ASSERT_TRUE(strstr(out, "Throttle_Type_Name") != NULL);
     ASSERT_NULL(strstr(out, "F_Speed_Limit_On"));
+    return 0;
+}
+
+static int test_get_reports_goodset_and_reads_factory(void)
+{
+    char out[256];
+    memset(&device, 0, sizeof(device));
+    device.var_goodset = 0xFFFF;
+    const alltrax_var_def* limit = alltrax_find_var("LoBat_Vlim");
+    device.value_addr = limit->address;
+    device.value = 200;
+    ASSERT_EQ(alltrax_encode_var(limit, 28.0, device.factory + (limit->address - VARSET_ADDR)), 2);
+    char* normal[] = { "get", "LoBat_Vlim" };
+    ASSERT_EQ(capture_get(2, normal, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "user settings are invalid") && strstr(out, "20.0 V"));
+    char* factory[] = { "get", "LoBat_Vlim", "--factory" };
+    ASSERT_EQ(capture_get(3, factory, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "28.0 V") != NULL);
+    ASSERT_NULL(strstr(out, "Warning"));
+    device.fact_goodset = 0xFFFF;
+    char* invalid[] = { "get", "--factory", "LoBat_Vlim" };
+    ASSERT_EQ(capture_get(3, invalid, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "factory settings are invalid") != NULL);
+    ASSERT_EQ(capture_get(2, normal, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "user and factory settings are invalid") != NULL);
+    char* runtime[] = { "get", "--factory", "Fan_Status" };
+    ASSERT_EQ(capture_get(3, runtime, out, sizeof(out)), 1);
+    ASSERT_EQ(reported_error, ALLTRAX_ERR_INVALID_ARG);
+    ASSERT_TRUE(strstr(reported_detail, "Fan_Status has no user settings page offset") != NULL);
+    ASSERT_EQ(device.mutations, 0);
+    return 0;
+}
+
+static int test_fan_test_requires_keyswitch_and_writes_once(void)
+{
+    char* argv[] = { "fan-test" };
+    writable_device_reset();
+    ASSERT_EQ(run_writable(cmd_fan_test, 1, argv), 1);
+    ASSERT_EQ(device.reads, 1);
+    ASSERT_EQ(device.mutations, 0);
+    device.keyswitch = true;
+    ASSERT_EQ(run_writable(cmd_fan_test, 1, argv), 0);
+    ASSERT_EQ(device.fan_triggers, 1);
+    ASSERT_EQ(device.mutations, 3); /* CAL, Fan_On, RUN */
+    ASSERT_EQ(device.mode, RUN_MODE_RUN);
+    ASSERT_EQ(device.resets, 0);
+    return 0;
+}
+
+static int test_clear_autocal_sends_one_reset_after_clear(void)
+{
+    char* argv[] = { "clear-autocal", "--no-wait" };
+    writable_device_reset();
+    ASSERT_EQ(run_writable(cmd_clear_autocal, 2, argv), 0);
+    ASSERT_EQ(device.backup_clears, 1);
+    ASSERT_EQ(device.resets, 1);
+    ASSERT_EQ(device.mutations, 2);
+    writable_device_reset();
+    device.fail_read_at = 1; /* Backup write acknowledgement fails. */
+    ASSERT_EQ(run_writable(cmd_clear_autocal, 2, argv), 1);
+    ASSERT_EQ(device.backup_clears, 1);
+    ASSERT_EQ(device.resets, 0);
+    return 0;
+}
+
+static int test_reset_wait_timeout_does_not_resend_reset(void)
+{
+    char* argv[] = { "reset" };
+    char* quick[] = { "reset", "--no-wait" };
+    for (int wait = 0; wait <= 1; wait++) {
+        writable_device_reset();
+        reconnect_waits = 0;
+        reconnect_succeeds = false;
+        ASSERT_EQ(run_writable(cmd_reset, wait ? 1 : 2, wait ? argv : quick), 0);
+        ASSERT_EQ(reconnect_waits, wait);
+        if (wait) ASSERT_EQ(reconnect_timeout, 7500);
+        ASSERT_EQ(device.resets, 1);
+        ASSERT_EQ(device.mutations, 1);
+    }
     return 0;
 }
 
@@ -1432,6 +1525,10 @@ int main(void)
     RUN_TEST(test_get_keeps_scaled_formatting);
     RUN_TEST(test_get_profile_current_shows_amps_and_signed_percent);
     RUN_TEST(test_get_lists_settings_without_factory_copies);
+    RUN_TEST(test_get_reports_goodset_and_reads_factory);
+    RUN_TEST(test_fan_test_requires_keyswitch_and_writes_once);
+    RUN_TEST(test_clear_autocal_sends_one_reset_after_clear);
+    RUN_TEST(test_reset_wait_timeout_does_not_resend_reset);
     RUN_TEST(test_field_map_writes_require_flag);
     RUN_TEST(test_field_map_writes_include_current_name);
     RUN_TEST(test_field_map_recovery_uses_factory_name);

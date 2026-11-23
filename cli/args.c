@@ -25,6 +25,10 @@ static const struct {
       "Plain XML file instead of encrypted (not Toolkit-compatible)" },
     { "--reset", CLI_OPT_RESET, NULL,
       "Reboot the controller after writing" },
+    { "--no-wait", CLI_OPT_NO_WAIT, NULL,
+      "Return after sending the reset command" },
+    { "--factory", CLI_OPT_FACTORY, NULL,
+      "Read the factory settings page" },
     { "--plot", CLI_OPT_PLOT, NULL,
       "Show an ASCII plot instead of a table" },
     { "--file", CLI_OPT_FILE, "<f.csv>",
@@ -78,15 +82,32 @@ void cli_print_options(FILE* out, unsigned allowed)
     }
 }
 
-void cli_print_write_report(const alltrax_write_report* report)
+#define RECONNECT_TIMEOUT_MS 7500u
+
+void cli_wait_for_reconnect(alltrax_controller* ctrl)
+{
+    fflush(stdout);
+    if (alltrax_wait_for_reconnect(ctrl, RECONNECT_TIMEOUT_MS) == ALLTRAX_OK)
+        printf("Controller reconnected\n");
+    else
+        fprintf(stderr, "Warning: controller did not reappear within %.1f seconds "
+                "after reset. If using USB passthrough, reconnect the cable.\n",
+                RECONNECT_TIMEOUT_MS / 1000.0);
+}
+
+void cli_report_write(alltrax_controller* ctrl, const alltrax_write_report* report,
+    const cli_flags* flags)
 {
     if (report->factory_restored)
         fprintf(stderr, "User settings were invalid; factory settings were "
                 "restored before writing.\n");
     if (report->autocal_cleared)
         printf("Cleared throttle auto-calibration\n");
-    if (report->reset_sent)
+    if (report->reset_sent) {
         printf("Device reset sent (controller will reboot)\n");
+        if (!flags->no_wait)
+            cli_wait_for_reconnect(ctrl);
+    }
 }
 
 alltrax_write_opts cli_write_opts(const cli_flags* flags,
@@ -150,6 +171,8 @@ int cli_parse_args(int argc, char** argv, const char* command,
         case CLI_OPT_FIELD_MAP:         flags->field_map = true; break;
         case CLI_OPT_NO_CRYPT:          flags->no_crypt = true; break;
         case CLI_OPT_RESET:             flags->reset = true; break;
+        case CLI_OPT_NO_WAIT:           flags->no_wait = true; break;
+        case CLI_OPT_FACTORY:           flags->factory = true; break;
         case CLI_OPT_PLOT:              flags->plot = true; break;
         case CLI_OPT_DEBUG_NO_CAL:      flags->debug_no_cal = true; break;
         case CLI_OPT_DEBUG_NO_VERIFY:   flags->debug_no_verify = true; break;

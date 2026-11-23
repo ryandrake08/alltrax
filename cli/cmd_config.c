@@ -798,7 +798,7 @@ static int do_load(int argc, char** argv)
     err = alltrax_write_assignments(ctrl, items, n_items, &write_opts);
     if (err) {
         cli_error(ctrl, err, "writing settings");
-        cli_print_write_report(&report);
+        cli_report_write(ctrl, &report, &flags);
         ret = 1;
         goto done;
     }
@@ -811,7 +811,7 @@ static int do_load(int argc, char** argv)
     }
     cli_field_map_written(items, n_items);
 
-    cli_print_write_report(&report);
+    cli_report_write(ctrl, &report, &flags);
 
 /* Write/reset failures share cleanup with success; items reference entries. */
 done:

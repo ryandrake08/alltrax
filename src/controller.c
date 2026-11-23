@@ -377,7 +377,7 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     rc = require_xct_controller(ctrl);
     if (rc) return rc;
     get_string(buf + 0x10, 15, out->build_date, sizeof(out->build_date));
-    out->serial_number        = get_le32(buf + 0x20);
+    out->serial_number        = get_le32(buf + SERIAL_NUMBER_OFFSET);
     out->original_boot_rev    = get_le32(buf + 0x24);
     out->original_program_rev = get_le32(buf + 0x28);
     out->program_type         = get_le32(buf + 0x2C);
@@ -716,11 +716,38 @@ alltrax_error alltrax_reset_device(alltrax_controller* ctrl,
     alltrax_error gate_rc = require_writable_firmware(ctrl,
         opts && opts->skip_fw_check);
     if (gate_rc) return gate_rc;
+
+    /* Record the identity that alltrax_wait_for_reconnect() looks for. */
+    uint8_t id[SERIAL_NUMBER_OFFSET + 4];
+    alltrax_error rc = read_memory(ctrl, ADDR_CONTROLLER_INFO, sizeof(id), id);
+    if (rc) return rc;
+    get_string(id, 15, ctrl->reset_model, sizeof(ctrl->reset_model));
+    ctrl->reset_serial = get_le32(id + SERIAL_NUMBER_OFFSET);
+
     uint8_t request[PACKET_SIZE];
     build_reset_request(request);
 
     /* Send reset — device disconnects immediately, no response */
-    return transport_write(ctrl, request);
+    rc = transport_write(ctrl, request);
+    if (!rc)
+        ctrl->reset_sent = true;
+    return rc;
+}
+
+static alltrax_error clear_backup_ram(alltrax_controller* ctrl)
+{
+    const uint8_t zeros[BACKUP_RAM_SIZE] = {0};
+    return write_memory(ctrl, ADDR_BACKUP_RAM, zeros, sizeof(zeros));
+}
+
+alltrax_error alltrax_clear_autocal(alltrax_controller* ctrl,
+    const alltrax_write_opts* opts)
+{
+    alltrax_error rc = require_writable_firmware(ctrl, opts && opts->skip_fw_check);
+    if (rc) return rc;
+    rc = clear_backup_ram(ctrl);
+    if (rc) return rc;
+    return alltrax_reset_device(ctrl, opts);
 }
 
 /* Pre-encoded write payloads */
@@ -839,9 +866,7 @@ static alltrax_error post_write(alltrax_controller* ctrl,
         report->date_stamped = true;
     }
     if (clear_autocal) {
-        const uint8_t zeros[BACKUP_RAM_SIZE] = {0};
-        alltrax_error rc = write_memory(ctrl, ADDR_BACKUP_RAM, zeros,
-                                        sizeof(zeros));
+        alltrax_error rc = clear_backup_ram(ctrl);
         if (rc) return post_write_error(ctrl, rc, "clearing throttle auto-calibration");
         report->autocal_cleared = true;
         reset = true;

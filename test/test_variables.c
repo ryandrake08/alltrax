@@ -1466,8 +1466,9 @@ static int test_catalog_invariants(void)
                     ASSERT_TRUE(address_span_fits(var->address, len, VARSET_ADDR,
                                                   VARSET_SIZE));
             } else {
-                ASSERT_TRUE(address_span_fits(var->address, len, RAM_BASE,
-                                              RAM_END - RAM_BASE));
+                ASSERT_TRUE(address_span_fits(var->address, len, RAM_BASE, RAM_END - RAM_BASE) ||
+                            (!var->writable && address_span_fits(var->address, len,
+                                ADDR_BACKUP_RAM, BACKUP_RAM_SIZE)));
             }
             alltrax_var_def copy = *var;
             ASSERT_FALSE(catalog_has_var(&copy));

@@ -250,6 +250,8 @@ static const alltrax_var_def read_values_vars[] = {
     VAR_RAM_RO("Speed", "Motor speed", 0x2000F13A, ALLTRAX_TYPE_INT16, 1.0, 0, "RPM"),
     VAR_RAM_RO("State_Of_Charge", "Battery SOC", 0x2000F14A, ALLTRAX_TYPE_INT16, 0.1, 0, "%"),
     VAR_RAM_RO("Battery_Amps", "Battery current", 0x2000F15A, ALLTRAX_TYPE_INT32, 0.1, 0, "A"),
+    VAR_RAM_RO("BKP_Throttle_Minima", "Learned minimum throttle", ADDR_BACKUP_RAM + 8, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
+    VAR_RAM_RO("BKP_Throttle_Maxima", "Learned maximum throttle", ADDR_BACKUP_RAM + 12, ALLTRAX_TYPE_INT16, 1.0, 0, ""),
 };
 #define READ_VALUES_COUNT (sizeof(read_values_vars) / sizeof(read_values_vars[0]))
 

@@ -20,6 +20,10 @@ typedef struct hid_device_ hid_device;
 
 struct alltrax_controller {
     hid_device*  hid;
+    char*        device_path; /* Owned by an opened handle */
+    bool         reset_sent;  /* A reset was sent; model and serial identify it */
+    char         reset_model[16];
+    uint32_t     reset_serial;
     uint16_t     vid;
     uint16_t     pid;
     alltrax_controller_type controller_type; /* Validated model family */
@@ -91,6 +95,7 @@ struct alltrax_controller {
 
 /* Offsets within INFOSET */
 #define ADDR_CONTROLLER_INFO  INFOSET_ADDR            /* 0x08000800 */
+#define SERIAL_NUMBER_OFFSET  0x20
 #define ADDR_HARDWARE_CONFIG  (INFOSET_ADDR + 0x80)   /* 0x08000880 */
 
 /* Addresses in other FLASH regions */
@@ -167,6 +172,7 @@ alltrax_error transport_drain(alltrax_controller* ctrl);
 /* controller.c: validate the model and read revisions and startup mode after
  * USB identity is established. */
 alltrax_error identify_controller(alltrax_controller* ctrl);
+alltrax_controller_type detect_controller_type(const char* model);
 
 /* Byte helpers */
 /* Subtraction keeps both offset and absolute-address span checks overflow-safe. */

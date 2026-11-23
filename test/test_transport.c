@@ -1,10 +1,14 @@
 /* Real connection/transport code against fake hidapi; no USB library linked. */
+#define _POSIX_C_SOURCE 200809L
 #include "helpers.h"
 #include "internal.h"
+#include "../cli/cli.h"
 #include <hidapi.h>
+#include <unistd.h>
 
 int test_pass_count;
 int test_fail_count;
+const char* cli_device_path;
 
 struct hid_device_ { size_t index; };
 
@@ -12,6 +16,8 @@ static struct {
     struct hid_device_info devs[3];
     struct hid_device_ handles[3];
     const char* models[3];
+    uint32_t serials[3];
+    bool old_handle_gone, stale_probe;
     bool fail_open;
     size_t count;
     unsigned enumerations, frees, opens, closes, reads, writes, mutations;
@@ -22,6 +28,7 @@ static struct {
     uint16_t startup_switch;
     int model_reply_len; /* -1: timeout, -2: USB error; otherwise declared size */
     int write_result, read_result;
+    uint8_t write_result_report;  /* 0: write_result applies to every report */
     unsigned hid_write_errors, read_timeouts, drains, stale_reports;
     bool enqueue_stale_on_timeout;
     unsigned writes_with_queued_input;
@@ -118,7 +125,12 @@ int hid_write(hid_device* hid, const unsigned char* data, size_t size)
         mock.hid_write_errors--;
         return -1;
     }
-    if (mock.write_result != PACKET_SIZE) return mock.write_result;
+    if (mock.write_result != PACKET_SIZE &&
+        (!mock.write_result_report || data[0] == mock.write_result_report))
+        return mock.write_result;
+    if (mock.stale_probe && data[0] == REPORT_ID_READ &&
+        data[1] == SERIAL_NUMBER_OFFSET + 4)
+        return -1;
     memcpy(mock.request, data, size);
     if (data[0] != 0x01) mock.mutations++;
     if (data[0] == 0x02 && request_address() == ADDR_RUN_MODE)
@@ -132,6 +144,9 @@ static uint8_t read_byte(size_t index, uint32_t addr)
         size_t offset = addr - ADDR_CONTROLLER_INFO;
         return offset < strlen(mock.models[index]) ? (uint8_t)mock.models[index][offset] : 0;
     }
+    uint32_t serial_offset = addr - (ADDR_CONTROLLER_INFO + SERIAL_NUMBER_OFFSET);
+    if (serial_offset < 4)
+        return (uint8_t)(mock.serials[index] >> (8 * serial_offset));
     if (addr >= ADDR_BOOT_REV && addr < ADDR_BOOT_REV + 4)
         return (uint8_t)(5002u >> ((addr - ADDR_BOOT_REV) * 8));
     if (addr >= ADDR_PRGM_REV && addr < ADDR_PRGM_REV + 4)
@@ -166,6 +181,7 @@ static int make_response(hid_device* hid, unsigned char* buf, size_t size)
 int hid_read_timeout(hid_device* hid, unsigned char* buf, size_t size, int timeout)
 {
     mock.reads++;
+    if (timeout == 0) return mock.old_handle_gone ? -1 : 0;
     if (timeout == 32) {
         mock.drains++;
         if (!mock.stale_reports) return 0;
@@ -173,7 +189,7 @@ int hid_read_timeout(hid_device* hid, unsigned char* buf, size_t size, int timeo
         memset(buf, 0xA5, size);
         return PACKET_SIZE;
     }
-    if (timeout != 750) return -1;
+    if (timeout != 750 && mock.request[1] != SERIAL_NUMBER_OFFSET + 4) return -1;
     if (mock.read_timeouts) {
         mock.read_timeouts--;
         if (mock.enqueue_stale_on_timeout) mock.stale_reports++;
@@ -537,13 +553,14 @@ static int test_reset_requires_a_complete_write(void)
     alltrax_controller* ctrl = NULL;
     ASSERT_EQ(alltrax_open(&ctrl, NULL, true), ALLTRAX_OK);
     const int results[] = { 0, 1, 63, 65, -1, 64 };
-    unsigned reads = mock.reads;
+    mock.write_result_report = REPORT_ID_SPECIAL;
     for (size_t i = 0; i < sizeof(results) / sizeof(results[0]); i++) {
         mock.write_result = results[i];
-        unsigned writes = mock.writes;
+        unsigned writes = mock.writes, reads = mock.reads;
         ASSERT_EQ(alltrax_reset_device(ctrl, NULL), results[i] == 64 ? ALLTRAX_OK : ALLTRAX_ERR_USB);
-        ASSERT_EQ(mock.writes, writes + 1);
-        ASSERT_EQ(mock.reads, reads); /* Reset has no acknowledgement. */
+        /* One identity read, then the reset, which has no acknowledgement. */
+        ASSERT_EQ(mock.writes, writes + 2);
+        ASSERT_EQ(mock.reads, reads + 1);
         if (results[i] < 0)
             ASSERT_TRUE(strstr(ctrl->error_detail, "USB write failed: simulated error") != NULL);
         else if (results[i] != 64)
@@ -670,8 +687,79 @@ static int test_bootloader_mode_allows_info_and_blocks_operations(void)
     ASSERT_EQ(alltrax_read_monitor(ctrl, &monitor), ALLTRAX_ERR_BOOTLOADER);
     ASSERT_EQ(alltrax_write_vars(ctrl, &hpd, &value, 1, &opts), ALLTRAX_ERR_BOOTLOADER);
     ASSERT_EQ(alltrax_reset_device(ctrl, &opts), ALLTRAX_ERR_BOOTLOADER);
+    ASSERT_EQ(alltrax_clear_autocal(ctrl, &opts), ALLTRAX_ERR_BOOTLOADER);
     ASSERT_EQ(mock.writes, writes);
     ASSERT_EQ(mock.mutations, 0);
+    alltrax_close(ctrl);
+    return 0;
+}
+
+static int test_cli_devices_prints_supported_path_model_and_serial(void)
+{
+    mock_reset();
+    add_device("/dev/first", ALLTRAX_VID, ALLTRAX_PID_XCT, "XCT48400-DCS");
+    add_device("/dev/unsupported", ALLTRAX_VID, ALLTRAX_PID_SPM, "SPM");
+    add_device("/dev/second", ALLTRAX_VID, ALLTRAX_PID_XCT, "NCT");
+    mock.serials[0] = 237324;
+    mock.serials[2] = UINT32_MAX - 1;
+    char* argv[] = { "devices" };
+    FILE* file = tmpfile();
+    ASSERT_TRUE(file != NULL);
+    fflush(stdout);
+    int saved = dup(STDOUT_FILENO);
+    ASSERT_TRUE(saved >= 0);
+    ASSERT_TRUE(dup2(fileno(file), STDOUT_FILENO) >= 0);
+    int rc = cmd_devices(1, argv);
+    fflush(stdout);
+    dup2(saved, STDOUT_FILENO);
+    close(saved);
+    rewind(file);
+    char out[160];
+    size_t n = fread(out, 1, sizeof(out) - 1, file);
+    out[n] = '\0';
+    fclose(file);
+
+    ASSERT_EQ(rc, 0);
+    ASSERT_STR_EQ(out, "/dev/first\tXCT48400-DCS\t237324\n/dev/second\tNCT\t4294967294\n");
+    ASSERT_EQ(mock.opens, 2);
+    ASSERT_EQ(mock.closes, 2);
+    ASSERT_EQ(mock.mutations, 0);
+    mock_reset();
+    ASSERT_EQ(cmd_devices(1, argv), 1);  /* None found */
+    add_device("/dev/first", ALLTRAX_VID, ALLTRAX_PID_XCT, "XCT48400-DCS");
+    add_device("/dev/unsupported", ALLTRAX_VID, ALLTRAX_PID_SPM, "SPM");
+    ASSERT_EQ(alltrax_list_devices("/dev/unsupported", NULL, NULL), 0);
+    mock.models[0] = "SPM"; /* Wrong model even with the expected PID. */
+    ASSERT_EQ(alltrax_list_devices("/dev/first", NULL, NULL), 0);
+    return 0;
+}
+
+static int test_reset_wait_matches_reenumerated_controller(void)
+{
+    mock_reset();
+    add_device("original", ALLTRAX_VID, ALLTRAX_PID_XCT, "XCT48400-DCS");
+    add_device("other", ALLTRAX_VID, ALLTRAX_PID_XCT, "XCT48400-DCS");
+    mock.serials[0] = 237324;
+    mock.serials[1] = 10;
+    alltrax_controller* ctrl = NULL;
+    ASSERT_EQ(alltrax_open(&ctrl, "original", true), ALLTRAX_OK);
+    ASSERT_EQ(alltrax_wait_for_reconnect(ctrl, 10), ALLTRAX_ERR_INVALID_ARG); /* No reset. */
+    ASSERT_EQ(alltrax_reset_device(ctrl, NULL), ALLTRAX_OK);
+    ASSERT_EQ(mock.mutations, 1);
+    ASSERT_EQ(alltrax_wait_for_reconnect(ctrl, 10), ALLTRAX_ERR_TIMEOUT); /* Still connected. */
+
+    mock.old_handle_gone = true;
+    mock.stale_probe = true;
+    ASSERT_EQ(alltrax_wait_for_reconnect(ctrl, 10), ALLTRAX_ERR_TIMEOUT); /* Stale LXC node. */
+    mock.stale_probe = false;
+    mock.devs[0].path = "new-hidraw-path";
+    mock.serials[0] = 11;
+    ASSERT_EQ(alltrax_wait_for_reconnect(ctrl, 10), ALLTRAX_ERR_TIMEOUT); /* Wrong serial. */
+    mock.serials[0] = 237324;
+    ASSERT_EQ(alltrax_wait_for_reconnect(ctrl, 50), ALLTRAX_OK);
+    mock.devs[0].path = "original";
+    ASSERT_EQ(alltrax_wait_for_reconnect(ctrl, 50), ALLTRAX_OK); /* Reused path. */
+    ASSERT_EQ(mock.mutations, 1);
     alltrax_close(ctrl);
     return 0;
 }
@@ -682,6 +770,8 @@ int main(void)
     RUN_TEST(test_timeout_drains_stale_input_and_resends_once);
     RUN_TEST(test_hid_write_retries_negative_results);
     RUN_TEST(test_bootloader_mode_allows_info_and_blocks_operations);
+    RUN_TEST(test_cli_devices_prints_supported_path_model_and_serial);
+    RUN_TEST(test_reset_wait_matches_reenumerated_controller);
     RUN_TEST(test_no_devices_and_unknown_paths);
     RUN_TEST(test_explicit_paths_require_supported_usb_identity);
     RUN_TEST(test_auto_detection_skips_unsupported_devices);

@@ -61,9 +61,12 @@ Alltrax Controller Monitor
 | Command | Description |
 |---------|-------------|
 | `alltrax info` | Controller identity, firmware versions, ratings |
-| `alltrax get [var...]` | Read settings (all or by name) |
+| `alltrax devices` | List responsive controllers by HID path, model, and serial number |
+| `alltrax get [--factory] [var...]` | Read settings (all or by name) |
 | `alltrax write var=value [...]` | Write settings |
-| `alltrax reset` | Reboot controller |
+| `alltrax reset [--no-wait]` | Reboot controller and wait for it to reconnect |
+| `alltrax clear-autocal [--no-wait]` | Clear learned throttle calibration and reboot |
+| `alltrax fan-test` | Start a timed fan test with the keyswitch on |
 | `alltrax monitor` | Live polling display (Ctrl+C to stop) |
 | `alltrax errors` | Active error flags and error history |
 | `alltrax config save [flags] <file>` | Save all settings to file |
@@ -88,8 +91,34 @@ point source: x,y pairs, `--file`, or `--preset`.
 | Outside V0.001-V5.999 | Yes | With `alltrax --debug-ignore-fw-bounds <command>` | Never |
 
 `--allow-unvalidated-firmware` is accepted by the write commands (`write`,
-`reset`, `config load`, `curve set`, `curve reset`). `--debug-ignore-fw-bounds`
+`reset`, `clear-autocal`, `fan-test`, `config load`, `curve set`, `curve reset`).
+`--debug-ignore-fw-bounds`
 is a debug option placed before the command; it affects reads only.
+
+### Device and settings commands
+
+```sh
+alltrax devices
+alltrax --device /dev/hidraw1 info
+alltrax get LoBat_Vlim
+alltrax get --factory LoBat_Vlim
+alltrax fan-test
+alltrax clear-autocal
+alltrax reset --no-wait
+```
+
+Use the HID path from `devices` with the global `--device` option to select
+a controller. `devices` exits with status 1 when it finds no controller. `get` warns if the user settings page is invalid. To read
+the factory page, add `--factory` and use the same setting names. This
+fails if the factory page is invalid.
+
+`fan-test` requires the keyswitch (KSI) to be on. The firmware ends the
+test automatically. `clear-autocal` clears learned throttle calibration
+and sends one reset. `clear-autocal`, `reset`, and any write command that
+resets the controller wait up to 7.5 seconds for it to reconnect. Use
+`--no-wait` to return after sending the reset. If USB passthrough leaves the device node stale, the command
+reports a warning and exits successfully after the reset was sent. Unplug
+and reconnect the USB cable to restore access in that case.
 
 ### Write examples
 
@@ -146,6 +175,7 @@ requested changes, and reports the recovery.
 | `--allow-unvalidated-firmware` | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | Allow writing field-map data (see [Field maps](#field-maps)) |
 | `--reset` | Reboot controller after a successful write |
+| `--no-wait` | Return after a reset instead of waiting for the controller to reconnect |
 
 Debug bypasses are listed under [Debug and development options](#debug-and-development-options).
 
@@ -214,6 +244,7 @@ Toolkit (unless `--no-crypt` was used).
 | `--allow-unvalidated-firmware` | load | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | load | Also write the file's field-map entries |
 | `--reset` | load | Reboot controller after write |
+| `--no-wait` | load | Return after a reset without waiting for reconnect |
 
 ### Curve tables
 
@@ -324,6 +355,7 @@ cause the import to fail.
 | `--allow-unvalidated-firmware` | set, reset | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | set, reset | Allow writing the `field` and `genfield` curves |
 | `--reset` | set, reset | Reboot controller after write |
+| `--no-wait` | set, reset | Return after a reset without waiting for reconnect |
 
 ### Debug and development options
 
@@ -990,13 +1022,34 @@ Returns the name of error flag at `index` (0-16), e.g. `"Overcurrent"`,
 ```c
 alltrax_error alltrax_reset_device(alltrax_controller* ctrl,
     const alltrax_write_opts* opts);
+alltrax_error alltrax_clear_autocal(alltrax_controller* ctrl,
+    const alltrax_write_opts* opts);
 ```
 
 Sends a reset command. Reset follows the write firmware policy; `opts` may be
 `NULL`, and only `skip_fw_check` is used. The controller reboots immediately (USB disconnects).
-The controller handle becomes invalid after this call — close it without
-expecting further communication. Used after FLASH writes to make new settings
-take effect without a power cycle.
+The handle can no longer communicate with it; close it after an optional
+`alltrax_wait_for_reconnect()`. Use a reset after FLASH writes to make new
+settings take effect without a power cycle. `alltrax_clear_autocal()` clears
+the throttle backup registers before issuing the reset. If the reset fails
+after the clear, the learned values may already be gone. Both calls read the
+controller's model and serial number, send the reset report, and return.
+
+```c
+alltrax_error alltrax_wait_for_reconnect(alltrax_controller* ctrl,
+    unsigned timeout_ms);
+```
+
+After a reset sent through the handle (including one sent by a write),
+`alltrax_wait_for_reconnect()` waits up to `timeout_ms` for the same
+controller, matched by model and serial number, to answer read-only requests
+again. It returns `ALLTRAX_OK`, `ALLTRAX_ERR_TIMEOUT`, or
+`ALLTRAX_ERR_INVALID_ARG` if no reset was sent. The handle itself stays stale:
+close it and open a new one. The CLI waits by default.
+
+`alltrax_list_devices()` probes enumerated devices with read-only requests.
+It calls the supplied visitor with each responsive controller's path, model,
+and serial number. The path and model strings are valid during the callback.
 
 ## Variable Reference
 
@@ -1004,9 +1057,9 @@ All controller settings and status values are accessed through named variables.
 Variables are organized into groups and stored in either **FLASH** (persistent
 across power cycles) or **RAM** (live state, lost on power cycle).
 
-Factory defaults vary by controller model and electrical ratings — they are
-programmed at the factory. Read your controller's factory defaults via the
-`F_`-prefixed read-only copies (e.g. `F_Reverse_Field_Weaken_Percent`).
+Factory defaults vary by controller model and electrical ratings. Use
+`get --factory` with the user setting name, or read an explicit factory
+entry such as `F_Reverse_Field_Weaken_Percent`.
 
 ### FLASH Variables (Persistent Settings)
 
@@ -1301,6 +1354,8 @@ Real-time controller status. These are the variables read by `alltrax monitor`.
 | `Speed` | Motor speed (requires speed sensor) | RPM |
 | `State_Of_Charge` | Battery state of charge estimate | % |
 | `Battery_Amps` | Battery current (input side) | A |
+| `BKP_Throttle_Minima` | Learned minimum throttle, read-only backup register | |
+| `BKP_Throttle_Maxima` | Learned maximum throttle, read-only backup register | |
 
 #### Controls
 

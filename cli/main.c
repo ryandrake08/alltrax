@@ -44,14 +44,17 @@ static void print_usage(void)
         "  --debug-ignore-fw-bounds  Read firmware outside V0.001-V5.999\n"
         "\n"
         "Commands:\n"
-        "  info      Controller identity and firmware\n"
-        "  get       Read settings (all or by name)\n"
-        "  write     Write settings (var=value ...)\n"
-        "  reset     Reboot controller\n"
-        "  monitor   Live polling (Ctrl+C to stop)\n"
-        "  errors    Error flags and history\n"
-        "  config    Save/load config files\n"
-        "  curve     Read/write curve tables\n"
+        "  info           Controller identity and firmware\n"
+        "  devices        List controllers by path, model and serial number\n"
+        "  get            Read settings (all or by name)\n"
+        "  write          Write settings (var=value ...)\n"
+        "  reset          Reboot controller\n"
+        "  clear-autocal  Clear throttle calibration and reboot\n"
+        "  fan-test       Start a timed fan test (keyswitch must be on)\n"
+        "  monitor        Live polling (Ctrl+C to stop)\n"
+        "  errors         Error flags and history\n"
+        "  config         Save/load config files\n"
+        "  curve          Read/write curve tables\n"
     );
 }
 
@@ -98,12 +101,18 @@ int main(int argc, char** argv)
 
     if (strcmp(cmd, "info") == 0)
         rc = cmd_info(sub_argc, sub_argv);
+    else if (strcmp(cmd, "devices") == 0)
+        rc = cmd_devices(sub_argc, sub_argv);
     else if (strcmp(cmd, "get") == 0)
         rc = cmd_get(sub_argc, sub_argv);
     else if (strcmp(cmd, "write") == 0)
         rc = cmd_write(sub_argc, sub_argv);
     else if (strcmp(cmd, "reset") == 0)
         rc = cmd_reset(sub_argc, sub_argv);
+    else if (strcmp(cmd, "clear-autocal") == 0)
+        rc = cmd_clear_autocal(sub_argc, sub_argv);
+    else if (strcmp(cmd, "fan-test") == 0)
+        rc = cmd_fan_test(sub_argc, sub_argv);
     else if (strcmp(cmd, "monitor") == 0)
         rc = cmd_monitor(sub_argc, sub_argv);
     else if (strcmp(cmd, "errors") == 0)

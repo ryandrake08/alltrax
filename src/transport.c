@@ -16,6 +16,12 @@
 #define HID_WRITE_ATTEMPTS 4
 #define DRAIN_QUIET_MS 32
 #define DRAIN_MAX_REPORTS 16
+#define RECONNECT_POLL_MS 250
+
+static bool is_xct_device(const struct hid_device_info* d)
+{
+    return d->vendor_id == ALLTRAX_VID && d->product_id == ALLTRAX_PID_XCT;
+}
 
 alltrax_error alltrax_init(void)
 {
@@ -40,7 +46,7 @@ alltrax_error alltrax_open(alltrax_controller** out,
     for (struct hid_device_info* d = devs; d; d = d->next) {
         if (!d->path || (device_path && strcmp(d->path, device_path) != 0))
             continue;
-        if (d->vendor_id != ALLTRAX_VID || d->product_id != ALLTRAX_PID_XCT) {
+        if (!is_xct_device(d)) {
             rc = ALLTRAX_ERR_UNSUPPORTED;
             if (device_path) break;
             continue;
@@ -60,6 +66,12 @@ alltrax_error alltrax_open(alltrax_controller** out,
         }
 
         ctrl->hid = hid;
+        ctrl->device_path = strdup(d->path);
+        if (!ctrl->device_path) {
+            alltrax_close(ctrl);
+            rc = ALLTRAX_ERR_NO_MEMORY;
+            break;
+        }
         ctrl->vid = d->vendor_id;
         ctrl->pid = d->product_id;
         ctrl->allow_writes = allow_writes;
@@ -85,7 +97,116 @@ void alltrax_close(alltrax_controller* ctrl)
         ctrl->hid = NULL;
     }
 
+    free(ctrl->device_path);
     free(ctrl);
+}
+
+/* Discovery needs only the model and serial. Use a single bounded read
+ * probe per candidate, with no retries, so stale nodes do not stall a scan. */
+static bool probe_identity(const char* path, int timeout_ms, char model[16],
+    uint32_t* serial)
+{
+    hid_device* hid = hid_open_path(path);
+    if (!hid) return false;
+
+    uint8_t packet[PACKET_SIZE];
+    const uint8_t size = SERIAL_NUMBER_OFFSET + 4;
+    build_read_request(ADDR_CONTROLLER_INFO, size, packet);
+    int n = hid_write(hid, packet, sizeof(packet));
+    if (n == PACKET_SIZE)
+        n = hid_read_timeout(hid, packet, sizeof(packet), timeout_ms);
+    else
+        n = -1;
+    hid_close(hid);
+    if (n != PACKET_SIZE) return false;
+
+    uint8_t result, length, data[MAX_PAYLOAD];
+    if (parse_response(packet, RESPONSE_TYPE_RW, &result, &length, data) ||
+        result != RESULT_PASS || length != size)
+        return false;
+    get_string(data, 15, model, 16);
+    if (detect_controller_type(model) != ALLTRAX_CONTROLLER_XCT)
+        return false;
+    *serial = get_le32(data + SERIAL_NUMBER_OFFSET);
+    return true;
+}
+
+size_t alltrax_list_devices(const char* path, alltrax_device_visitor visit, void* user)
+{
+    size_t count = 0;
+    struct hid_device_info* devs = hid_enumerate(ALLTRAX_VID, 0);
+    for (const struct hid_device_info* d = devs; d; d = d->next) {
+        if (!d->path || !is_xct_device(d) || (path && strcmp(path, d->path) != 0))
+            continue;
+        char model[16];
+        uint32_t serial;
+        if (probe_identity(d->path, DEFAULT_TIMEOUT_MS, model, &serial)) {
+            if (visit) visit(d->path, model, serial, user);
+            count++;
+        }
+    }
+    hid_free_enumeration(devs);
+    return count;
+}
+
+static int64_t monotonic_ms(void)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return -1;
+    return (int64_t)now.tv_sec * 1000 + now.tv_nsec / 1000000;
+}
+
+alltrax_error alltrax_wait_for_reconnect(alltrax_controller* old,
+    unsigned timeout_ms)
+{
+    if (!old || !old->reset_sent) {
+        if (old) set_error_detail(old, "No reset was sent through this handle");
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+    int64_t now = monotonic_ms();
+    if (now < 0 || !old->hid || !old->device_path) return ALLTRAX_ERR_TIMEOUT;
+    int64_t deadline = now + timeout_ms;
+    bool disconnected = false;
+    bool has_serial = old->reset_serial != 0 && old->reset_serial != UINT32_MAX;
+
+    while ((now = monotonic_ms()) >= 0 && now < deadline) {
+        uint8_t ignored[PACKET_SIZE];
+        if (!disconnected && hid_read_timeout(old->hid, ignored, sizeof(ignored), 0) < 0)
+            disconnected = true;
+
+        bool old_listed = false, found = false;
+        struct hid_device_info* devs = hid_enumerate(ALLTRAX_VID, 0);
+        for (const struct hid_device_info* d = devs; d; d = d->next) {
+            if (!d->path || !is_xct_device(d)) continue;
+            bool same_path = strcmp(d->path, old->device_path) == 0;
+            old_listed |= same_path;
+            if (!disconnected || (!same_path && !has_serial)) continue;
+
+            now = monotonic_ms();
+            if (now < 0 || now >= deadline) break;
+            int64_t remaining = deadline - now;
+            int wait_ms = remaining < DEFAULT_TIMEOUT_MS ? (int)remaining : DEFAULT_TIMEOUT_MS;
+            char model[16];
+            uint32_t serial;
+            if (probe_identity(d->path, wait_ms, model, &serial) &&
+                serial == old->reset_serial && strcmp(model, old->reset_model) == 0) {
+                found = true;
+                break;
+            }
+        }
+        hid_free_enumeration(devs);
+        if (found) return ALLTRAX_OK;
+        disconnected |= !old_listed;
+
+        now = monotonic_ms();
+        if (now < 0 || now >= deadline) break;
+        int64_t delay_ms = deadline - now;
+        if (delay_ms > RECONNECT_POLL_MS) delay_ms = RECONNECT_POLL_MS;
+        struct timespec delay = { .tv_nsec = (long)delay_ms * 1000000L };
+        nanosleep(&delay, NULL);
+    }
+    set_error_detail(old, "Controller did not reappear within %u ms", timeout_ms);
+    return ALLTRAX_ERR_TIMEOUT;
 }
 
 alltrax_error transport_write(alltrax_controller* ctrl,

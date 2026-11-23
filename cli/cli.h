@@ -18,24 +18,27 @@ extern bool cli_ignore_fw_bounds;
 
 /* Options a command accepts, passed to cli_parse_args() */
 enum {
-    /* User options */
-    CLI_OPT_NO_VOLTAGE_LINK   = 1u << 0,
-    CLI_OPT_ALLOW_UNVALIDATED = 1u << 1,
-    CLI_OPT_FIELD_MAP         = 1u << 2,
-    CLI_OPT_NO_CRYPT          = 1u << 3,
-    CLI_OPT_RESET             = 1u << 4,
-    CLI_OPT_PLOT              = 1u << 5,
-    CLI_OPT_FILE              = 1u << 6,  /* takes a value */
-    CLI_OPT_PRESET            = 1u << 7,  /* takes a value */
+    /* User options use bits 0–15. */
+    CLI_OPT_NO_VOLTAGE_LINK     = 1u << 0,
+    CLI_OPT_ALLOW_UNVALIDATED   = 1u << 1,
+    CLI_OPT_FIELD_MAP           = 1u << 2,
+    CLI_OPT_NO_CRYPT            = 1u << 3,
+    CLI_OPT_RESET               = 1u << 4,
+    CLI_OPT_PLOT                = 1u << 5,
+    CLI_OPT_FILE                = 1u << 6,  /* takes a value */
+    CLI_OPT_PRESET              = 1u << 7,  /* takes a value */
+    CLI_OPT_NO_WAIT             = 1u << 8,
+    CLI_OPT_FACTORY             = 1u << 9,
+
     /* Debug and development bypasses */
-    CLI_OPT_DEBUG_NO_CAL      = 1u << 8,
-    CLI_OPT_DEBUG_NO_VERIFY   = 1u << 9,
-    CLI_OPT_DEBUG_NO_GOODSET  = 1u << 10,
-    CLI_OPT_DEBUG_NO_POST_WRITE = 1u << 11,
+    CLI_OPT_DEBUG_NO_CAL        = 1u << 16,
+    CLI_OPT_DEBUG_NO_VERIFY     = 1u << 17,
+    CLI_OPT_DEBUG_NO_GOODSET    = 1u << 18,
+    CLI_OPT_DEBUG_NO_POST_WRITE = 1u << 19,
 };
 
 /* Options accepted by every command that writes settings */
-#define CLI_OPTS_WRITE (CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_RESET | \
+#define CLI_OPTS_WRITE (CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_RESET | CLI_OPT_NO_WAIT | \
     CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | CLI_OPT_DEBUG_NO_GOODSET | \
     CLI_OPT_DEBUG_NO_POST_WRITE)
 
@@ -47,6 +50,8 @@ typedef struct {
     bool no_crypt;
     bool reset;
     bool plot;
+    bool no_wait;
+    bool factory;
     bool debug_no_cal;
     bool debug_no_verify;
     bool debug_no_goodset;
@@ -71,8 +76,13 @@ void cli_print_options(FILE* out, unsigned allowed);
 alltrax_write_opts cli_write_opts(const cli_flags* flags,
     alltrax_write_report* report);
 
-/* Print the actions a write performed besides writing its batch. */
-void cli_print_write_report(const alltrax_write_report* report);
+/* Print the actions a write performed besides writing its batch, and wait
+ * for the controller to reconnect after a reset unless --no-wait. */
+void cli_report_write(alltrax_controller* ctrl, const alltrax_write_report* report,
+    const cli_flags* flags);
+
+/* Wait for the controller to reconnect after a reset, printing the outcome. */
+void cli_wait_for_reconnect(alltrax_controller* ctrl);
 
 /* Open controller, printing errors to stderr. Returns ALLTRAX_OK on success. */
 alltrax_error cli_open(alltrax_controller** ctrl, bool writes);
@@ -111,6 +121,9 @@ int cmd_info(int argc, char** argv);
 int cmd_get(int argc, char** argv);
 int cmd_write(int argc, char** argv);
 int cmd_reset(int argc, char** argv);
+int cmd_clear_autocal(int argc, char** argv);
+int cmd_fan_test(int argc, char** argv);
+int cmd_devices(int argc, char** argv);
 int cmd_monitor(int argc, char** argv);
 int cmd_errors(int argc, char** argv);
 int cmd_config(int argc, char** argv);

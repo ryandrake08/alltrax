@@ -40,22 +40,62 @@ static int print_var(alltrax_controller* ctrl, const alltrax_var_value* val,
     return 0;
 }
 
+static int check_settings_validity(alltrax_controller* ctrl, bool factory)
+{
+    const alltrax_var_def* marker = alltrax_find_var(factory ? "Fact_GoodSet" : "Var_GoodSet");
+    alltrax_var_value value;
+    alltrax_error err = alltrax_read_vars(ctrl, &marker, 1, &value);
+    if (err) {
+        cli_error(ctrl, err, "reading settings validity");
+        return 1;
+    }
+    if (value.raw.u16 == 0) return 0;
+
+    if (factory) {
+        fprintf(stderr, "Error: factory settings are invalid (Fact_GoodSet=0x%04X)\n",
+                (unsigned)value.raw.u16);
+        return 1;
+    }
+    unsigned user_goodset = value.raw.u16;
+    marker = alltrax_find_var("Fact_GoodSet");
+    err = alltrax_read_vars(ctrl, &marker, 1, &value);
+    if (err) {
+        cli_error(ctrl, err, "reading factory settings validity");
+        return 1;
+    }
+    if (value.raw.u16 == 0) {
+        fprintf(stderr, "Warning: user settings are invalid (Var_GoodSet=0x%04X). "
+                        "Use get --factory to read factory settings.\n", user_goodset);
+    } else {
+        fprintf(stderr, "Warning: user and factory settings are invalid "
+                        "(Var_GoodSet=0x%04X, Fact_GoodSet=0x%04X).\n",
+                user_goodset, (unsigned)value.raw.u16);
+    }
+    return 0;
+}
+
 int cmd_get(int argc, char** argv)
 {
     cli_flags flags;
-    int nargs = cli_parse_args(argc, argv, "get", 0, 0, -1, &flags);
-    if (nargs < 0)
+    int nargs = cli_parse_args(argc, argv, "get", CLI_OPT_FACTORY, 0, -1, &flags);
+    if (nargs < 0) {
+        fprintf(stderr, "Usage: alltrax get [options] [var...]\n");
+        cli_print_options(stderr, CLI_OPT_FACTORY);
         return 1;
+    }
 
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, false);
     if (err) return 1;
     alltrax_info info;
     bool have_info = false;
+    bool checked_goodset = false;
     int ret = 1;
 
     if (nargs == 0) {
-        /* No args: print the writable settings (not factory copies) */
+        if (check_settings_validity(ctrl, flags.factory))
+            goto done;
+        /* No args: print the writable settings from the selected page. */
         alltrax_var_group groups[] = {
             ALLTRAX_VARS_VOLTAGE,
             ALLTRAX_VARS_NORMAL_USER,
@@ -80,7 +120,8 @@ int cmd_get(int argc, char** argv)
             }
 
             alltrax_var_value vals[64];
-            err = alltrax_read_vars(ctrl, ptrs, n, vals);
+            err = flags.factory ? alltrax_read_factory_vars(ctrl, ptrs, n, vals)
+                                : alltrax_read_vars(ctrl, ptrs, n, vals);
             if (err) {
                 cli_error(ctrl, err, "reading variables");
                 goto done;
@@ -99,8 +140,15 @@ int cmd_get(int argc, char** argv)
                 goto done;
             }
 
+            /* Settings (writable FLASH entries) depend on the page markers. */
+            if (!checked_goodset && var->is_flash && var->writable) {
+                if (check_settings_validity(ctrl, flags.factory)) goto done;
+                checked_goodset = true;
+            }
+
             alltrax_var_value val;
-            err = alltrax_read_vars(ctrl, &var, 1, &val);
+            err = flags.factory ? alltrax_read_factory_vars(ctrl, &var, 1, &val)
+                                : alltrax_read_vars(ctrl, &var, 1, &val);
             if (err) {
                 cli_error(ctrl, err, argv[i]);
                 goto done;

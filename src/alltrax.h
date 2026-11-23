@@ -116,6 +116,15 @@ alltrax_error alltrax_open(alltrax_controller** out,
 /* Close and free a controller handle. NULL is a no-op; a freed handle is invalid. */
 void alltrax_close(alltrax_controller* ctrl);
 
+/* Enumerate validated XCT-family devices using read-only USB requests.
+ * If path is non-NULL, only that path is considered. Calls visit (if non-NULL)
+ * once per responsive device and returns the count. Copy path and model if
+ * needed after the callback returns. */
+typedef void (*alltrax_device_visitor)(const char* path, const char* model,
+    uint32_t serial, void* user);
+size_t alltrax_list_devices(const char* path, alltrax_device_visitor visit,
+    void* user);
+
 /* alltrax_open() reads the boot and program revisions and StartUpSwitch.
  * Bootloader mode permits alltrax_get_info() and blocks other controller
  * operations with ALLTRAX_ERR_BOOTLOADER, regardless of firmware overrides.
@@ -548,10 +557,25 @@ const char* alltrax_throttle_type_name(uint8_t type);
 /* ------------------------------------------------------------------ */
 
 /* Reboot the controller. Follows the write firmware policy; opts may be NULL
- * and only skip_fw_check is used. ALLTRAX_OK confirms the command was sent;
- * no acknowledgement or reboot completion is awaited. The device disconnects:
- * close the handle and open a new one after USB re-enumeration. */
+ * and only skip_fw_check is used. Reads the model and serial number, then
+ * sends the reset; ALLTRAX_OK confirms the command was sent. Use
+ * alltrax_wait_for_reconnect() to wait for the reboot, then close the handle
+ * and open a new one. */
 alltrax_error alltrax_reset_device(alltrax_controller* ctrl,
+    const alltrax_write_opts* opts);
+
+/* Wait up to timeout_ms for the controller to re-enumerate after a reset
+ * sent through this handle (by alltrax_reset_device(), alltrax_clear_autocal()
+ * or a write that reset it). The controller is matched by model and serial
+ * number using read-only requests. Returns ALLTRAX_OK when it answers,
+ * ALLTRAX_ERR_TIMEOUT if it does not, and ALLTRAX_ERR_INVALID_ARG if no reset
+ * was sent. The handle stays stale: close it and open a new one. */
+alltrax_error alltrax_wait_for_reconnect(alltrax_controller* ctrl,
+    unsigned timeout_ms);
+
+/* Clear learned throttle calibration and send one reset. Uses the same
+ * firmware/write gates as reset. No CAL bracket or wait for re-enumeration. */
+alltrax_error alltrax_clear_autocal(alltrax_controller* ctrl,
     const alltrax_write_opts* opts);
 
 #ifdef __cplusplus
