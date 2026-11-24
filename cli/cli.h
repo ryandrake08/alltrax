@@ -38,6 +38,7 @@ typedef uint64_t cli_option_mask;
 #define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 14) /* takes a value */
 #define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 15) /* takes a value */
 #define CLI_OPT_MONITOR_THROTTLE    (UINT64_C(1) << 16)
+#define CLI_OPT_FIELD_MAP_KEY       (UINT64_C(1) << 17) /* takes a value */
 
 /* Bits 32–63 are reserved for debug and development bypasses. */
 #define CLI_OPT_DEBUG_NO_CAL        (UINT64_C(1) << 32)
@@ -71,6 +72,7 @@ typedef struct {
     const char* file;    /* --file value, or NULL */
     const char* preset;  /* --preset value, or NULL */
     const char* config_key;  /* --config-key value, or NULL */
+    const char* fieldmap_key;  /* --fieldmap-key value, or NULL */
     const char* monitor_rate;
     const char* monitor_log;
 } cli_flags;
@@ -89,9 +91,53 @@ typedef struct {
  *   auto         the key in environment variable `env`, else `embedded`
  *                (NULL when no key is built in), else an error
  * The environment variable must hold <key>:<iv>; an empty one is ignored.
+ * Builds without libcrypto accept only none.
  * Returns 0, or 1 after printing an error naming `command`. */
 int cli_resolve_key(const char* command, const char* option, const char* value,
     const char* env, const cli_key* embedded, cli_key* out);
+
+/* Print whether encrypted `what` files are available and whether a key is
+ * built in (`embedded` is NULL when none is). */
+void cli_print_key_status(FILE* out, const char* what, const char* option,
+    const char* env, const cli_key* embedded);
+
+/* Settings parsed from a config document (cmd_config.c, libxml2 builds). */
+typedef struct {
+    const alltrax_var_def* var;
+    double number;   /* numeric and bool variables */
+    char text[33];   /* string variables (at most 32 characters) */
+} cli_config_entry;
+
+#define CLI_CONFIG_MAX_CURVES 5
+
+typedef struct {
+    cli_config_entry* entries;
+    size_t count;
+    size_t skipped;  /* unknown elements */
+    alltrax_curve_data curves[CLI_CONFIG_MAX_CURVES];  /* complete, validated */
+    size_t curve_count;
+} cli_config;
+
+/* Read a file of at most 1 MiB, decrypting it unless key->encrypt is false.
+ * Returns a NUL-terminated buffer, or NULL after printing an error; `option`
+ * names the key option in hints. */
+char* cli_read_file(const char* path, const cli_key* key, const char* option,
+    size_t* len);
+
+/* Parse a config document: writable variables and curves. Any invalid value
+ * or curve fails the whole document. Returns 0, or 1 after printing an error. */
+int cli_config_parse(const char* xml, size_t len, cli_config* out);
+void cli_config_free(cli_config* config);
+
+/* Assignments for every entry and curve, with room for one more item (the
+ * field-map name). Items point into `config`. NULL when out of memory. */
+alltrax_assignment* cli_config_assignments(const cli_config* config,
+    size_t* count);
+
+/* Write items in one batch, adding the field-map name when needed, then print
+ * what was written and report post-write actions. Returns 0 or 1. */
+int cli_config_write(alltrax_controller* ctrl, alltrax_assignment* items,
+    size_t count, const cli_flags* flags);
 
 /* Parse options anywhere in argv[1..argc-1]. Arguments starting with "--" are
  * options; only those in `allowed` are accepted. Positional arguments are moved

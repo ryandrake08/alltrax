@@ -81,6 +81,9 @@ Alltrax Controller Monitor
 | `alltrax throttle list` | List throttle labels supported by the connected controller; `*` marks the current one |
 | `alltrax throttle set <name> [--default-curve] [--no-hpd]` | Select a throttle and reboot |
 | `alltrax field-map history` | List saved field-map names, dates, and the total map count |
+| `alltrax field-map list <file>` | List the maps in a field-map file and any upgrade for the controller |
+| `alltrax field-map upgrade <file>` | Install a newer version of the controller's field map |
+| `alltrax field-map install --field-map <file> <name>` | Install a named field map and its speed sensor pole count |
 
 Command options may appear before or after arguments. Unknown options, options
 a command does not accept, missing option values, and extra arguments are
@@ -266,6 +269,46 @@ alltrax curve reset field --field-map
 `alltrax field-map history` reads the controller's history on XCT-family
 controllers other than SRX with program firmware newer than V2.002. The total
 map count includes older entries that rolled off the history page.
+
+#### Field-map files
+
+`list`, `upgrade` and `install` read a field-map file in the Alltrax Toolkit's
+format. The file is not included with the CLI. It holds a version line and a
+series of maps; each map has a name, an integer version, optional alias
+names, and the map's settings. Maps marked hidden are ignored. A malformed map
+entry rejects the whole file before the controller is opened. These commands
+need libxml2.
+
+```sh
+alltrax field-map list fields.txt
+alltrax field-map upgrade fields.txt
+alltrax field-map install --field-map fields.txt MOTOR-MAP
+```
+
+- `list` prints every map with its version and aliases, marks the controller's
+  map with `*`, and reports whether an upgrade is available.
+- `upgrade` installs a newer version of the controller's current map. The
+  controller's map name is `F_Table_Name` up to `-V`, and the number after
+  `-V` is its version (0 when absent). The upgrade is the last map in the file
+  that has the same name and a higher version, or that lists the name as an
+  alias; it is installed only when its version is higher than the
+  controller's. The controller's user settings must be valid (Var_GoodSet = 0).
+  The speed sensor pole count (`Tach_4_8`) is kept. If the installed map is the
+  universal map (UNIMAP), the command says so.
+- `install` writes the named map, or the highest version of it when the file
+  has several. A name that matches no map is looked up among the aliases. It
+  requires `--field-map`, prints the old and new speed sensor pole count, and
+  writes `Tach_4_8` with the map, which reboots the controller.
+
+Both writes go through the same batch write as `config load`: one CAL/RUN
+bracket and one settings page erase, followed by the field-map date update.
+They accept the [write options](#write-options).
+
+`--fieldmap-key` selects how the file is decrypted, with the same rules as
+[`--config-key`](#config-saveload): `auto` (the default) uses the key in the
+`ALLTRAX_FIELDMAP_KEY` environment variable, otherwise the key built into the
+CLI; `<key>:<iv>` uses the given key; `none` reads a plain text file. The
+usage text of each command shows whether a key is built in.
 
 ### Config save/load
 
@@ -471,18 +514,21 @@ Required:
 - [hidapi](https://github.com/libusb/hidapi) — USB HID communication. `make`
   stops with an error naming the package if pkg-config cannot find it.
 
-Optional (used only by `config save` and `config load`):
+Optional (used only by `config save`, `config load`, and the `field-map`
+file commands):
 
 - [libxml2](https://gitlab.gnome.org/GNOME/libxml2) — XML parsing and generation
 - [OpenSSL](https://www.openssl.org/) libcrypto — 3DES encryption for
-  Toolkit-compatible config files
+  Toolkit-compatible config and field-map files
 
 `make` always builds the library, tests, and CLI, and prints a note for each
 missing optional library:
 
-- Without libxml2, the `config` command reports that it is unavailable.
+- Without libxml2, the `config` command and `field-map list`, `upgrade` and
+  `install` report that they are unavailable.
 - Without libcrypto, `config save` and `config load` handle plain XML only and
-  require `--config-key none`; encrypted files and the built-in key are not
+  require `--config-key none`, and the `field-map` file commands require
+  `--fieldmap-key none`; encrypted files and the built-in keys are not
   available.
 
 Installing a missing library and running `make` again rebuilds the affected
@@ -516,7 +562,7 @@ brew install hidapi openssl libxml2
 make            # builds CLI + library + tests (or library + tests if deps missing)
 make test       # runs tests
 make clean      # removes build/
-make EMBEDDED_KEYS=0   # builds without the built-in config key
+make EMBEDDED_KEYS=0   # builds without the built-in config and field-map keys
                        # (build/<variant>-nokeys/)
 
 make DEBUG=1 test      # debug build with AddressSanitizer (build/debug/)
@@ -526,8 +572,8 @@ make CC=clang-22 VARIANT=clang test   # clang in its own build directory
 ```
 
 The automated tests never access USB hardware; they use simulated transports.
-In a build with the built-in config key, `make test` also runs the CLI tests
-against config handling compiled without it.
+In a build with the built-in keys, `make test` also runs the CLI tests
+against config and field-map handling compiled without them.
 
 ## USB permissions
 

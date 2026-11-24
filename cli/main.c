@@ -63,7 +63,7 @@ static void print_usage(void)
         CONFIG_USAGE
         "  curve             Read/write curve tables\n"
         "  throttle          List or select a throttle\n"
-        "  field-map         Read field-map history\n"
+        "  field-map         Field-map history; list, upgrade or install maps from a file\n"
     );
 }
 

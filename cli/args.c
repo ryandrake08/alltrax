@@ -24,6 +24,8 @@ static const struct {
       "Allow writing field-map data (must match the installed motor)" },
     { "--config-key", CLI_OPT_CONFIG_KEY, "<key>",
       "auto (default), none for plain XML, or <48 hex>:<16 hex>" },
+    { "--fieldmap-key", CLI_OPT_FIELD_MAP_KEY, "<key>",
+      "auto (default), none for plain text, or <48 hex>:<16 hex>" },
     { "--reset", CLI_OPT_RESET, NULL,
       "Reboot the controller after writing" },
     { "--no-wait", CLI_OPT_NO_WAIT, NULL,
@@ -166,6 +168,7 @@ int cli_parse_args(int argc, char** argv, const char* command,
         const char** value = bit == CLI_OPT_FILE ? &flags->file
                            : bit == CLI_OPT_PRESET ? &flags->preset
                            : bit == CLI_OPT_CONFIG_KEY ? &flags->config_key
+                           : bit == CLI_OPT_FIELD_MAP_KEY ? &flags->fieldmap_key
                            : bit == CLI_OPT_MONITOR_RATE ? &flags->monitor_rate
                            : bit == CLI_OPT_MONITOR_LOG ? &flags->monitor_log
                            : NULL;
@@ -253,6 +256,11 @@ int cli_resolve_key(const char* command, const char* option, const char* value,
     memset(out, 0, sizeof(*out));
     if (value && strcmp(value, "none") == 0)
         return 0;
+#ifndef ALLTRAX_HAVE_CRYPTO
+    fprintf(stderr, "Error: %s: this build reads and writes only unencrypted files "
+            "(built without libcrypto). Use %s none.\n", command, option);
+    return 1;
+#endif
     if (value && strcmp(value, "auto") != 0) {
         if (parse_key(value, out)) return 0;
         fprintf(stderr, "Error: %s: %s must be auto, none, or "
@@ -276,4 +284,19 @@ int cli_resolve_key(const char* command, const char* option, const char* value,
             "set %s, or use %s none for an unencrypted file\n",
             command, option, env, option);
     return 1;
+}
+
+void cli_print_key_status(FILE* out, const char* what, const char* option,
+    const char* env, const cli_key* embedded)
+{
+#ifdef ALLTRAX_HAVE_CRYPTO
+    (void)option;
+    fprintf(out, "\nBuilt-in %s key: %s. %s=<key>:<iv> supplies a key for auto.\n",
+            what, embedded ? "yes" : "no", env);
+#else
+    (void)env;
+    (void)embedded;
+    fprintf(out, "\nEncrypted %s files: unavailable (built without libcrypto). "
+            "Use %s none.\n", what, option);
+#endif
 }

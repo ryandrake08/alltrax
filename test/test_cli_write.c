@@ -2070,6 +2070,269 @@ static int test_field_map_recovery_uses_factory_name(void)
 }
 
 #ifdef ALLTRAX_HAVE_XML
+/* A field-map file: map A in versions 1 and 2 (2 has aliases OLDA and OTHER),
+ * map B without a flag line, and a hidden map. */
+static const char map_file_text[] =
+    "F001.002.003.004\r\n"
+    "----- ----- ----- ----- -----\r\n"
+    "MAPA\r\n" "1\r\n" "\r\n" "\r\n"
+    "<XCT>\r\n"
+    "  <Node-Field><F_Table_Name>MAPA-V1</F_Table_Name>"
+    "<Turbo_Start_RPM>1000</Turbo_Start_RPM></Node-Field>\r\n"
+    "</XCT>\r\n"
+    "----- ----- ----- ----- -----\r\n"
+    "MAPA\r\n" "2\r\n" "OLDA\\OTHER\r\n" "\r\n"
+    "<XCT>\r\n"
+    "  <Node-Tach><Tach_4_8>1</Tach_4_8></Node-Tach>\r\n"
+    "  <Node-Field><F_Table_Name>MAPA-V2</F_Table_Name>"
+    "<Turbo_Start_RPM>2000</Turbo_Start_RPM></Node-Field>\r\n"
+    "</XCT>\r\n"
+    "----- ----- ----- ----- -----\r\n"
+    "MAPB\r\n" "0\r\n" "\r\n"
+    "<XCT>\r\n"
+    "  <Node-Tach><Tach_4_8>1</Tach_4_8></Node-Tach>\r\n"
+    "  <Node-Field><F_Table_Name>MAPB</F_Table_Name>"
+    "<Turbo_Start_RPM>3000</Turbo_Start_RPM></Node-Field>\r\n"
+    "</XCT>\r\n"
+    "----- ----- ----- ----- -----\r\n"
+    "HIDE\r\n" "5\r\n" "\r\n" "HIDDEN\r\n"
+    "<XCT><Node-Field><F_Table_Name>HIDE</F_Table_Name></Node-Field></XCT>\r\n";
+
+/* Run a field-map subcommand on the writable device with a plain map file
+ * holding `text`. args follow the subcommand; the file path comes first. */
+static int run_map_command(const char* text, const char* const* args, size_t n,
+    char* out, size_t out_size)
+{
+    char path[64];
+    if (make_temp_path(path) || write_file(path, text)) return -1;
+    char* argv[12] = { "field-map", (char*)args[0], path, "--fieldmap-key", "none" };
+    int argc = 5;
+    for (size_t i = 1; i < n && argc < 12; i++)
+        argv[argc++] = (char*)args[i];
+    char discard[4096];
+    int rc = capture_cli(cmd_field_map, argc, argv, out ? out : discard,
+                         out ? out_size : sizeof(discard));
+    remove(path);
+    return rc;
+}
+
+/* The settings page after writing a map's name and Turbo_Start_RPM, and
+ * Tach_4_8 when tach >= 0. */
+static void expected_map_page(uint8_t page[VARSET_SIZE], const char* name,
+    double turbo, int tach)
+{
+    const alltrax_var_def* name_var = alltrax_find_var("F_Table_Name");
+    const alltrax_var_def* turbo_var = alltrax_find_var("Turbo_Start_RPM");
+    const alltrax_var_def* tach_var = alltrax_find_var("Tach_4_8");
+    alltrax_encode_string(name_var, name, page + (name_var->address - VARSET_ADDR));
+    alltrax_encode_var(turbo_var, turbo, page + (turbo_var->address - VARSET_ADDR));
+    if (tach >= 0)
+        alltrax_encode_var(tach_var, tach, page + (tach_var->address - VARSET_ADDR));
+}
+
+static int test_field_map_list_marks_current_map_and_upgrade(void)
+{
+    static char out[4096];
+    const char* args[] = { "list" };
+    writable_device_reset();
+    set_page_string("F_Table_Name", "MAPA-V1");
+    ASSERT_EQ(run_map_command(map_file_text, args, 1, out, sizeof(out)), 0);
+    ASSERT_EQ(device.mutations, 0);
+    ASSERT_TRUE(strstr(out, "file version 1.2.3.4, 3 maps") != NULL);
+    ASSERT_TRUE(strstr(out, "* MAPA ") != NULL);
+    ASSERT_TRUE(strstr(out, "  MAPB ") != NULL);
+    ASSERT_TRUE(strstr(out, "version 2  aliases: OLDA, OTHER\n") != NULL);
+    ASSERT_NULL(strstr(out, "HIDE"));
+    ASSERT_TRUE(strstr(out, "Controller map: MAPA-V1\nUpgrade available: MAPA version 2\n") != NULL);
+
+    /* Invalid user settings leave the controller's map unknown. */
+    writable_device_reset();
+    set_page_string("F_Table_Name", "MAPA-V1");
+    device.page[0] = device.page[1] = 0xFF;
+    ASSERT_EQ(run_map_command(map_file_text, args, 1, out, sizeof(out)), 0);
+    ASSERT_NULL(strstr(out, "* MAPA"));
+    ASSERT_TRUE(strstr(out, "Controller map: unknown") != NULL);
+    ASSERT_TRUE(strstr(out, "No upgrade available") != NULL);
+    return 0;
+}
+
+/* A record with a bad version, or too few lines, rejects the whole file. */
+static const char broken_version[] =
+    "----- ----- ----- ----- -----\r\nBROKEN\r\nx\r\n\r\n\r\n<XCT></XCT>\r\n";
+static const char truncated_record[] =
+    "----- ----- ----- ----- -----\r\nBROKEN\r\n1\r\n";
+
+static int test_field_map_file_errors_stop_before_open(void)
+{
+    static char broken[2][sizeof(map_file_text) + sizeof(broken_version)];
+    snprintf(broken[0], sizeof(broken[0]), "%s%s", map_file_text, broken_version);
+    snprintf(broken[1], sizeof(broken[1]), "%s%s", map_file_text, truncated_record);
+    const char* bad_files[] = {
+        broken[0], broken[1],
+        "X01.002.003.004\r\n----- ----- ----- ----- -----\r\nMAPA\r\n1\r\n\r\n\r\n<XCT/>\r\n",
+        "F001.002.003\r\n",
+        "F001.002.003.004\r\n----- ----- ----- ----- -----\r\nHIDE\r\n1\r\n\r\nHIDDEN\r\n<XCT/>\r\n",
+    };
+    const char* list[] = { "list" };
+    for (size_t i = 0; i < sizeof(bad_files) / sizeof(bad_files[0]); i++) {
+        writable_device_reset();
+        ASSERT_EQ(run_map_command(bad_files[i], list, 1, NULL, 0), 1);
+        ASSERT_EQ(open_calls, 0);
+    }
+
+    char missing[] = "/nonexistent/alltrax-fields.txt";
+    char bad_key[] = "0123";
+    char* no_file[] = { "field-map", "list", missing, "--fieldmap-key", "none" };
+    char* key[] = { "field-map", "list", missing, "--fieldmap-key", bad_key };
+    char* usage[] = { "field-map", "install", missing, "--field-map" };
+    ASSERT_EQ(run_writable(cmd_field_map, 5, no_file), 1);
+    ASSERT_EQ(open_calls, 0);
+    ASSERT_EQ(run_writable(cmd_field_map, 5, key), 1);
+    ASSERT_EQ(open_calls, 0);
+    ASSERT_EQ(run_writable(cmd_field_map, 4, usage), 1);
+    ASSERT_EQ(open_calls, 0);
+
+    /* Without "none", a plain file is never read as plain text. */
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    ASSERT_EQ(write_file(path, map_file_text), 0);
+    unsetenv("ALLTRAX_FIELDMAP_KEY");
+    char* auto_key[] = { "field-map", "list", path };
+    int rc = run_writable(cmd_field_map, 3, auto_key);
+    remove(path);
+    ASSERT_EQ(rc, 1);
+    ASSERT_EQ(open_calls, 0);
+    return 0;
+}
+
+static int test_field_map_upgrade_selects_newer_version(void)
+{
+    const struct {
+        const char* current;
+        int rc;
+        const char* name;   /* map written, or NULL for no write */
+    } cases[] = {
+        { "MAPA-V1", 0, "MAPA-V2" },
+        { "OLDA", 0, "MAPA-V2" },      /* alias of version 2 */
+        { "MAPA-V2", 0, NULL },        /* already current */
+        { "MAPB", 0, NULL },           /* version 0 is never an upgrade */
+        { "NOPE", 0, NULL },
+        { "MAPA-Vx", 1, NULL },
+    };
+    const char* args[] = { "upgrade" };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        writable_device_reset();
+        set_page_string("F_Table_Name", cases[i].current);
+        uint8_t expected[VARSET_SIZE];
+        memcpy(expected, device.page, sizeof(expected));
+        if (cases[i].name)
+            expected_map_page(expected, cases[i].name, 2000, -1);
+        device.mutations = 0;
+        ASSERT_EQ(run_map_command(map_file_text, args, 1, NULL, 0), cases[i].rc);
+        ASSERT_EQ(device.erases, cases[i].name ? 1u : 0u);
+        ASSERT_EQ(device.resets, 0);
+        if (!cases[i].name)
+            ASSERT_EQ(device.mutations, 0);
+        ASSERT_MEM_EQ(device.page, expected, sizeof(expected));  /* Tach_4_8 kept */
+    }
+
+    writable_device_reset();
+    set_page_string("F_Table_Name", "MAPA-V1");
+    device.page[0] = device.page[1] = 0xFF;
+    ASSERT_EQ(run_map_command(map_file_text, args, 1, NULL, 0), 1);
+    ASSERT_EQ(device.mutations, 0);
+    return 0;
+}
+
+static int test_field_map_install_writes_named_map_and_pole_count(void)
+{
+    static char out[4096];
+    const char* no_flag[] = { "install", "MAPB" };
+    const char* hidden[] = { "install", "HIDE", "--field-map" };
+    const char* unknown[] = { "install", "NOPE", "--field-map" };
+    const char* const* refused[] = { no_flag, hidden, unknown };
+    for (size_t i = 0; i < 3; i++) {
+        writable_device_reset();
+        ASSERT_EQ(run_map_command(map_file_text, refused[i], i ? 3 : 2, NULL, 0), 1);
+        ASSERT_EQ(open_calls, 0);
+    }
+
+    const struct { const char* name; const char* map; double turbo; } cases[] = {
+        { "MAPB", "MAPB", 3000 },
+        { "MAPA", "MAPA-V2", 2000 },   /* highest version */
+        { "OTHER", "MAPA-V2", 2000 },  /* alias */
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        writable_device_reset();
+        uint8_t expected[VARSET_SIZE];
+        memcpy(expected, device.page, sizeof(expected));
+        expected_map_page(expected, cases[i].map, cases[i].turbo, 1);
+        const char* args[] = { "install", cases[i].name, "--field-map", "--no-wait" };
+        ASSERT_EQ(run_map_command(map_file_text, args, 4, out, sizeof(out)), 0);
+        ASSERT_EQ(device.erases, 1);
+        ASSERT_EQ(device.resets, 1);  /* Tach_4_8 reboots the controller */
+        ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+        ASSERT_TRUE(strstr(out, "Speed sensor pole count (Tach_4_8): 4-pole -> 8-pole") != NULL);
+        ASSERT_TRUE(strstr(out, "must match the installed motor") != NULL);
+    }
+    return 0;
+}
+
+#ifdef ALLTRAX_HAVE_CRYPTO
+static int write_encrypted(const char* path, const char* text, const char* key_text)
+{
+    cli_key key;
+    if (cli_resolve_key("test", "--key", key_text, "ALLTRAX_TEST_UNSET", NULL, &key))
+        return -1;
+    static unsigned char data[8192];
+    int len = 0, total = 0;
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    bool ok = ctx && EVP_EncryptInit_ex(ctx, EVP_des_ede3_cbc(), NULL, key.key, key.iv) &&
+              EVP_EncryptUpdate(ctx, data, &len, (const unsigned char*)text, (int)strlen(text));
+    total = len;
+    ok = ok && EVP_EncryptFinal_ex(ctx, data + total, &len);
+    EVP_CIPHER_CTX_free(ctx);
+    FILE* f = ok ? fopen(path, "wb") : NULL;
+    if (!f) return -1;
+    ok = fwrite(data, 1, (size_t)(total + len), f) == (size_t)(total + len);
+    return fclose(f) == 0 && ok ? 0 : -1;
+}
+
+/* An explicit key wins over ALLTRAX_FIELDMAP_KEY; a wrong key or reading an
+ * encrypted file as plain text fails before the controller is opened. */
+static int test_fieldmap_key_decrypts_map_file(void)
+{
+    static char out[4096];
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    ASSERT_EQ(write_encrypted(path, map_file_text, TEST_KEY_A), 0);
+    char key_a[] = TEST_KEY_A, key_b[] = TEST_KEY_B;
+    char* right[] = { "field-map", "list", path, "--fieldmap-key", key_a };
+    char* wrong[] = { "field-map", "list", path, "--fieldmap-key", key_b };
+    char* plain[] = { "field-map", "list", path, "--fieldmap-key", "none" };
+    char* env[] = { "field-map", "list", path };
+    writable_device_reset();
+    ASSERT_EQ(capture_cli(cmd_field_map, 5, right, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "3 maps") != NULL);
+    ASSERT_EQ(capture_cli(cmd_field_map, 5, wrong, out, sizeof(out)), 1);
+    ASSERT_EQ(open_calls, 0);
+    ASSERT_EQ(capture_cli(cmd_field_map, 5, plain, out, sizeof(out)), 1);
+    ASSERT_EQ(open_calls, 0);
+    setenv("ALLTRAX_FIELDMAP_KEY", TEST_KEY_A, 1);
+    ASSERT_EQ(capture_cli(cmd_field_map, 3, env, out, sizeof(out)), 0);
+    setenv("ALLTRAX_FIELDMAP_KEY", TEST_KEY_B, 1);
+    ASSERT_EQ(capture_cli(cmd_field_map, 5, right, out, sizeof(out)), 0);
+    unsetenv("ALLTRAX_FIELDMAP_KEY");
+
+    /* A plain file given a key gets a hint. */
+    ASSERT_EQ(write_file(path, map_file_text), 0);
+    ASSERT_EQ(capture_cli(cmd_field_map, 5, right, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "use --fieldmap-key none") != NULL);
+    remove(path);
+    return 0;
+}
+#endif
+
 #ifdef ALLTRAX_HAVE_CRYPTO
 static int test_config_key_load_round_trip(void)
 {
@@ -2263,6 +2526,13 @@ int main(void)
     RUN_TEST(test_config_load_skips_field_map_without_flag);
     RUN_TEST(test_config_load_fails_closed_on_bad_values);
     RUN_TEST(test_config_save_writes_only_settings_in_toolkit_nodes);
+    RUN_TEST(test_field_map_list_marks_current_map_and_upgrade);
+    RUN_TEST(test_field_map_file_errors_stop_before_open);
+    RUN_TEST(test_field_map_upgrade_selects_newer_version);
+    RUN_TEST(test_field_map_install_writes_named_map_and_pole_count);
+#ifdef ALLTRAX_HAVE_CRYPTO
+    RUN_TEST(test_fieldmap_key_decrypts_map_file);
+#endif
 #endif
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;

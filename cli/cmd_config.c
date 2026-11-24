@@ -45,34 +45,14 @@ static const cli_key embedded_config_key = {
 static int resolve_config_key(const char* command, const cli_flags* flags,
     cli_key* key)
 {
-#ifdef ALLTRAX_HAVE_CRYPTO
     return cli_resolve_key(command, "--config-key", flags->config_key,
                            "ALLTRAX_CONFIG_KEY", EMBEDDED_CONFIG_KEY, key);
-#else
-    if (flags->config_key && strcmp(flags->config_key, "none") == 0) {
-        memset(key, 0, sizeof(*key));
-        return 0;
-    }
-    fprintf(stderr, "Error: %s: this build supports only plain XML config files "
-            "(built without libcrypto). Use --config-key none.\n", command);
-    return 1;
-#endif
 }
 
 static void print_key_status(FILE* out)
 {
-#ifndef ALLTRAX_HAVE_CRYPTO
-    fprintf(out, "\nEncrypted config files: unavailable (built without libcrypto). "
-            "Use --config-key none.\n");
-#else
-#ifdef ALLTRAX_EMBEDDED_KEYS
-    const char* built_in = "yes";
-#else
-    const char* built_in = "no";
-#endif
-    fprintf(out, "\nBuilt-in config key: %s. ALLTRAX_CONFIG_KEY=<key>:<iv> "
-            "supplies a key for auto.\n", built_in);
-#endif
+    cli_print_key_status(out, "config", "--config-key", "ALLTRAX_CONFIG_KEY",
+                         EMBEDDED_CONFIG_KEY);
 }
 
 #ifdef ALLTRAX_HAVE_CRYPTO
@@ -380,19 +360,13 @@ cleanup:
 /* XML parsing (load)                                                  */
 /* ------------------------------------------------------------------ */
 
+/* X and Y of one curve, collected while parsing */
 typedef struct {
-    const alltrax_var_def* var;
-    double display_value;   /* numeric and bool variables */
-    char text[33];          /* string variables (at most 32 characters) */
-} config_entry;
-
-typedef struct {
-    const alltrax_curve_def* def;
     double x[ALLTRAX_CURVE_POINTS];
     double y[ALLTRAX_CURVE_POINTS];
     bool has_x;
     bool has_y;
-} config_curve_entry;
+} curve_points;
 
 /* Parse comma-separated int16 values into display-unit doubles.
  * Returns true on success (exactly 16 values parsed). */
@@ -433,14 +407,96 @@ static bool parse_config_integer(const char* text, long long* out)
     return true;
 }
 
-static config_entry* parse_xml(const char* xml, size_t xml_len,
-    size_t* out_count, size_t* out_skipped,
-    config_curve_entry* curves_out, size_t* curve_count)
+/* Store one curve axis element; returns false for a bad value. */
+static bool parse_curve_element(const char* name, const char* value,
+    curve_points points[NUM_CURVE_XML], bool* is_curve)
 {
-    xmlDocPtr doc = xmlReadMemory(xml, (int)xml_len, NULL, NULL, 0);
+    for (size_t c = 0; c < NUM_CURVE_XML; c++) {
+        const alltrax_curve_def* def = alltrax_find_curve(curve_xml_map[c].curve_type);
+        bool is_x = strcmp(name, curve_xml_map[c].pointer_name) == 0;
+        if (!def || (!is_x && strcmp(name, curve_xml_map[c].data_name) != 0))
+            continue;
+        *is_curve = true;
+        if (!parse_curve_csv(value, is_x ? def->x_scale : def->y_scale,
+                             is_x ? points[c].x : points[c].y))
+            return false;
+        if (is_x)
+            points[c].has_x = true;
+        else
+            points[c].has_y = true;
+        return true;
+    }
+    *is_curve = false;
+    return true;
+}
+
+/* Add one variable element; returns false for an invalid value. Unknown and
+ * read-only variables are skipped. */
+static bool parse_var_element(const char* name, const char* value,
+    cli_config* out, size_t* cap)
+{
+    const alltrax_var_def* var = alltrax_find_var(name);
+    if (!var) {
+        fprintf(stderr, "  Skipping unknown variable: %s\n", name);
+        out->skipped++;
+        return true;
+    }
+    /* Select restorable fields from a backup that also contains read-only
+     * metadata. The library enforces write permissions. */
+    if (!var->writable)
+        return true;
+
+    if (out->count >= *cap) {
+        size_t new_cap = *cap ? *cap * 2 : 128;
+        cli_config_entry* tmp = realloc(out->entries, new_cap * sizeof(*tmp));
+        if (!tmp) {
+            fprintf(stderr, "Error: out of memory\n");
+            return false;
+        }
+        out->entries = tmp;
+        *cap = new_cap;
+    }
+
+    cli_config_entry* entry = &out->entries[out->count];
+    if (var->type == ALLTRAX_TYPE_STRING) {
+        if (alltrax_validate_var_string(var, value)) {
+            fprintf(stderr, "Error: %s: invalid text (printable ASCII, at most "
+                    "%u characters)\n", name, (unsigned)var->size);
+            return false;
+        }
+        *entry = (cli_config_entry){ .var = var };
+        snprintf(entry->text, sizeof(entry->text), "%s", value);
+        out->count++;
+        return true;
+    }
+
+    long long raw;
+    if (!parse_config_integer(value, &raw) ||
+        (var->type == ALLTRAX_TYPE_BOOL && raw != 0 && raw != 1)) {
+        fprintf(stderr, "Error: %s: bad value \"%s\"\n", name, value);
+        return false;
+    }
+    *entry = (cli_config_entry){
+        .var = var, .number = ((double)raw - var->offset) * var->scale,
+    };
+    out->count++;
+    return true;
+}
+
+void cli_config_free(cli_config* config)
+{
+    free(config->entries);
+    config->entries = NULL;
+    config->count = 0;
+}
+
+int cli_config_parse(const char* xml, size_t len, cli_config* out)
+{
+    memset(out, 0, sizeof(*out));
+    xmlDocPtr doc = xmlReadMemory(xml, (int)len, NULL, NULL, 0);
     if (!doc) {
         fprintf(stderr, "Error: failed to parse config XML\n");
-        return NULL;
+        return 1;
     }
 
     xmlNodePtr root = xmlDocGetRootElement(doc);
@@ -449,156 +505,168 @@ static config_entry* parse_xml(const char* xml, size_t xml_len,
          xmlStrcmp(root->name, BAD_CAST "ALL") != 0)) {
         fprintf(stderr, "Error: config file root element is not <XCT>\n");
         xmlFreeDoc(doc);
-        return NULL;
+        return 1;
     }
 
-    size_t cap = 128;
-    config_entry* entries = calloc(cap, sizeof(config_entry));
-    if (!entries) { xmlFreeDoc(doc); return NULL; }
-
-    size_t count = 0;
-    *out_skipped = 0;
-    *curve_count = 0;
-
-    /* Initialize curve accumulation slots */
-    for (size_t i = 0; i < NUM_CURVE_XML; i++) {
-        curves_out[i].def = alltrax_find_curve(curve_xml_map[i].curve_type);
-        curves_out[i].has_x = false;
-        curves_out[i].has_y = false;
-    }
-
+    curve_points points[NUM_CURVE_XML] = {0};
+    size_t cap = 0;
     for (xmlNodePtr group = xmlFirstElementChild(root);
          group; group = xmlNextElementSibling(group)) {
         for (xmlNodePtr elem = xmlFirstElementChild(group);
              elem; elem = xmlNextElementSibling(elem)) {
-
             const char* name = (const char*)elem->name;
             xmlChar* xval = xmlNodeGetContent(elem);
             if (!xval) continue;
             const char* value = (const char*)xval;
-
-            /* Check if this is a curve element */
-            bool is_curve = false;
-            for (size_t c = 0; c < NUM_CURVE_XML; c++) {
-                if (!curves_out[c].def) continue;
-                const alltrax_curve_def* cdef = curves_out[c].def;
-
-                if (strcmp(name, curve_xml_map[c].pointer_name) == 0) {
-                    if (parse_curve_csv(value, cdef->x_scale,
-                                        curves_out[c].x)) {
-                        curves_out[c].has_x = true;
-                    } else {
-                        fprintf(stderr, "Error: %s: bad curve data\n", name);
-                        xmlFree(xval);
-                        goto invalid_config;
-                    }
-                    is_curve = true;
-                    break;
-                }
-                if (strcmp(name, curve_xml_map[c].data_name) == 0) {
-                    if (parse_curve_csv(value, cdef->y_scale,
-                                        curves_out[c].y)) {
-                        curves_out[c].has_y = true;
-                    } else {
-                        fprintf(stderr, "Error: %s: bad curve data\n", name);
-                        xmlFree(xval);
-                        goto invalid_config;
-                    }
-                    is_curve = true;
-                    break;
-                }
-            }
-
-            if (is_curve) {
-                xmlFree(xval);
-                continue;
-            }
-
-            const alltrax_var_def* var = alltrax_find_var(name);
-            if (!var) {
-                fprintf(stderr, "  Skipping unknown variable: %s\n", name);
-                (*out_skipped)++;
-                xmlFree(xval);
-                continue;
-            }
-            /* Select restorable fields from a backup that also contains
-             * read-only metadata. The library enforces write permissions. */
-            if (!var->writable) {
-                xmlFree(xval);
-                continue;
-            }
-
-            if (count >= cap) {
-                cap *= 2;
-                config_entry* tmp =
-                    realloc(entries, cap * sizeof(config_entry));
-                if (!tmp) { xmlFree(xval); goto invalid_config; }
-                entries = tmp;
-            }
-
-            /* An invalid string fails the load. */
-            if (var->type == ALLTRAX_TYPE_STRING) {
-                if (alltrax_validate_var_string(var, value)) {
-                    fprintf(stderr, "Error: %s: invalid text (printable "
-                            "ASCII, at most %u characters)\n",
-                            name, (unsigned)var->size);
-                    xmlFree(xval);
-                    goto invalid_config;
-                }
-                entries[count] = (config_entry){ .var = var };
-                snprintf(entries[count].text, sizeof(entries[count].text),
-                         "%s", value);
-                count++;
-                xmlFree(xval);
-                continue;
-            }
-
-            /* A bad value fails the whole load */
-            long long raw;
-            if (!parse_config_integer(value, &raw) ||
-                (var->type == ALLTRAX_TYPE_BOOL && raw != 0 && raw != 1)) {
-                fprintf(stderr, "Error: %s: bad value \"%s\"\n", name, value);
-                xmlFree(xval);
-                goto invalid_config;
-            }
+            bool is_curve;
+            bool ok = parse_curve_element(name, value, points, &is_curve);
+            if (!ok)
+                fprintf(stderr, "Error: %s: bad curve data\n", name);
+            else if (!is_curve)
+                ok = parse_var_element(name, value, out, &cap);
             xmlFree(xval);
-
-            entries[count] = (config_entry){
-                .var = var,
-                .display_value = ((double)raw - var->offset) * var->scale,
-            };
-            count++;
+            if (!ok)
+                goto invalid_config;
         }
     }
 
     /* Validate every imported curve before opening or applying any settings. */
     for (size_t c = 0; c < NUM_CURVE_XML; c++) {
-        if (!curves_out[c].has_x && !curves_out[c].has_y)
+        if (!points[c].has_x && !points[c].has_y)
             continue;
-        if (!curves_out[c].has_x || !curves_out[c].has_y) {
+        alltrax_curve_data* data = &out->curves[out->curve_count];
+        data->def = alltrax_find_curve(curve_xml_map[c].curve_type);
+        if (!points[c].has_x || !points[c].has_y) {
             fprintf(stderr, "Error: incomplete %s curve (X and Y required)\n",
-                    curves_out[c].def->name);
+                    data->def->name);
             goto invalid_config;
         }
-        alltrax_curve_data data = { .def = curves_out[c].def };
-        memcpy(data.x, curves_out[c].x, sizeof(data.x));
-        memcpy(data.y, curves_out[c].y, sizeof(data.y));
-        if (alltrax_validate_curve(data.def, &data)) {
-            fprintf(stderr, "Error: invalid %s curve in config\n", data.def->name);
+        memcpy(data->x, points[c].x, sizeof(data->x));
+        memcpy(data->y, points[c].y, sizeof(data->y));
+        if (alltrax_validate_curve(data->def, data)) {
+            fprintf(stderr, "Error: invalid %s curve in config\n", data->def->name);
             goto invalid_config;
         }
-        (*curve_count)++;
+        out->curve_count++;
     }
 
     xmlFreeDoc(doc);
-    *out_count = count;
-    return entries;
+    return 0;
 
 /* Reject the whole import and release its entries and XML document. */
 invalid_config:
-    free(entries);
+    cli_config_free(out);
     xmlFreeDoc(doc);
-    return NULL;
+    return 1;
+}
+
+alltrax_assignment* cli_config_assignments(const cli_config* config,
+    size_t* count)
+{
+    alltrax_assignment* items =
+        calloc(config->count + config->curve_count + 1, sizeof(*items));
+    if (!items) {
+        fprintf(stderr, "Error: out of memory\n");
+        return NULL;
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < config->count; i++) {
+        const cli_config_entry* entry = &config->entries[i];
+        items[n++] = entry->var->type == ALLTRAX_TYPE_STRING
+            ? (alltrax_assignment){ .var = entry->var, .text = entry->text }
+            : (alltrax_assignment){ .var = entry->var, .number = entry->number };
+    }
+    for (size_t c = 0; c < config->curve_count; c++) {
+        items[n++] = (alltrax_assignment){
+            .curve = config->curves[c].def, .curve_data = &config->curves[c],
+        };
+    }
+    *count = n;
+    return items;
+}
+
+int cli_config_write(alltrax_controller* ctrl, alltrax_assignment* items,
+    size_t count, const cli_flags* flags)
+{
+    alltrax_write_report report;
+    alltrax_write_opts write_opts = cli_write_opts(flags, &report);
+    char field_map_name[33];
+    if (cli_add_field_map_name(ctrl, items, &count, field_map_name,
+                               flags->debug_no_goodset))
+        return 1;
+
+    /* Settings, strings, and curves go to the device in one batch: one
+     * CAL/RUN bracket and one settings page cycle. */
+    alltrax_error err = alltrax_write_assignments(ctrl, items, count, &write_opts);
+    if (err) {
+        cli_error(ctrl, err, "writing settings");
+        cli_report_write(ctrl, &report, flags);
+        return 1;
+    }
+    for (size_t i = 0; i < count; i++) {
+        if (items[i].curve)
+            printf("  Wrote curve: %s (%d points)\n",
+                   items[i].curve->name, ALLTRAX_CURVE_POINTS);
+        else
+            printf("  Wrote %s\n", items[i].var->name);
+    }
+    cli_field_map_written(items, count);
+    cli_report_write(ctrl, &report, flags);
+    return 0;
+}
+
+char* cli_read_file(const char* path, const cli_key* key, const char* option,
+    size_t* len)
+{
+    FILE* f = fopen(path, "rb");
+    if (!f) {
+        fprintf(stderr, "Error: cannot open file: %s\n", path);
+        return NULL;
+    }
+
+    fseek(f, 0, SEEK_END);
+    long file_size = ftell(f);
+    fseek(f, 0, SEEK_SET);
+
+    if (file_size <= 0 || file_size > 1024 * 1024) {
+        fprintf(stderr, "Error: invalid file size\n");
+        fclose(f);
+        return NULL;
+    }
+
+    unsigned char* data = malloc((size_t)file_size + 1);
+    if (!data) {
+        fprintf(stderr, "Error: out of memory\n");
+        fclose(f);
+        return NULL;
+    }
+
+    size_t nread = fread(data, 1, (size_t)file_size, f);
+    fclose(f);
+    if (nread != (size_t)file_size) {
+        fprintf(stderr, "Error: short read from %s\n", path);
+        free(data);
+        return NULL;
+    }
+    data[nread] = '\0';
+    *len = nread;
+
+#ifdef ALLTRAX_HAVE_CRYPTO
+    if (key->encrypt) {
+        char* plain = des3_decrypt(key, data, nread, len);
+        bool looks_plain = data[0] == '<' || data[0] == 'F';
+        free(data);
+        if (!plain)
+            fprintf(stderr, "Error: 3DES decryption failed (wrong key or corrupt file)%s%s%s\n",
+                    looks_plain ? "; the file looks unencrypted, so use " : "",
+                    looks_plain ? option : "", looks_plain ? " none" : "");
+        return plain;
+    }
+#else
+    (void)key;
+    (void)option;
+#endif
+    return (char*)data;
 }
 
 #define LOAD_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_CONFIG_KEY | \
@@ -709,103 +777,33 @@ static int do_load(int argc, char** argv)
     cli_key key;
     if (resolve_config_key("config load", &flags, &key)) return 1;
 
-    /* Read file */
-    FILE* f = fopen(filepath, "rb");
-    if (!f) {
-        fprintf(stderr, "Error: cannot open file: %s\n", filepath);
+    size_t xml_len;
+    char* xml = cli_read_file(filepath, &key, "--config-key", &xml_len);
+    if (!xml)
         return 1;
-    }
-
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    if (file_size <= 0 || file_size > 1024 * 1024) {
-        fprintf(stderr, "Error: invalid file size\n");
-        fclose(f);
-        return 1;
-    }
-
-    unsigned char* file_data = malloc((size_t)file_size);
-    if (!file_data) {
-        fprintf(stderr, "Error: out of memory\n");
-        fclose(f);
-        return 1;
-    }
-
-    size_t nread = fread(file_data, 1, (size_t)file_size, f);
-    fclose(f);
-
-    if (nread != (size_t)file_size) {
-        fprintf(stderr, "Error: short read from %s\n", filepath);
-        free(file_data);
-        return 1;
-    }
-
-    /* Decrypt if needed */
-    char* xml = (char*)file_data;
-    size_t xml_len = nread;
-#ifdef ALLTRAX_HAVE_CRYPTO
-    if (key.encrypt) {
-        xml = des3_decrypt(&key, file_data, nread, &xml_len);
-        bool plain = file_data[0] == '<';
-        free(file_data);
-        if (!xml) {
-            fprintf(stderr, "Error: 3DES decryption failed (wrong key or corrupt file)%s\n",
-                    plain ? "; the file looks like plain XML, so use --config-key none" : "");
-            return 1;
-        }
-    }
-#endif
-
-    /* Parse XML into writable variable list + curves */
-    size_t count, skipped, n_curves;
-    config_curve_entry curves[NUM_CURVE_XML];
-    config_entry* entries = parse_xml(xml, xml_len, &count, &skipped,
-                                      curves, &n_curves);
+    cli_config config;
+    int rc = cli_config_parse(xml, xml_len, &config);
     free(xml);
-
-    if (!entries)
+    if (rc)
         return 1;
 
-    if (count == 0 && n_curves == 0) {
+    if (config.count == 0 && config.curve_count == 0) {
         fprintf(stderr, "No writable variables found in config file\n");
-        free(entries);
+        cli_config_free(&config);
         return 1;
     }
 
     printf("Loaded %zu writable variables + %zu curves from %s",
-           count, n_curves, filepath);
-    if (skipped > 0)
-        printf(" (%zu skipped)", skipped);
+           config.count, config.curve_count, filepath);
+    if (config.skipped > 0)
+        printf(" (%zu skipped)", config.skipped);
     printf("\n");
 
-    /* Settings, strings, and curves go to the device in one batch: one
-     * CAL/RUN bracket and one settings page cycle. */
-    alltrax_curve_data curve_data[NUM_CURVE_XML];
-    /* One spare item for the field-map name. */
-    alltrax_assignment* items = calloc(count + n_curves + 1, sizeof(*items));
+    size_t n_items;
+    alltrax_assignment* items = cli_config_assignments(&config, &n_items);
     if (!items) {
-        fprintf(stderr, "Error: out of memory\n");
-        free(entries);
+        cli_config_free(&config);
         return 1;
-    }
-    size_t n_items = 0;
-    for (size_t i = 0; i < count; i++) {
-        const alltrax_var_def* var = entries[i].var;
-        items[n_items++] = var->type == ALLTRAX_TYPE_STRING
-            ? (alltrax_assignment){ .var = var, .text = entries[i].text }
-            : (alltrax_assignment){ .var = var, .number = entries[i].display_value };
-    }
-    for (size_t c = 0; c < NUM_CURVE_XML; c++) {
-        if (!curves[c].has_x || !curves[c].has_y || !curves[c].def)
-            continue;
-        curve_data[c].def = curves[c].def;
-        memcpy(curve_data[c].x, curves[c].x, sizeof(curve_data[c].x));
-        memcpy(curve_data[c].y, curves[c].y, sizeof(curve_data[c].y));
-        items[n_items++] = (alltrax_assignment){
-            .curve = curves[c].def, .curve_data = &curve_data[c],
-        };
     }
 
     if (!flags.field_map) {
@@ -819,58 +817,17 @@ static int do_load(int argc, char** argv)
                    n_items - kept);
         n_items = kept;
     }
-    if (n_items == 0 ||
-        cli_check_field_map(items, n_items, flags.field_map)) {
-        if (n_items == 0)
-            fprintf(stderr, "Error: nothing to write\n");
-        free(items);
-        free(entries);
-        return 1;
-    }
-
-    /* Open device with write access */
     alltrax_controller* ctrl = NULL;
-    alltrax_error err = cli_open(&ctrl, true);
-    if (err) {
-        free(items);
-        free(entries);
-        return 1;
-    }
+    int ret = 1;
+    if (n_items == 0)
+        fprintf(stderr, "Error: nothing to write\n");
+    else if (!cli_check_field_map(items, n_items, flags.field_map) &&
+             !cli_open(&ctrl, true))
+        ret = cli_config_write(ctrl, items, n_items, &flags);
 
-    int ret = 0;
-    alltrax_write_report report;
-    alltrax_write_opts write_opts = cli_write_opts(&flags, &report);
-    char field_map_name[33];
-    err = cli_add_field_map_name(ctrl, items, &n_items, field_map_name,
-                                 flags.debug_no_goodset);
-    if (err) {
-        ret = 1;
-        goto done;
-    }
-
-    err = alltrax_write_assignments(ctrl, items, n_items, &write_opts);
-    if (err) {
-        cli_error(ctrl, err, "writing settings");
-        cli_report_write(ctrl, &report, &flags);
-        ret = 1;
-        goto done;
-    }
-    for (size_t i = 0; i < n_items; i++) {
-        if (items[i].curve)
-            printf("  Wrote curve: %s (%d points)\n",
-                   items[i].curve->name, ALLTRAX_CURVE_POINTS);
-        else
-            printf("  Wrote %s\n", items[i].var->name);
-    }
-    cli_field_map_written(items, n_items);
-
-    cli_report_write(ctrl, &report, &flags);
-
-/* Write/reset failures share cleanup with success; items reference entries. */
-done:
+    if (ctrl) alltrax_close(ctrl);
     free(items);
-    free(entries);
-    alltrax_close(ctrl);
+    cli_config_free(&config);
     return ret;
 }
 
