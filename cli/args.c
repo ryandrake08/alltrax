@@ -16,32 +16,32 @@ static const struct {
     const char* value;  /* value placeholder for options that take one */
     const char* help;
 } options[] = {
-    { "--no-voltage-link", CLI_OPT_NO_VOLTAGE_LINK, NULL,
-      "Skip the KSI/under-voltage/over-voltage relationship check" },
     { "--allow-unvalidated-firmware", CLI_OPT_ALLOW_UNVALIDATED, NULL,
       "Write to firmware V0.001-V5.999 not yet validated for writes" },
+    { "--no-voltage-link", CLI_OPT_NO_VOLTAGE_LINK, NULL,
+      "Skip the KSI/under-voltage/over-voltage relationship check" },
     { "--field-map", CLI_OPT_FIELD_MAP, NULL,
       "Allow writing field-map data (must match the installed motor)" },
-    { "--config-key", CLI_OPT_CONFIG_KEY, "<key>",
-      "auto (default), none for plain XML, or <48 hex>:<16 hex>" },
-    { "--fieldmap-key", CLI_OPT_FIELD_MAP_KEY, "<key>",
-      "auto (default), none for plain text, or <48 hex>:<16 hex>" },
     { "--reset", CLI_OPT_RESET, NULL,
       "Reboot the controller after writing" },
     { "--no-wait", CLI_OPT_NO_WAIT, NULL,
       "Return after sending the reset command" },
+    { "--config-key", CLI_OPT_CONFIG_KEY, "<key>",
+      "auto (default), none for plain XML, or <48 hex>:<16 hex>" },
+    { "--fieldmap-key", CLI_OPT_FIELD_MAP_KEY, "<key>",
+      "auto (default), none for plain text, or <48 hex>:<16 hex>" },
     { "--factory", CLI_OPT_FACTORY, NULL,
       "Read the factory settings page" },
-    { "--keep-throttle", CLI_OPT_KEEP_THROTTLE, NULL,
-      "Preserve the throttle type, name, linearization and ABS calibration" },
-    { "--keep-field-map", CLI_OPT_KEEP_FIELD_MAP, NULL,
-      "Preserve the field-map name, curves and settings" },
-    { "--plot", CLI_OPT_PLOT, NULL,
-      "Show an ASCII plot instead of a table" },
     { "--file", CLI_OPT_FILE, "<f.csv>",
       "Read or write curve points as CSV" },
     { "--preset", CLI_OPT_PRESET, "<name>",
       "Use a built-in preset curve" },
+    { "--plot", CLI_OPT_PLOT, NULL,
+      "Show an ASCII plot instead of a table" },
+    { "--keep-throttle", CLI_OPT_KEEP_THROTTLE, NULL,
+      "Preserve the throttle type, name, linearization and ABS calibration" },
+    { "--keep-field-map", CLI_OPT_KEEP_FIELD_MAP, NULL,
+      "Preserve the field-map name, curves and settings" },
     { "--default-curve", CLI_OPT_DEFAULT_CURVE, NULL,
       "Install the default linearization even when the throttle type is unchanged" },
     { "--no-hpd", CLI_OPT_NO_HPD, NULL,
@@ -52,18 +52,18 @@ static const struct {
       "Append full monitor samples to a CSV file" },
     { "--throttle", CLI_OPT_MONITOR_THROTTLE, NULL,
       "Show the live throttle view at 100 ms" },
+    { "--debug-no-goodset", CLI_OPT_DEBUG_NO_GOODSET, NULL,
+      "Skip GoodSet checks and factory recovery" },
     { "--debug-no-cal", CLI_OPT_DEBUG_NO_CAL, NULL,
       "Skip the CAL/RUN mode bracket" },
     { "--debug-no-verify", CLI_OPT_DEBUG_NO_VERIFY, NULL,
       "Skip FLASH read-back verification" },
-    { "--debug-no-goodset", CLI_OPT_DEBUG_NO_GOODSET, NULL,
-      "Skip GoodSet checks and factory recovery" },
     { "--debug-no-post-write", CLI_OPT_DEBUG_NO_POST_WRITE, NULL,
       "Skip automatic calibration clear, date stamp and reset" },
 };
 #define OPTION_COUNT (sizeof(options) / sizeof(options[0]))
-#define DEBUG_OPTIONS (CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | \
-                       CLI_OPT_DEBUG_NO_GOODSET | CLI_OPT_DEBUG_NO_POST_WRITE)
+#define DEBUG_OPTIONS (CLI_OPT_DEBUG_NO_GOODSET | CLI_OPT_DEBUG_NO_CAL | \
+                       CLI_OPT_DEBUG_NO_VERIFY | CLI_OPT_DEBUG_NO_POST_WRITE)
 
 static cli_option_mask option_bit(const char* arg)
 {
@@ -165,10 +165,10 @@ int cli_parse_args(int argc, char** argv, const char* command,
             return -1;
         }
 
-        const char** value = bit == CLI_OPT_FILE ? &flags->file
-                           : bit == CLI_OPT_PRESET ? &flags->preset
-                           : bit == CLI_OPT_CONFIG_KEY ? &flags->config_key
+        const char** value = bit == CLI_OPT_CONFIG_KEY ? &flags->config_key
                            : bit == CLI_OPT_FIELD_MAP_KEY ? &flags->fieldmap_key
+                           : bit == CLI_OPT_FILE ? &flags->file
+                           : bit == CLI_OPT_PRESET ? &flags->preset
                            : bit == CLI_OPT_MONITOR_RATE ? &flags->monitor_rate
                            : bit == CLI_OPT_MONITOR_LOG ? &flags->monitor_log
                            : NULL;
@@ -188,21 +188,21 @@ int cli_parse_args(int argc, char** argv, const char* command,
         }
 
         switch (bit) {
-        case CLI_OPT_NO_VOLTAGE_LINK:   flags->no_voltage_link = true; break;
         case CLI_OPT_ALLOW_UNVALIDATED: flags->allow_unvalidated_firmware = true; break;
+        case CLI_OPT_NO_VOLTAGE_LINK:   flags->no_voltage_link = true; break;
         case CLI_OPT_FIELD_MAP:         flags->field_map = true; break;
         case CLI_OPT_RESET:             flags->reset = true; break;
         case CLI_OPT_NO_WAIT:           flags->no_wait = true; break;
         case CLI_OPT_FACTORY:           flags->factory = true; break;
+        case CLI_OPT_PLOT:              flags->plot = true; break;
         case CLI_OPT_KEEP_THROTTLE:     flags->keep_throttle = true; break;
         case CLI_OPT_KEEP_FIELD_MAP:    flags->keep_field_map = true; break;
         case CLI_OPT_DEFAULT_CURVE:     flags->default_curve = true; break;
         case CLI_OPT_NO_HPD:            flags->no_hpd = true; break;
         case CLI_OPT_MONITOR_THROTTLE:  flags->monitor_throttle = true; break;
-        case CLI_OPT_PLOT:              flags->plot = true; break;
+        case CLI_OPT_DEBUG_NO_GOODSET:  flags->debug_no_goodset = true; break;
         case CLI_OPT_DEBUG_NO_CAL:      flags->debug_no_cal = true; break;
         case CLI_OPT_DEBUG_NO_VERIFY:   flags->debug_no_verify = true; break;
-        case CLI_OPT_DEBUG_NO_GOODSET:  flags->debug_no_goodset = true; break;
         case CLI_OPT_DEBUG_NO_POST_WRITE: flags->debug_no_post_write = true; break;
         default: break;
         }

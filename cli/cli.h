@@ -21,34 +21,43 @@ extern bool cli_ignore_fw_bounds;
 typedef uint64_t cli_option_mask;
 
 /* Bits 0–31 are reserved for user options. */
-#define CLI_OPT_NO_VOLTAGE_LINK     (UINT64_C(1) << 0)
-#define CLI_OPT_ALLOW_UNVALIDATED   (UINT64_C(1) << 1)
+/* Writes: firmware policy, validation, and field-map confirmation */
+#define CLI_OPT_ALLOW_UNVALIDATED   (UINT64_C(1) << 0)
+#define CLI_OPT_NO_VOLTAGE_LINK     (UINT64_C(1) << 1)
 #define CLI_OPT_FIELD_MAP           (UINT64_C(1) << 2)
-#define CLI_OPT_CONFIG_KEY          (UINT64_C(1) << 3)  /* takes a value */
-#define CLI_OPT_RESET               (UINT64_C(1) << 4)
-#define CLI_OPT_PLOT                (UINT64_C(1) << 5)
-#define CLI_OPT_FILE                (UINT64_C(1) << 6)  /* takes a value */
-#define CLI_OPT_PRESET              (UINT64_C(1) << 7)  /* takes a value */
-#define CLI_OPT_NO_WAIT             (UINT64_C(1) << 8)
-#define CLI_OPT_FACTORY             (UINT64_C(1) << 9)
-#define CLI_OPT_KEEP_THROTTLE       (UINT64_C(1) << 10)
-#define CLI_OPT_KEEP_FIELD_MAP      (UINT64_C(1) << 11)
-#define CLI_OPT_DEFAULT_CURVE       (UINT64_C(1) << 12)
-#define CLI_OPT_NO_HPD              (UINT64_C(1) << 13)
-#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 14) /* takes a value */
-#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 15) /* takes a value */
-#define CLI_OPT_MONITOR_THROTTLE    (UINT64_C(1) << 16)
-#define CLI_OPT_FIELD_MAP_KEY       (UINT64_C(1) << 17) /* takes a value */
+/* Reboot after a write or reset command */
+#define CLI_OPT_RESET               (UINT64_C(1) << 3)
+#define CLI_OPT_NO_WAIT             (UINT64_C(1) << 4)
+/* File encryption keys */
+#define CLI_OPT_CONFIG_KEY          (UINT64_C(1) << 5)  /* takes a value */
+#define CLI_OPT_FIELD_MAP_KEY       (UINT64_C(1) << 6)  /* takes a value */
+/* get */
+#define CLI_OPT_FACTORY             (UINT64_C(1) << 7)
+/* curve */
+#define CLI_OPT_FILE                (UINT64_C(1) << 8)  /* takes a value */
+#define CLI_OPT_PRESET              (UINT64_C(1) << 9)  /* takes a value */
+#define CLI_OPT_PLOT                (UINT64_C(1) << 10)
+/* restore-defaults */
+#define CLI_OPT_KEEP_THROTTLE       (UINT64_C(1) << 11)
+#define CLI_OPT_KEEP_FIELD_MAP      (UINT64_C(1) << 12)
+/* throttle set */
+#define CLI_OPT_DEFAULT_CURVE       (UINT64_C(1) << 13)
+#define CLI_OPT_NO_HPD              (UINT64_C(1) << 14)
+/* monitor */
+#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 15) /* takes a value */
+#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 16) /* takes a value */
+#define CLI_OPT_MONITOR_THROTTLE    (UINT64_C(1) << 17)
 
-/* Bits 32–63 are reserved for debug and development bypasses. */
-#define CLI_OPT_DEBUG_NO_CAL        (UINT64_C(1) << 32)
-#define CLI_OPT_DEBUG_NO_VERIFY     (UINT64_C(1) << 33)
-#define CLI_OPT_DEBUG_NO_GOODSET    (UINT64_C(1) << 34)
+/* Bits 32–63 are reserved for debug and development bypasses, in write
+ * sequence order. */
+#define CLI_OPT_DEBUG_NO_GOODSET    (UINT64_C(1) << 32)
+#define CLI_OPT_DEBUG_NO_CAL        (UINT64_C(1) << 33)
+#define CLI_OPT_DEBUG_NO_VERIFY     (UINT64_C(1) << 34)
 #define CLI_OPT_DEBUG_NO_POST_WRITE (UINT64_C(1) << 35)
 
 /* Options accepted by every command that writes settings */
 #define CLI_OPTS_WRITE (CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_RESET | CLI_OPT_NO_WAIT | \
-    CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | CLI_OPT_DEBUG_NO_GOODSET | \
+    CLI_OPT_DEBUG_NO_GOODSET | CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | \
     CLI_OPT_DEBUG_NO_POST_WRITE)
 
 /* Options parsed from argv */
