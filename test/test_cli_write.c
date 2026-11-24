@@ -10,7 +10,7 @@
 #include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#ifdef TEST_CONFIG
+#ifdef ALLTRAX_HAVE_CRYPTO
 #include <openssl/evp.h>
 #endif
 
@@ -391,7 +391,7 @@ static int run_curve_file(const char* contents, bool config)
     if (!wrote || closed) { remove(path); return -1; }
     int rc;
     if (config) {
-#ifdef TEST_CONFIG
+#ifdef ALLTRAX_HAVE_XML
         char* argv[] = { "config", "load", "--config-key", "none", path };
         rc = cmd_config(5, argv);
 #else
@@ -444,7 +444,7 @@ static int test_curve_presets_reach_open(void)
     return 0;
 }
 
-#ifdef TEST_CONFIG
+#ifdef ALLTRAX_HAVE_XML
 static const char zeros[] = "0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0";
 
 static int test_config_curves_rejected_before_any_settings_write(void)
@@ -604,7 +604,7 @@ static int test_bad_command_options_rejected_before_open(void)
     ASSERT_EQ(cmd_reset(2, reset_bogus), 1);
     ASSERT_EQ(cmd_write(3, write_bogus), 1);
     ASSERT_EQ(open_calls, 0);
-#ifdef TEST_CONFIG
+#ifdef ALLTRAX_HAVE_XML
     char* save_extra[] = { "config", "save", "out.xml", "extra" };
     char* load_bogus[] = { "config", "load", "in.xml", "--plot" };
     ASSERT_EQ(cmd_config(4, save_extra), 1);
@@ -660,7 +660,7 @@ static int test_fw_flag_reaches_write_options_in_any_position(void)
     return 0;
 }
 
-#ifdef TEST_CONFIG
+#ifdef ALLTRAX_HAVE_XML
 /* Keys used only by these tests. */
 #define TEST_KEY_A "0123456789abcdef0123456789ABCDEF0123456789abcdef:0011223344556677"
 #define TEST_KEY_B "fedcba9876543210fedcba9876543210fedcba9876543210:8899aabbccddeeff"
@@ -828,6 +828,7 @@ static int test_config_save_on_unreadable_firmware_preserves_destination(void)
     return 0;
 }
 
+#ifdef ALLTRAX_HAVE_CRYPTO
 static int test_config_save_encrypts_before_writing(void)
 {
     char path[64];
@@ -959,6 +960,35 @@ static int test_config_key_rejects_bad_values_before_open(void)
     return 0;
 }
 
+#else
+/* Without libcrypto, config files are plain XML and the key option must say so. */
+static int test_config_requires_plain_xml_without_crypto(void)
+{
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    remove(path);
+    memset(&device, 0, sizeof(device));
+    setenv("ALLTRAX_CONFIG_KEY", TEST_KEY_B, 1);
+    const char* refused[] = { NULL, "auto", TEST_KEY_A };
+    for (size_t i = 0; i < sizeof(refused) / sizeof(refused[0]); i++) {
+        ASSERT_EQ(run_config_save_as(path, 5005, refused[i]), 1);
+        ASSERT_EQ(open_calls, 0);
+        ASSERT_EQ(access(path, F_OK), -1);
+    }
+    unsetenv("ALLTRAX_CONFIG_KEY");
+    ASSERT_EQ(run_config_save_as(path, 5005, "none"), 0);
+    char* plain = read_file(path);
+    ASSERT_TRUE(plain != NULL && strstr(plain, "<XCT") != NULL);
+    free(plain);
+    char* load[] = { "config", "load", path };
+    open_calls = 0;
+    ASSERT_EQ(cmd_config(3, load), 1);
+    ASSERT_EQ(open_calls, 0);
+    remove(path);
+    return 0;
+}
+#endif
+
 /* Run the save with a file size limit (bytes). */
 static int run_config_save_size_limited(const char* path, const char* key,
     rlim_t limit)
@@ -979,7 +1009,12 @@ static int run_config_save_size_limited(const char* path, const char* key,
  * file lets fwrite() succeed and fails only the final flush in fclose(). */
 static int test_config_save_write_failure_removes_partial_file(void)
 {
-    const char* keys[] = { "none", TEST_KEY_A };
+    const char* keys[] = {
+        "none",
+#ifdef ALLTRAX_HAVE_CRYPTO
+        TEST_KEY_A,
+#endif
+    };
     for (size_t k = 0; k < sizeof(keys) / sizeof(keys[0]); k++) {
         char path[64];
         ASSERT_EQ(make_temp_path(path), 0);
@@ -1066,7 +1101,7 @@ static int run_writable(int (*cmd)(int, char**), int argc, char** argv)
     return rc;
 }
 
-#ifdef TEST_CONFIG
+#ifdef ALLTRAX_HAVE_XML
 static void set_page_string(const char* name, const char* text)
 {
     const alltrax_var_def* var = alltrax_find_var(name);
@@ -2009,7 +2044,8 @@ static int test_field_map_recovery_uses_factory_name(void)
     return 0;
 }
 
-#ifdef TEST_CONFIG
+#ifdef ALLTRAX_HAVE_XML
+#ifdef ALLTRAX_HAVE_CRYPTO
 static int test_config_key_load_round_trip(void)
 {
     char out[512];
@@ -2036,6 +2072,7 @@ static int test_config_key_load_round_trip(void)
     remove(path);
     return 0;
 }
+#endif
 
 /* Load a plain XML file into the writable device. */
 static int run_config_load(const char* xml, bool field_map)
@@ -2176,7 +2213,7 @@ int main(void)
     RUN_TEST(test_write_options_map_to_library_options);
     RUN_TEST(test_bad_command_options_rejected_before_open);
     RUN_TEST(test_fw_flag_reaches_write_options_in_any_position);
-#ifdef TEST_CONFIG
+#ifdef ALLTRAX_HAVE_XML
     RUN_TEST(test_config_curves_rejected_before_any_settings_write);
     RUN_TEST(test_valid_curve_config_reaches_open);
     RUN_TEST(test_invalid_throttle_config_rejected_before_transport);
@@ -2184,10 +2221,14 @@ int main(void)
     RUN_TEST(test_config_save_any_read_failure_preserves_destination);
     RUN_TEST(test_config_save_rejects_invalid_settings);
     RUN_TEST(test_config_save_on_unreadable_firmware_preserves_destination);
+#ifdef ALLTRAX_HAVE_CRYPTO
     RUN_TEST(test_config_save_encrypts_before_writing);
     RUN_TEST(test_config_key_precedence);
     RUN_TEST(test_config_key_rejects_bad_values_before_open);
     RUN_TEST(test_config_key_load_round_trip);
+#else
+    RUN_TEST(test_config_requires_plain_xml_without_crypto);
+#endif
     RUN_TEST(test_config_save_write_failure_removes_partial_file);
     RUN_TEST(test_config_save_write_failure_keeps_device_paths);
     RUN_TEST(test_config_round_trip_restores_strings_in_one_erase);

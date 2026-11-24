@@ -35,43 +35,61 @@ endif
 
 UNAME := $(shell uname)
 
+# hidapi is required: every library operation goes through it.
 ifeq ($(UNAME),Linux)
-  HIDAPI_CFLAGS := $(shell pkg-config --cflags hidapi-hidraw)
-  HIDAPI_LIBS   := $(shell pkg-config --libs hidapi-hidraw)
+  HIDAPI_PKG := hidapi-hidraw
 else
-  HIDAPI_CFLAGS := $(shell pkg-config --cflags hidapi)
-  HIDAPI_LIBS   := $(shell pkg-config --libs hidapi)
+  HIDAPI_PKG := hidapi
 endif
+ifneq ($(MAKECMDGOALS),clean)
+  ifneq ($(shell pkg-config --exists $(HIDAPI_PKG) 2>/dev/null && echo yes),yes)
+    $(error pkg-config cannot find $(HIDAPI_PKG). Install pkg-config and libhidapi-dev (Debian/Ubuntu) or hidapi (Homebrew/MacPorts))
+  endif
+endif
+HIDAPI_CFLAGS := $(shell pkg-config --cflags $(HIDAPI_PKG) 2>/dev/null)
+HIDAPI_LIBS   := $(shell pkg-config --libs $(HIDAPI_PKG) 2>/dev/null)
 
-# CLI requires libcrypto + libxml2; library and tests do not
-HAS_CRYPTO := $(shell pkg-config --exists libcrypto 2>/dev/null && echo yes)
+# Optional libraries for config files. libxml2 enables `config save` and
+# `config load`; libcrypto adds encrypted, Toolkit-compatible files. Without
+# libcrypto, config files are plain XML only.
 HAS_XML    := $(shell pkg-config --exists libxml-2.0 2>/dev/null && echo yes)
+HAS_CRYPTO := $(shell pkg-config --exists libcrypto 2>/dev/null && echo yes)
 
-ifeq ($(HAS_CRYPTO)$(HAS_XML),yesyes)
-  CRYPTO_CFLAGS := $(shell pkg-config --cflags libcrypto)
-  CRYPTO_LIBS   := $(shell pkg-config --libs libcrypto)
-  XML_CFLAGS    := $(shell pkg-config --cflags libxml-2.0)
-  XML_LIBS      := $(shell pkg-config --libs libxml-2.0)
-  BUILD_CLI     := yes
+ifeq ($(HAS_XML),yes)
+  XML_CFLAGS := $(shell pkg-config --cflags libxml-2.0)
+  XML_LIBS   := $(shell pkg-config --libs libxml-2.0)
+  CPPFLAGS   += -DALLTRAX_HAVE_XML
+  ifeq ($(HAS_CRYPTO),yes)
+    CRYPTO_CFLAGS := $(shell pkg-config --cflags libcrypto)
+    CRYPTO_LIBS   := $(shell pkg-config --libs libcrypto)
+    CPPFLAGS      += -DALLTRAX_HAVE_CRYPTO
+  else
+    $(info Note: libcrypto not found (OpenSSL development files, e.g. libssl-dev) — config files are plain XML only)
+  endif
 else
-  $(info Note: libcrypto or libxml2 not found — building library and tests only (CLI skipped))
-  BUILD_CLI     :=
+  HAS_CRYPTO :=
+  $(info Note: libxml2 not found (e.g. libxml2-dev) — building without config save/load)
 endif
 
-# Built-in keys
+# Built-in keys, used only for encrypted config files
 EMBEDDED_KEYS ?= 1
 ifeq ($(EMBEDDED_KEYS),1)
-  KEY_CPPFLAGS := -DALLTRAX_EMBEDDED_KEYS
-  CPPFLAGS += $(KEY_CPPFLAGS)
   BUILD := build/$(VARIANT)
+  ifeq ($(HAS_CRYPTO),yes)
+    KEY_CPPFLAGS := -DALLTRAX_EMBEDDED_KEYS
+    CPPFLAGS += $(KEY_CPPFLAGS)
+  endif
 else
   BUILD := build/$(VARIANT)-nokeys
 endif
 
+FLAGS_FILE := $(BUILD)/flags
+FLAGS_TEXT := $(CC) $(CFLAGS) $(CPPFLAGS) $(HIDAPI_CFLAGS) $(CRYPTO_CFLAGS) $(XML_CFLAGS) $(LDFLAGS) $(XML_LIBS) $(CRYPTO_LIBS)
+
 # --- Sources ---
 
 LIB_SRC  := src/protocol.c src/transport.c src/controller.c src/variables.c
-CLI_SRC  := cli/main.c cli/args.c cli/current.c cli/field_map.c cli/cmd_info.c cli/cmd_devices.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_monitor.c cli/cmd_errors.c cli/cmd_config.c cli/cmd_curve.c cli/cmd_throttle.c
+CLI_SRC  := cli/main.c cli/args.c cli/current.c cli/field_map.c cli/cmd_info.c cli/cmd_devices.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_monitor.c cli/cmd_errors.c cli/cmd_curve.c cli/cmd_throttle.c $(if $(HAS_XML),cli/cmd_config.c)
 TEST_SRC := test/test_main.c test/test_protocol.c test/test_variables.c test/test_curves.c
 
 LIB_OBJ  := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(LIB_SRC)))
@@ -84,19 +102,14 @@ TEST_BIN := $(BUILD)/test_alltrax
 CONTROLLER_TEST_BIN := $(BUILD)/test_controller
 CLI_WRITE_TEST_BIN := $(BUILD)/test_cli_write
 TRANSPORT_TEST_BIN := $(BUILD)/test_transport
-NOKEYS_TEST_BIN := $(if $(filter yes1,$(BUILD_CLI)$(EMBEDDED_KEYS)),$(BUILD)/test_cli_write_nokeys)
+NOKEYS_TEST_BIN := $(if $(KEY_CPPFLAGS),$(BUILD)/test_cli_write_nokeys)
 
 # --- Targets ---
 
 COMPDB  := $(BUILD)/compile_commands.json
 
-ifeq ($(BUILD_CLI),yes)
-  ALL_SRC := $(LIB_SRC) $(CLI_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c
-  all: $(CLI) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(NOKEYS_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
-else
-  ALL_SRC := $(LIB_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c cli/args.c cli/current.c cli/field_map.c cli/cmd_get.c cli/cmd_write.c cli/cmd_curve.c cli/cmd_throttle.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_devices.c cli/cmd_monitor.c
-  all: $(LIB) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
-endif
+ALL_SRC := $(LIB_SRC) $(CLI_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c
+all: $(CLI) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(NOKEYS_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
 
 $(LIB): $(LIB_OBJ)
 	$(AR) rcs $@ $^
@@ -112,24 +125,19 @@ $(CONTROLLER_TEST_BIN): $(BUILD)/test_controller.o $(filter-out $(BUILD)/transpo
 	$(CC) $(LDFLAGS) -o $@ $^ -lm
 
 # CLI preflight tests use real argument parsing and controller validation with
-# a fake transport/open.
-# Include config input coverage when its optional dependencies are available.
-ifeq ($(BUILD_CLI),yes)
-  CLI_TEST_CONFIG_OBJ := $(BUILD)/cmd_config.o
-  CLI_TEST_CONFIG_LIBS := $(CRYPTO_LIBS) $(XML_LIBS)
-  $(BUILD)/test_cli_write.o: CPPFLAGS += -DTEST_CONFIG=1
-endif
+# a fake transport/open. Config coverage follows the optional libraries.
+CLI_TEST_CONFIG_OBJ := $(if $(HAS_XML),$(BUILD)/cmd_config.o)
+CLI_TEST_CONFIG_LIBS := $(CRYPTO_LIBS) $(XML_LIBS)
 CLI_WRITE_TEST_OBJ := $(BUILD)/args.o $(BUILD)/current.o $(BUILD)/field_map.o $(BUILD)/cmd_get.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(BUILD)/cmd_throttle.o $(BUILD)/cmd_monitor.o $(BUILD)/cmd_reset.o $(BUILD)/cmd_restore_defaults.o $(BUILD)/cmd_fan_test.o $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
 $(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(CLI_TEST_CONFIG_OBJ) $(CLI_WRITE_TEST_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(CLI_TEST_CONFIG_LIBS) -lm
 
 # A keyed build also tests config handling as built without the keys.
-ifeq ($(BUILD_CLI)$(EMBEDDED_KEYS),yes1)
+ifneq ($(NOKEYS_TEST_BIN),)
 $(NOKEYS_TEST_BIN): $(BUILD)/test_cli_write_nokeys.o $(BUILD)/cmd_config_nokeys.o $(CLI_WRITE_TEST_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(CLI_TEST_CONFIG_LIBS) -lm
 
-$(BUILD)/test_cli_write_nokeys.o: CPPFLAGS += -DTEST_CONFIG=1
-$(BUILD)/%_nokeys.o: %.c | $(BUILD)
+$(BUILD)/%_nokeys.o: %.c $(FLAGS_FILE) | $(BUILD)
 	$(CC) $(CFLAGS) $(filter-out $(KEY_CPPFLAGS),$(CPPFLAGS)) $(CRYPTO_CFLAGS) $(XML_CFLAGS) -MMD -MP -c -o $@ $<
 endif
 
@@ -151,11 +159,18 @@ clean:
 
 VPATH := src cli test
 
-$(BUILD)/%.o: %.c | $(BUILD)
+$(BUILD)/%.o: %.c $(FLAGS_FILE) | $(BUILD)
 	$(CC) $(CFLAGS) $(CPPFLAGS) $(HIDAPI_CFLAGS) $(CRYPTO_CFLAGS) $(XML_CFLAGS) -MMD -MP -c -o $@ $<
 
 $(BUILD):
 	mkdir -p $@
+
+# Objects depend on this file, which changes only when the compiler, flags or
+# detected libraries change, so installing a library rebuilds what uses it.
+$(FLAGS_FILE): FORCE | $(BUILD)
+	@printf '%s\n' '$(FLAGS_TEXT)' | cmp -s - $@ || printf '%s\n' '$(FLAGS_TEXT)' > $@
+
+FORCE:
 
 -include $(wildcard $(BUILD)/*.d)
 
@@ -175,4 +190,4 @@ $(COMPDB): Makefile | $(BUILD)
 	done
 	@printf ']\n' >> $@
 
-.PHONY: all test clean
+.PHONY: all test clean FORCE

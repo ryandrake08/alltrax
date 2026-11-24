@@ -1,9 +1,9 @@
 /*
  * cmd_config.c — alltrax config save/load: Backup and restore settings
  *
- * Reads/writes encrypted XML config files compatible with the Windows
- * Alltrax Toolkit. Uses 3DES-CBC encryption via OpenSSL libcrypto
- * and libxml2 for XML generation/parsing.
+ * Reads/writes XML config files compatible with the Windows Alltrax
+ * Toolkit, using libxml2. With OpenSSL libcrypto (ALLTRAX_HAVE_CRYPTO), files
+ * can be 3DES-CBC encrypted; without it, only plain XML files are supported.
  */
 
 #define _POSIX_C_SOURCE 200112L
@@ -14,7 +14,9 @@
 #include <inttypes.h>
 #include <errno.h>
 #include <sys/stat.h>
+#ifdef ALLTRAX_HAVE_CRYPTO
 #include <openssl/evp.h>
+#endif
 #include <libxml/parser.h>
 #include <libxml/tree.h>
 #include "cli.h"
@@ -43,12 +45,26 @@ static const cli_key embedded_config_key = {
 static int resolve_config_key(const char* command, const cli_flags* flags,
     cli_key* key)
 {
+#ifdef ALLTRAX_HAVE_CRYPTO
     return cli_resolve_key(command, "--config-key", flags->config_key,
                            "ALLTRAX_CONFIG_KEY", EMBEDDED_CONFIG_KEY, key);
+#else
+    if (flags->config_key && strcmp(flags->config_key, "none") == 0) {
+        memset(key, 0, sizeof(*key));
+        return 0;
+    }
+    fprintf(stderr, "Error: %s: this build supports only plain XML config files "
+            "(built without libcrypto). Use --config-key none.\n", command);
+    return 1;
+#endif
 }
 
 static void print_key_status(FILE* out)
 {
+#ifndef ALLTRAX_HAVE_CRYPTO
+    fprintf(out, "\nEncrypted config files: unavailable (built without libcrypto). "
+            "Use --config-key none.\n");
+#else
 #ifdef ALLTRAX_EMBEDDED_KEYS
     const char* built_in = "yes";
 #else
@@ -56,7 +72,10 @@ static void print_key_status(FILE* out)
 #endif
     fprintf(out, "\nBuilt-in config key: %s. ALLTRAX_CONFIG_KEY=<key>:<iv> "
             "supplies a key for auto.\n", built_in);
+#endif
 }
+
+#ifdef ALLTRAX_HAVE_CRYPTO
 
 /* ------------------------------------------------------------------ */
 /* 3DES-CBC encrypt / decrypt                                          */
@@ -126,6 +145,7 @@ fail:
     free(out);
     return NULL;
 }
+#endif /* ALLTRAX_HAVE_CRYPTO */
 
 /* ------------------------------------------------------------------ */
 /* Config save: groups to include                                     */
@@ -621,6 +641,7 @@ static int do_save(int argc, char** argv)
     const void* data = xml;
     size_t data_len = strlen(xml);
     unsigned char* cipher = NULL;
+#ifdef ALLTRAX_HAVE_CRYPTO
     if (key.encrypt) {
         cipher = des3_encrypt(&key, xml, data_len, &data_len);
         if (!cipher) {
@@ -630,6 +651,7 @@ static int do_save(int argc, char** argv)
         }
         data = cipher;
     }
+#endif
 
     FILE* f = fopen(filepath, "wb");
     if (!f) {
@@ -721,13 +743,10 @@ static int do_load(int argc, char** argv)
     }
 
     /* Decrypt if needed */
-    size_t xml_len;
-    char* xml;
-
-    if (!key.encrypt) {
-        xml = (char*)file_data;
-        xml_len = nread;
-    } else {
+    char* xml = (char*)file_data;
+    size_t xml_len = nread;
+#ifdef ALLTRAX_HAVE_CRYPTO
+    if (key.encrypt) {
         xml = des3_decrypt(&key, file_data, nread, &xml_len);
         bool plain = file_data[0] == '<';
         free(file_data);
@@ -737,6 +756,7 @@ static int do_load(int argc, char** argv)
             return 1;
         }
     }
+#endif
 
     /* Parse XML into writable variable list + curves */
     size_t count, skipped, n_curves;

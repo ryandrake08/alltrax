@@ -462,25 +462,35 @@ The write commands are `write`, `config load`, `curve set`, and `curve reset`.
 Required:
 
 - C11 compiler (gcc or clang)
-- GNU Make
-- [hidapi](https://github.com/libusb/hidapi) — USB HID communication
+- GNU Make and pkg-config
+- [hidapi](https://github.com/libusb/hidapi) — USB HID communication. `make`
+  stops with an error naming the package if pkg-config cannot find it.
 
-Optional (needed for the CLI, not the library):
+Optional (used only by `config save` and `config load`):
 
-- [OpenSSL](https://www.openssl.org/) libcrypto — 3DES encryption for config files
 - [libxml2](https://gitlab.gnome.org/GNOME/libxml2) — XML parsing and generation
+- [OpenSSL](https://www.openssl.org/) libcrypto — 3DES encryption for
+  Toolkit-compatible config files
 
-If OpenSSL or libxml2 are not found, `make` will build the library and tests
-but skip the CLI binary. A note is printed during the build.
+`make` always builds the library, tests, and CLI, and prints a note for each
+missing optional library:
+
+- Without libxml2, the `config` command reports that it is unavailable.
+- Without libcrypto, `config save` and `config load` handle plain XML only and
+  require `--config-key none`; encrypted files and the built-in key are not
+  available.
+
+Installing a missing library and running `make` again rebuilds the affected
+files; `make clean` is not needed.
 
 **Linux (Debian/Ubuntu):**
 
 ```sh
-# Full build (library + CLI)
-sudo apt install build-essential libhidapi-dev libssl-dev libxml2-dev
+# All features
+sudo apt install build-essential pkg-config libhidapi-dev libssl-dev libxml2-dev
 
-# Library only
-sudo apt install build-essential libhidapi-dev
+# Without config files
+sudo apt install build-essential pkg-config libhidapi-dev
 ```
 
 **macOS (MacPorts):**

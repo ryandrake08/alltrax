@@ -32,6 +32,12 @@ void cli_error(alltrax_controller* ctrl, alltrax_error err, const char* action)
     }
 }
 
+#ifdef ALLTRAX_HAVE_XML
+#define CONFIG_USAGE "  config            Save/load config files\n"
+#else
+#define CONFIG_USAGE "  config            Save/load config files (unavailable: built without libxml2)\n"
+#endif
+
 static void print_usage(void)
 {
     fprintf(stderr,
@@ -54,7 +60,7 @@ static void print_usage(void)
         "  fan-test          Start a timed fan test (keyswitch must be on)\n"
         "  monitor           Live polling (Ctrl+C to stop)\n"
         "  errors            Error flags and history\n"
-        "  config            Save/load config files\n"
+        CONFIG_USAGE
         "  curve             Read/write curve tables\n"
         "  throttle          List or select a throttle\n"
     );
@@ -121,8 +127,14 @@ int main(int argc, char** argv)
         rc = cmd_monitor(sub_argc, sub_argv);
     else if (strcmp(cmd, "errors") == 0)
         rc = cmd_errors(sub_argc, sub_argv);
-    else if (strcmp(cmd, "config") == 0)
+    else if (strcmp(cmd, "config") == 0) {
+#ifdef ALLTRAX_HAVE_XML
         rc = cmd_config(sub_argc, sub_argv);
+#else
+        fprintf(stderr, "Error: config is not available: this build lacks libxml2\n");
+        rc = 1;
+#endif
+    }
     else if (strcmp(cmd, "curve") == 0)
         rc = cmd_curve(sub_argc, sub_argv);
     else if (strcmp(cmd, "throttle") == 0)
