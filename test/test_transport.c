@@ -700,7 +700,7 @@ static int test_cli_devices_prints_supported_path_model_and_serial(void)
     add_device("/dev/first", ALLTRAX_VID, ALLTRAX_PID_XCT, "XCT48400-DCS");
     add_device("/dev/unsupported", ALLTRAX_VID, ALLTRAX_PID_SPM, "SPM");
     add_device("/dev/second", ALLTRAX_VID, ALLTRAX_PID_XCT, "NCT");
-    mock.serials[0] = 237324;
+    mock.serials[0] = 123456;
     mock.serials[2] = UINT32_MAX - 1;
     char* argv[] = { "devices" };
     FILE* file = tmpfile();
@@ -720,7 +720,7 @@ static int test_cli_devices_prints_supported_path_model_and_serial(void)
     fclose(file);
 
     ASSERT_EQ(rc, 0);
-    ASSERT_STR_EQ(out, "/dev/first\tXCT48400-DCS\t237324\n/dev/second\tNCT\t4294967294\n");
+    ASSERT_STR_EQ(out, "/dev/first\tXCT48400-DCS\t123456\n/dev/second\tNCT\t4294967294\n");
     ASSERT_EQ(mock.opens, 2);
     ASSERT_EQ(mock.closes, 2);
     ASSERT_EQ(mock.mutations, 0);
@@ -739,7 +739,7 @@ static int test_reset_wait_matches_reenumerated_controller(void)
     mock_reset();
     add_device("original", ALLTRAX_VID, ALLTRAX_PID_XCT, "XCT48400-DCS");
     add_device("other", ALLTRAX_VID, ALLTRAX_PID_XCT, "XCT48400-DCS");
-    mock.serials[0] = 237324;
+    mock.serials[0] = 123456;
     mock.serials[1] = 10;
     alltrax_controller* ctrl = NULL;
     ASSERT_EQ(alltrax_open(&ctrl, "original", true), ALLTRAX_OK);
@@ -755,7 +755,7 @@ static int test_reset_wait_matches_reenumerated_controller(void)
     mock.devs[0].path = "new-hidraw-path";
     mock.serials[0] = 11;
     ASSERT_EQ(alltrax_wait_for_reconnect(ctrl, 10), ALLTRAX_ERR_TIMEOUT); /* Wrong serial. */
-    mock.serials[0] = 237324;
+    mock.serials[0] = 123456;
     ASSERT_EQ(alltrax_wait_for_reconnect(ctrl, 50), ALLTRAX_OK);
     mock.devs[0].path = "original";
     ASSERT_EQ(alltrax_wait_for_reconnect(ctrl, 50), ALLTRAX_OK); /* Reused path. */

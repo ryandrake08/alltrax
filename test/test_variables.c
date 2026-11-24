@@ -317,7 +317,7 @@ static int test_decode_voltage_620(void)
 static int test_decode_temperature(void)
 {
     const alltrax_var_def* var = alltrax_find_var("Avg_Temp");
-    /* Raw value 628 from capture (0x2000F0E6: 0x7402) */
+    /* Raw value 628 as read from 0x2000F0E6 (bytes 74 02) */
     uint8_t data[2] = { 0x74, 0x02 };  /* 628 = 0x0274 */
     alltrax_var_value val;
 

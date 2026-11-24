@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 #ifdef ALLTRAX_HAVE_CRYPTO
 #include <openssl/evp.h>
@@ -71,6 +72,8 @@ const char* alltrax_strerror(alltrax_error err)
     return "unexpected error formatting";
 }
 
+#define WIRE_LOG_MAX 256
+
 /* Simulated device. Read requests return zero-filled payloads, except the
  * GoodSet markers and the 4 little-endian bytes of `value` at `value_addr`;
  * read reply `fail_read_at` (1-based) fails. Mutations are counted. Without
@@ -96,6 +99,8 @@ static struct {
     unsigned samples_left;
     uint8_t monitor_ram[0x166];
     bool monitor_speed_sensor, monitor_bms;
+    uint8_t wire[WIRE_LOG_MAX][PACKET_SIZE];  /* Every request, in order */
+    size_t wire_count;
 } device;
 
 static uint32_t request_addr(void)
@@ -114,6 +119,9 @@ alltrax_error transport_write(alltrax_controller* ctrl,
     transport_calls++;
     if (!device.enabled)
         return ALLTRAX_ERR_USB;
+    if (device.wire_count < WIRE_LOG_MAX)
+        memcpy(device.wire[device.wire_count], data, PACKET_SIZE);
+    device.wire_count++;
     memcpy(device.request, data, PACKET_SIZE);
     if (data[0] == REPORT_ID_READ)
         return ALLTRAX_OK;
@@ -182,7 +190,7 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
     memset(buf, 0, PACKET_SIZE);
     buf[0] = RESPONSE_ID;
     if (device.request[0] == REPORT_ID_SPECIAL) {
-        /* Captured successful page-erase reply */
+        /* Successful page-erase reply */
         const uint8_t erase_reply[] = { 0x04, 0x02, 0, 0, 0x03, 0x01, 0, 0, 0xD4, 0x29 };
         memcpy(buf, erase_reply, sizeof(erase_reply));
         return ALLTRAX_OK;
@@ -1323,7 +1331,7 @@ static int test_reset_flag_sends_no_reset_after_failure(void)
     return 0;
 }
 
-static int capture_cli(int (*cmd)(int, char**), int argc, char** argv,
+static int run_cli_output(int (*cmd)(int, char**), int argc, char** argv,
     char* out, size_t out_size)
 {
     FILE* file = tmpfile();
@@ -1344,12 +1352,12 @@ static int capture_cli(int (*cmd)(int, char**), int argc, char** argv,
     return rc;
 }
 
-static int capture_get(int argc, char** argv, char* out, size_t out_size)
+static int get_output(int argc, char** argv, char* out, size_t out_size)
 {
-    return capture_cli(cmd_get, argc, argv, out, out_size);
+    return run_cli_output(cmd_get, argc, argv, out, out_size);
 }
 
-/* Set the raw value of a named variable and capture get output. */
+/* Set the raw value of a named variable and print its get output. */
 static int run_get(const char* name, uint32_t value, char* out, size_t out_size)
 {
     const alltrax_var_def* var = name ? alltrax_find_var(name) : NULL;
@@ -1360,7 +1368,7 @@ static int run_get(const char* name, uint32_t value, char* out, size_t out_size)
     memset(&device, 0, sizeof(device));
     device.value_addr = var ? var->address : 0;
     device.value = value;
-    return capture_get(name ? 2 : 1, argv, out, out_size);
+    return get_output(name ? 2 : 1, argv, out, out_size);
 }
 
 static int test_get_prints_full_integer_range(void)
@@ -1427,20 +1435,20 @@ static int test_get_reports_goodset_and_reads_factory(void)
     device.value = 200;
     ASSERT_EQ(alltrax_encode_var(limit, 28.0, device.factory + (limit->address - VARSET_ADDR)), 2);
     char* normal[] = { "get", "LoBat_Vlim" };
-    ASSERT_EQ(capture_get(2, normal, out, sizeof(out)), 0);
+    ASSERT_EQ(get_output(2, normal, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "user settings are invalid") && strstr(out, "20.0 V"));
     char* factory[] = { "get", "LoBat_Vlim", "--factory" };
-    ASSERT_EQ(capture_get(3, factory, out, sizeof(out)), 0);
+    ASSERT_EQ(get_output(3, factory, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "28.0 V") != NULL);
     ASSERT_NULL(strstr(out, "Warning"));
     device.fact_goodset = 0xFFFF;
     char* invalid[] = { "get", "--factory", "LoBat_Vlim" };
-    ASSERT_EQ(capture_get(3, invalid, out, sizeof(out)), 1);
+    ASSERT_EQ(get_output(3, invalid, out, sizeof(out)), 1);
     ASSERT_TRUE(strstr(out, "factory settings are invalid") != NULL);
-    ASSERT_EQ(capture_get(2, normal, out, sizeof(out)), 0);
+    ASSERT_EQ(get_output(2, normal, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "user and factory settings are invalid") != NULL);
     char* runtime[] = { "get", "--factory", "Fan_Status" };
-    ASSERT_EQ(capture_get(3, runtime, out, sizeof(out)), 1);
+    ASSERT_EQ(get_output(3, runtime, out, sizeof(out)), 1);
     ASSERT_EQ(reported_error, ALLTRAX_ERR_INVALID_ARG);
     ASSERT_TRUE(strstr(reported_detail, "Fan_Status has no user settings page offset") != NULL);
     ASSERT_EQ(device.mutations, 0);
@@ -1543,7 +1551,7 @@ static int test_field_map_history_command(void)
     char out[128];
     char* invalid[] = { "field-map", "history", "extra" };
     writable_device_reset();
-    ASSERT_EQ(capture_cli(cmd_field_map, 3, invalid, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_field_map, 3, invalid, out, sizeof(out)), 1);
     ASSERT_EQ(open_calls, 0);
 
     const uint8_t record[] = { 0xEA, 0x07, 24, 11, 'M', 'a', 'p' };
@@ -1554,7 +1562,7 @@ static int test_field_map_history_command(void)
     device.history_page[2047] = 0;
 
     char* argv[] = { "field-map", "history" };
-    ASSERT_EQ(capture_cli(cmd_field_map, 2, argv, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_field_map, 2, argv, out, sizeof(out)), 0);
     ASSERT_STR_EQ(out, "Map count: 47\n11/24/2026  Map\n");
     ASSERT_EQ(device.mutations, 0);
     return 0;
@@ -1571,7 +1579,7 @@ static int test_monitor_display_gates_live_samples(void)
             device.monitor_bms = false;
         }
         if (state == 2) device.page[0xA0] = 10; /* USB uses setpoint. */
-        ASSERT_EQ(capture_cli(cmd_monitor, 3, argv, out, sizeof(out)), 0);
+        ASSERT_EQ(run_cli_output(cmd_monitor, 3, argv, out, sizeof(out)), 0);
         ASSERT_TRUE(strstr(out, "Motor Voltage         26.4 V") != NULL);
         ASSERT_TRUE(strstr(out, "Bad Vars Code         65535") != NULL);
         ASSERT_TRUE(strstr(out, "Active: Over Temperature") != NULL);
@@ -1592,7 +1600,7 @@ static int test_monitor_display_gates_live_samples(void)
         ASSERT_EQ(device.mutations, 0);
     }
     monitor_fixture(1, false);
-    ASSERT_EQ(capture_cli(cmd_monitor, 3, argv, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_monitor, 3, argv, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "Throttle              0 %") != NULL);
     ASSERT_TRUE(strstr(out, "Temperature           -") != NULL);
     ASSERT_TRUE(strstr(out, "User 3 Input          -") != NULL);
@@ -1603,7 +1611,7 @@ static int test_monitor_display_gates_live_samples(void)
 
     monitor_fixture(1, false);
     device.monitor_ram[14] = device.monitor_ram[15] = device.monitor_ram[16] = 1;
-    ASSERT_EQ(capture_cli(cmd_monitor, 3, argv, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_monitor, 3, argv, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "Active: Aux Stuck") != NULL);
     ASSERT_TRUE(strstr(out, "Active: Bad Vars") != NULL);
     ASSERT_NULL(strstr(out, "BMS Missing"));
@@ -1614,7 +1622,7 @@ static int test_monitor_display_gates_live_samples(void)
     device.monitor_ram[15] = 1;
     monitor_word(0x050, 1); /* Bad Vars previously occurred. */
     device.monitor_bms = false;
-    ASSERT_EQ(capture_cli(cmd_monitor, 3, argv, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_monitor, 3, argv, out, sizeof(out)), 0);
     ASSERT_NULL(strstr(out, "Aux Stuck"));
     ASSERT_TRUE(strstr(out, "Previously occurred: Bad Vars") != NULL);
 
@@ -1623,7 +1631,7 @@ static int test_monitor_display_gates_live_samples(void)
     device.page[0] = 0xFF;
     device.factory[0xA0] = 9; /* Factory Pump mode uses the setpoint. */
     device.factory[0xBE] = 1;
-    ASSERT_EQ(capture_cli(cmd_monitor, 3, argv, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_monitor, 3, argv, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "Selected Profile      User 2") != NULL);
     ASSERT_TRUE(strstr(out, "Throttle              100 %") != NULL);
     ASSERT_NULL(strstr(out, "State of Charge")); /* Factory does not expect BMS. */
@@ -1638,7 +1646,7 @@ static int test_monitor_throttle_reads_three_blocks_and_blanks_with_ksi_off(void
     for (int on = 0; on <= 1; on++) {
         monitor_fixture(0, on != 0);
         device.monitor_stop_addr = 0x2000F090;
-        ASSERT_EQ(capture_cli(cmd_monitor, 2, argv, out, sizeof(out)), 0);
+        ASSERT_EQ(run_cli_output(cmd_monitor, 2, argv, out, sizeof(out)), 0);
         ASSERT_EQ(device.reads, 4); /* Three blocks plus interrupted next sample. */
         ASSERT_EQ(device.mutations, 0);
         if (on)
@@ -1673,7 +1681,7 @@ static int test_monitor_csv_appends_toolkit_layout_with_timestamp(void)
         device.monitor_ram[14] = sample != 0;
         device.monitor_ram[15] = device.monitor_ram[16] = !keyswitch;
         if (sample == 1) monitor_word(0x096, 0);
-        int rc = capture_cli(cmd_monitor, 3, argv, out, sizeof(out));
+        int rc = run_cli_output(cmd_monitor, 3, argv, out, sizeof(out));
         if (rc) remove(path);
         ASSERT_EQ(rc, 0);
         ASSERT_TRUE(strstr(out, sample ? "State of Charge       -" : "State of Charge       87.5 %") != NULL);
@@ -1725,7 +1733,7 @@ static int test_monitor_sets_up_log_before_polling(void)
     char out[512];
     char* invalid[] = { "monitor", "--log", "." };
     monitor_fixture(2, true);
-    ASSERT_EQ(capture_cli(cmd_monitor, 3, invalid, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_monitor, 3, invalid, out, sizeof(out)), 1);
     ASSERT_TRUE(strstr(out, "could not open monitor log") != NULL);
     ASSERT_EQ(open_calls, 0);
     ASSERT_EQ(transport_calls, 0);
@@ -1736,7 +1744,7 @@ static int test_monitor_sets_up_log_before_polling(void)
     close(fd);
     char* argv[] = { "monitor", "--log", path };
     device.samples_left = 0; /* Interrupt the first poll before it returns a sample. */
-    int rc = capture_cli(cmd_monitor, 3, argv, out, sizeof(out));
+    int rc = run_cli_output(cmd_monitor, 3, argv, out, sizeof(out));
     FILE* file = fopen(path, "r");
     remove(path);
     ASSERT_TRUE(file != NULL);
@@ -1760,14 +1768,14 @@ static int test_throttle_list_filters_by_model_and_mask(void)
     writable_device_reset();
     device.filter_throttles = true;
     device.throttle_mask = (1u << 3) | (1u << 4) | (1u << 7) | (1u << 8);
-    ASSERT_EQ(capture_cli(cmd_throttle, 2, argv, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_throttle, 2, argv, out, sizeof(out)), 0);
     ASSERT_STR_EQ(out, "   4  EZGO ITS\n   5  Club Car IQ/i2 (MCOR)\n"
                       "   5  Yamaha G19/G22\n   5  0-5K 3 Wire\n   9  Pump\n");
     ASSERT_EQ(device.mutations, 0);
 
     device.model = "SRX";
     device.filter_throttles = false;
-    ASSERT_EQ(capture_cli(cmd_throttle, 2, argv, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_throttle, 2, argv, out, sizeof(out)), 0);
     ASSERT_STR_EQ(out, "   4  EZGO ITS\n   3  0-5V\n   1  0-5K 2 Wire\n   2  5K-0 2 Wire\n"
                       "   5  0-5K 3 Wire\n   7  5K-0 3 Wire\n   9  Pump\n  10  USB\n  11  Absolute\n");
     ASSERT_EQ(device.mutations, 0);
@@ -1783,19 +1791,19 @@ static int test_throttle_list_marks_current_entry(void)
     writable_device_reset();
     set_page_bytes("Throttle_Type", "\5", 1);
     set_page_bytes("Throttle_Type_Name", "Yamaha G19/G22  ", 16);
-    ASSERT_EQ(capture_cli(cmd_throttle, 2, argv, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_throttle, 2, argv, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "\n*  5  Yamaha G19/G22\n") != NULL);
     ASSERT_TRUE(strstr(out, "\n   5  Club Car IQ/i2 (MCOR)\n") != NULL);
 
     set_page_bytes("Throttle_Type_Name", "Custom          ", 16);
-    ASSERT_EQ(capture_cli(cmd_throttle, 2, argv, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_throttle, 2, argv, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "\n*  5  Club Car IQ/i2 (MCOR)\n") != NULL);
     ASSERT_TRUE(strstr(out, "\n   5  Yamaha G19/G22\n") != NULL);
 
     /* Invalid user settings: the factory page is the one in effect. */
     device.page[0] = 0xFF;
     device.factory[0xA0] = 7;
-    ASSERT_EQ(capture_cli(cmd_throttle, 2, argv, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_throttle, 2, argv, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "\n*  7  Club Car PD+ (V-Glide)\n") != NULL);
     ASSERT_EQ(device.mutations, 0);
     return 0;
@@ -1809,20 +1817,20 @@ static int test_throttle_set_refuses_ambiguous_unknown_and_unavailable(void)
     char* pump[] = { "throttle", "set", "Pump" };
     char* alias[] = { "throttle", "set", "Yamaha G19/G22" };
     writable_device_reset();
-    ASSERT_EQ(capture_cli(cmd_throttle, 3, unknown, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_throttle, 3, unknown, out, sizeof(out)), 1);
     ASSERT_TRUE(strstr(out, "unknown throttle") != NULL);
     ASSERT_EQ(open_calls, 0);
-    ASSERT_EQ(capture_cli(cmd_throttle, 3, ambiguous, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_throttle, 3, ambiguous, out, sizeof(out)), 1);
     ASSERT_TRUE(strstr(out, "ambiguous throttle") != NULL);
     ASSERT_EQ(open_calls, 0);
     device.filter_throttles = true;
     device.throttle_mask = 1;
-    ASSERT_EQ(capture_cli(cmd_throttle, 3, pump, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_throttle, 3, pump, out, sizeof(out)), 1);
     ASSERT_TRUE(strstr(out, "not available") != NULL);
     ASSERT_EQ(device.mutations, 0);
     device.model = "SRX";
     device.filter_throttles = false;
-    ASSERT_EQ(capture_cli(cmd_throttle, 3, alias, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_throttle, 3, alias, out, sizeof(out)), 1);
     ASSERT_TRUE(strstr(out, "not available") != NULL);
     ASSERT_EQ(device.mutations, 0);
     return 0;
@@ -1902,7 +1910,7 @@ static int test_throttle_set_no_hpd_turns_hpd_off(void)
 
     char* pump[] = { "throttle", "set", "Pump", "--no-hpd" };
     open_calls = 0;
-    ASSERT_EQ(capture_cli(cmd_throttle, 4, pump, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_throttle, 4, pump, out, sizeof(out)), 1);
     ASSERT_TRUE(strstr(out, "HPD is always off") != NULL);
     ASSERT_EQ(open_calls, 0);
     return 0;
@@ -1916,12 +1924,12 @@ static int test_throttle_set_keeps_absolute_curve(void)
     device.page[0x104] = 123;
     device.page[0x105] = 0;
     char* force[] = { "throttle", "set", "Absolute", "--default-curve", "--no-wait" };
-    ASSERT_EQ(capture_cli(cmd_throttle, 5, force, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_throttle, 5, force, out, sizeof(out)), 1);
     ASSERT_TRUE(strstr(out, "--default-curve is not available") != NULL);
     ASSERT_EQ(device.mutations, 0);
 
     char* same[] = { "throttle", "set", "Absolute", "--no-wait" };
-    ASSERT_EQ(capture_cli(cmd_throttle, 4, same, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_throttle, 4, same, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "Set throttle to Absolute (11), HPD on") != NULL);
     ASSERT_EQ(get_le16(device.page + 0x104), 123);
     return 0;
@@ -2110,7 +2118,7 @@ static int run_map_command(const char* text, const char* const* args, size_t n,
     for (size_t i = 1; i < n && argc < 12; i++)
         argv[argc++] = (char*)args[i];
     char discard[4096];
-    int rc = capture_cli(cmd_field_map, argc, argv, out ? out : discard,
+    int rc = run_cli_output(cmd_field_map, argc, argv, out ? out : discard,
                          out ? out_size : sizeof(discard));
     remove(path);
     return rc;
@@ -2312,21 +2320,21 @@ static int test_fieldmap_key_decrypts_map_file(void)
     char* plain[] = { "field-map", "list", path, "--fieldmap-key", "none" };
     char* env[] = { "field-map", "list", path };
     writable_device_reset();
-    ASSERT_EQ(capture_cli(cmd_field_map, 5, right, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_field_map, 5, right, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "3 maps") != NULL);
-    ASSERT_EQ(capture_cli(cmd_field_map, 5, wrong, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_field_map, 5, wrong, out, sizeof(out)), 1);
     ASSERT_EQ(open_calls, 0);
-    ASSERT_EQ(capture_cli(cmd_field_map, 5, plain, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_field_map, 5, plain, out, sizeof(out)), 1);
     ASSERT_EQ(open_calls, 0);
     setenv("ALLTRAX_FIELDMAP_KEY", TEST_KEY_A, 1);
-    ASSERT_EQ(capture_cli(cmd_field_map, 3, env, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_field_map, 3, env, out, sizeof(out)), 0);
     setenv("ALLTRAX_FIELDMAP_KEY", TEST_KEY_B, 1);
-    ASSERT_EQ(capture_cli(cmd_field_map, 5, right, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_field_map, 5, right, out, sizeof(out)), 0);
     unsetenv("ALLTRAX_FIELDMAP_KEY");
 
     /* A plain file given a key gets a hint. */
     ASSERT_EQ(write_file(path, map_file_text), 0);
-    ASSERT_EQ(capture_cli(cmd_field_map, 5, right, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_field_map, 5, right, out, sizeof(out)), 1);
     ASSERT_TRUE(strstr(out, "use --fieldmap-key none") != NULL);
     remove(path);
     return 0;
@@ -2347,15 +2355,15 @@ static int test_config_key_load_round_trip(void)
     char* plain[] = { "config", "load", path, "--config-key", "none" };
     char* right[] = { "config", "load", path, "--config-key", TEST_KEY_A };
     device.erases = device.mutations = 0;
-    ASSERT_EQ(capture_cli(cmd_config, 5, wrong, out, sizeof(out)), 1);
-    ASSERT_EQ(capture_cli(cmd_config, 5, plain, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_config, 5, wrong, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_config, 5, plain, out, sizeof(out)), 1);
     ASSERT_EQ(device.mutations, 0);
-    ASSERT_EQ(capture_cli(cmd_config, 5, right, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_config, 5, right, out, sizeof(out)), 0);
     ASSERT_EQ(device.erases, 1);
 
     /* A plain file given a key gets a hint. */
     ASSERT_EQ(run_config_save_as(path, 5005, "none"), 0);
-    ASSERT_EQ(capture_cli(cmd_config, 5, right, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_config, 5, right, out, sizeof(out)), 1);
     ASSERT_TRUE(strstr(out, "use --config-key none") != NULL);
     remove(path);
     return 0;
@@ -2452,6 +2460,433 @@ static int test_config_save_writes_only_settings_in_toolkit_nodes(void)
 
 #endif
 
+/* ------------------------------------------------------------------ */
+/* Wire sequences                                                     */
+/* ------------------------------------------------------------------ */
+
+/* Expected device mutations (every write, erase and reset request), in
+ * order. Reads are checked separately: a full page read must come before each
+ * page erase on the settings paths and before every GoodSet clear. */
+static struct {
+    uint8_t packet[WIRE_LOG_MAX][PACKET_SIZE];
+    size_t count;
+    size_t date_index;  /* 1-based position of the FieldMap_Date write */
+} script;
+
+static void begin_script(void)
+{
+    memset(&script, 0, sizeof(script));
+}
+
+static uint32_t wire_addr(const uint8_t* p)
+{
+    return ((uint32_t)p[4] << 24) | ((uint32_t)p[5] << 16) |
+           ((uint32_t)p[6] << 8) | p[7];
+}
+
+static void expect_packet(uint8_t report, uint32_t addr, const uint8_t* data, size_t len)
+{
+    uint8_t* p = script.packet[script.count++];
+    memset(p, 0, PACKET_SIZE);
+    p[0] = report;
+    p[1] = (uint8_t)len;
+    p[4] = (uint8_t)(addr >> 24);
+    p[5] = (uint8_t)(addr >> 16);
+    p[6] = (uint8_t)(addr >> 8);
+    p[7] = (uint8_t)addr;
+    if (len) memcpy(p + 8, data, len);
+}
+
+static void expect_mode(uint8_t mode)
+{
+    expect_packet(2, 0x2000FFFA, &mode, 1);
+}
+
+static size_t page_chunk(size_t offset)
+{
+    return VARSET_SIZE - offset < 56 ? VARSET_SIZE - offset : 56;
+}
+
+/* Erase page 4, program the page in 56-byte chunks with GoodSet still erased,
+ * then clear GoodSet. */
+static void expect_page_cycle(const uint8_t page[VARSET_SIZE])
+{
+    const uint8_t erase[] = { 0, 0, 0, 4 };
+    expect_packet(3, 1, erase, sizeof(erase));
+    uint8_t staged[VARSET_SIZE];
+    memcpy(staged, page, sizeof(staged));
+    staged[0] = staged[1] = 0xFF;
+    for (size_t offset = 0; offset < VARSET_SIZE; offset += 56)
+        expect_packet(2, 0x08002000 + (uint32_t)offset, staged + offset, page_chunk(offset));
+    const uint8_t valid[2] = { 0, 0 };
+    expect_packet(2, 0x08002000, valid, sizeof(valid));
+}
+
+static void expect_settings_write(const uint8_t page[VARSET_SIZE])
+{
+    expect_mode(0xFF);
+    expect_page_cycle(page);
+    expect_mode(0x00);
+}
+
+static void expect_backup_clear(void)
+{
+    const uint8_t zeros[20] = {0};
+    expect_packet(2, 0x40006C00, zeros, sizeof(zeros));
+}
+
+static void expect_reset(void)
+{
+    expect_packet(3, 12, NULL, 0);
+}
+
+static void expect_date(void)
+{
+    const uint8_t unknown[4] = {0};
+    expect_packet(2, 0x2000F210, unknown, sizeof(unknown));
+    script.date_index = script.count;
+}
+
+/* True when the requests just before log entry `end` read the whole page. */
+static bool page_read_before(size_t end)
+{
+    size_t chunks = (VARSET_SIZE + 55) / 56;
+    if (end < chunks) return false;
+    for (size_t i = 0; i < chunks; i++) {
+        const uint8_t* p = device.wire[end - chunks + i];
+        if (p[0] != 1 || p[1] != page_chunk(i * 56) ||
+            wire_addr(p) != 0x08002000 + i * 56)
+            return false;
+    }
+    return true;
+}
+
+static int check_wire(bool page_read_before_erase)
+{
+    ASSERT_TRUE(device.wire_count <= WIRE_LOG_MAX);
+    size_t n = 0;
+    for (size_t i = 0; i < device.wire_count; i++) {
+        const uint8_t* p = device.wire[i];
+        if (p[0] == 1) continue;
+        ASSERT_TRUE(n < script.count);
+        const uint8_t* want = script.packet[n++];
+        if (n == script.date_index) {
+            time_t now = time(NULL);
+            struct tm date;
+            ASSERT_NOT_NULL(localtime_r(&now, &date));
+            unsigned year = (unsigned)date.tm_year + 1900;
+            const uint8_t today[4] = { (uint8_t)year, (uint8_t)(year >> 8),
+                (uint8_t)date.tm_mday, (uint8_t)(date.tm_mon + 1) };
+            ASSERT_MEM_EQ(p, want, 8);
+            ASSERT_MEM_EQ(p + 8, today, sizeof(today));
+            ASSERT_MEM_EQ(p + 12, want + 12, PACKET_SIZE - 12);
+        } else {
+            ASSERT_MEM_EQ(p, want, PACKET_SIZE);
+        }
+        if (p[0] == 3 && wire_addr(p) == 1 && page_read_before_erase)
+            ASSERT_TRUE(page_read_before(i));
+        if (p[0] == 2 && wire_addr(p) == 0x08002000 && p[1] == 2)
+            ASSERT_TRUE(page_read_before(i));
+    }
+    ASSERT_EQ(n, script.count);
+    return 0;
+}
+
+static void put_curve(uint8_t page[VARSET_SIZE], const char* name,
+    const uint16_t* x, const uint16_t* y, size_t n)
+{
+    const alltrax_curve_def* def = alltrax_find_curve(name);
+    for (size_t i = 0; i < ALLTRAX_CURVE_POINTS; i++) {
+        uint16_t xv = i < n ? x[i] : 0, yv = i < n ? y[i] : 0;
+        uint8_t* px = page + (def->x_address - VARSET_ADDR) + i * 2;
+        uint8_t* py = page + (def->y_address - VARSET_ADDR) + i * 2;
+        px[0] = (uint8_t)xv; px[1] = (uint8_t)(xv >> 8);
+        py[0] = (uint8_t)yv; py[1] = (uint8_t)(yv >> 8);
+    }
+}
+
+static const uint16_t linear_x[] = { 0, 40, 4054, 4095 };
+static const uint16_t linear_y[] = { 0, 0, 4095, 4095 };
+
+/* EZGO ITS selected, HPD on, its default linearization installed. */
+static void ezgo_page(void)
+{
+    writable_device_reset();
+    set_page_bytes("Throttle_Type", "\4", 1);
+    set_page_bytes("HPD", "\1", 1);
+    set_page_bytes("Throttle_Type_Name", "EZGO ITS        ", 16);
+    put_curve(device.page, "linearization", linear_x, linear_y, 4);
+}
+
+static int test_setting_write_wire_sequence(void)
+{
+    writable_device_reset();
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, device.page, sizeof(expected));
+    const alltrax_var_def* var = alltrax_find_var("LoBat_Vlim");
+    ASSERT_EQ(alltrax_encode_var(var, 20.1, expected + (var->address - VARSET_ADDR)), 2);
+
+    char setting[] = "LoBat_Vlim=20.1";
+    char* argv[] = { "write", setting };
+    ASSERT_EQ(run_writable(cmd_write, 2, argv), 0);
+    ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+    begin_script();
+    expect_settings_write(expected);
+    return check_wire(true);
+}
+
+static int test_reset_trigger_write_wire_sequence(void)
+{
+    writable_device_reset();
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, device.page, sizeof(expected));
+
+    char speed[] = "Speed_Limit_On=0", tach[] = "Tach_4_8=0";
+    char* argv[] = { "write", speed, tach, "--no-wait" };
+    ASSERT_EQ(run_writable(cmd_write, 4, argv), 0);
+    ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+    begin_script();
+    expect_settings_write(expected);
+    expect_reset();
+    return check_wire(true);
+}
+
+static int run_throttle_select(char* label, const uint8_t expected[VARSET_SIZE])
+{
+    device.wire_count = 0;
+    char* argv[] = { "throttle", "set", label, "--no-wait" };
+    ASSERT_EQ(run_writable(cmd_throttle, 4, argv), 0);
+    ASSERT_MEM_EQ(device.page, expected, VARSET_SIZE);
+    begin_script();
+    expect_settings_write(expected);
+    expect_backup_clear();
+    expect_reset();
+    return check_wire(true);
+}
+
+static int test_throttle_select_wire_sequences(void)
+{
+    ezgo_page();
+    uint8_t ezgo[VARSET_SIZE], club[VARSET_SIZE];
+    memcpy(ezgo, device.page, sizeof(ezgo));
+
+    /* Selecting the installed throttle rewrites the page unchanged. */
+    if (run_throttle_select("EZGO ITS", ezgo)) return 1;
+
+    /* A new type changes the type, the 16-byte label and its default curve. */
+    memcpy(club, ezgo, sizeof(club));
+    club[0xA0] = 5;
+    memcpy(club + 0xC0, "Club Car IQ/i2 (", 16);
+    club[0x104] = 0xCC;  /* 3276: 80 % */
+    club[0x105] = 0x0C;
+    if (run_throttle_select("Club Car IQ/i2 (MCOR)", club)) return 1;
+    return run_throttle_select("EZGO ITS", ezgo);
+}
+
+static int test_throttle_default_curve_without_hpd_wire_sequence(void)
+{
+    const uint16_t custom_x[] = { 0, 100, 1000, 2000, 4095 };
+    const uint16_t custom_y[] = { 0, 0, 1500, 3000, 4095 };
+    writable_device_reset();
+    set_page_bytes("Throttle_Type", "\4", 1);
+    set_page_bytes("HPD", "\1", 1);
+    put_curve(device.page, "linearization", custom_x, custom_y, 5);
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, device.page, sizeof(expected));
+    expected[0xA4] = 0;
+    memcpy(expected + 0xC0, "EZGO ITS", 8);
+    put_curve(expected, "linearization", linear_x, linear_y, 4);
+
+    char* argv[] = { "throttle", "set", "EZGO ITS", "--no-hpd", "--default-curve", "--no-wait" };
+    ASSERT_EQ(run_writable(cmd_throttle, 6, argv), 0);
+    ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+    begin_script();
+    expect_settings_write(expected);
+    expect_backup_clear();
+    expect_reset();
+    return check_wire(true);
+}
+
+static int test_restore_defaults_wire_sequence(void)
+{
+    ezgo_page();
+    memcpy(device.factory, device.page, VARSET_SIZE);
+    const alltrax_var_def* lobat = alltrax_find_var("LoBat_Vlim");
+    ASSERT_EQ(alltrax_encode_var(lobat, 21, device.factory + (lobat->address - VARSET_ADDR)), 2);
+    memset(device.factory + 0xC0, ' ', 16);
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, device.factory, sizeof(expected));
+
+    /* The throttle type and HPD do not change, so calibration is kept. */
+    char* argv[] = { "restore-defaults", "--no-wait" };
+    ASSERT_EQ(run_writable(cmd_restore_defaults, 2, argv), 0);
+    ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+    begin_script();
+    expect_page_cycle(expected);
+    expect_date();
+    expect_reset();
+    return check_wire(false);
+}
+
+/* Compare the RAM reads in the log with (address, length) pairs. */
+static int check_ram_reads(const uint32_t want[][2], size_t count)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < device.wire_count && i < WIRE_LOG_MAX; i++) {
+        const uint8_t* p = device.wire[i];
+        uint32_t addr = wire_addr(p);
+        if (p[0] != 1 || addr < 0x2000F000 || addr >= 0x2000F200) continue;
+        ASSERT_TRUE(n < count);
+        ASSERT_EQ(addr, want[n][0]);
+        ASSERT_EQ(p[1], want[n][1]);
+        n++;
+    }
+    ASSERT_EQ(n, count);
+    return 0;
+}
+
+static int test_monitor_user_inputs_read_block_and_bench_values(void)
+{
+    /* One sample, then the first read of the next one is interrupted. */
+    const uint32_t blocks[][2] = {
+        { 0x2000F000, 17 }, { 0x2000F030, 34 }, { 0x2000F090, 17 },
+        { 0x2000F0E6, 2 }, { 0x2000F110, 56 }, { 0x2000F148, 30 },
+        { 0x2000F000, 17 },
+    };
+    char out[4096];
+    char* argv[] = { "monitor", "--rate", "100" };
+    for (unsigned state = 1; state <= 2; state++) {
+        monitor_fixture(state, true);
+        monitor_word(0x160, 0);       /* Normal profile */
+        monitor_word(0x162, 0xFFFF);  /* Nothing connected */
+        monitor_word(0x164, 0xFFFF);
+        ASSERT_EQ(run_cli_output(cmd_monitor, 3, argv, out, sizeof(out)), 0);
+        if (check_ram_reads(blocks, sizeof(blocks) / sizeof(blocks[0]))) return 1;
+        ASSERT_TRUE(strstr(out, "User1 (Regen)         Disconnected") != NULL);
+        ASSERT_TRUE(strstr(out, state == 1 ? "Selected Profile      Normal"
+                                          : "User2 (Speed)         Disconnected") != NULL);
+    }
+    return 0;
+}
+
+static int test_monitor_throttle_view_read_blocks(void)
+{
+    const uint32_t blocks[][2] = {
+        { 0x2000F090, 1 }, { 0x2000F116, 20 }, { 0x2000F15E, 2 }, { 0x2000F090, 1 },
+    };
+    char out[512];
+    char* argv[] = { "monitor", "--throttle" };
+    monitor_fixture(0, true);
+    device.monitor_stop_addr = 0x2000F090;
+    ASSERT_EQ(run_cli_output(cmd_monitor, 2, argv, out, sizeof(out)), 0);
+    return check_ram_reads(blocks, sizeof(blocks) / sizeof(blocks[0]));
+}
+
+#ifdef ALLTRAX_HAVE_XML
+static int run_config_load_file(const char* path)
+{
+    device.wire_count = 0;
+    char* argv[] = { "config", "load", "--config-key", "none", (char*)path, "--no-wait" };
+    return run_writable(cmd_config, 6, argv);
+}
+
+static int test_config_load_wire_sequence(void)
+{
+    ezgo_page();
+    uint8_t saved[VARSET_SIZE];
+    memcpy(saved, device.page, sizeof(saved));
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    ASSERT_EQ(run_config_save(path, 5005), 0);
+
+    /* Change a profile setting, the label and the curve, then load the file. */
+    const alltrax_var_def* roll = alltrax_find_var("N_RollDetect_BrakingCurrent");
+    ASSERT_EQ(alltrax_encode_var(roll, -50, device.page + (roll->address - VARSET_ADDR)), 2);
+    memset(device.page + 0xC0, ' ', 16);
+    put_curve(device.page, "linearization", linear_y, linear_x, 4);
+    int rc = run_config_load_file(path);
+    remove(path);
+    ASSERT_EQ(rc, 0);
+    ASSERT_MEM_EQ(device.page, saved, sizeof(saved));
+    begin_script();
+    expect_settings_write(saved);
+    expect_backup_clear();
+    expect_reset();
+    return check_wire(true);
+}
+
+#define CURVE_ZEROS ",0,0,0,0,0,0,0,0,0,0,0,0"
+static const char throttle_node_config[] =
+    "<XCT>\n  <Node-Throttle>\n"
+    "    <Throttle_Type>4</Throttle_Type>\n"
+    "    <Throttle_Type_Name>EZGO ITS        </Throttle_Type_Name>\n"
+    "    <HPD>1</HPD>\n"
+    "    <Lin_Table_Pointer>0,40,4054,4095" CURVE_ZEROS "</Lin_Table_Pointer>\n"
+    "    <Lin_Table_Data>0,0,4095,4095" CURVE_ZEROS "</Lin_Table_Data>\n"
+    "    <V_Table_Pointer>0,100,2000,4095" CURVE_ZEROS "</V_Table_Pointer>\n"
+    "    <V_Table_Data>0,0,2048,4095" CURVE_ZEROS "</V_Table_Data>\n"
+    "    <I_Table_Pointer>0,100,1000,4095" CURVE_ZEROS "</I_Table_Pointer>\n"
+    "    <I_Table_Data>0,0,3000,4095" CURVE_ZEROS "</I_Table_Data>\n"
+    "  </Node-Throttle>\n</XCT>\n";
+static const char throttle_node_curves[] =
+    "<XCT>\n  <Node-Throttle>\n"
+    "    <V_Table_Pointer>0,100,2000,4095" CURVE_ZEROS "</V_Table_Pointer>\n"
+    "    <V_Table_Data>0,0,2048,4095" CURVE_ZEROS "</V_Table_Data>\n"
+    "    <I_Table_Pointer>0,100,1000,4095" CURVE_ZEROS "</I_Table_Pointer>\n"
+    "    <I_Table_Data>0,0,3000,4095" CURVE_ZEROS "</I_Table_Data>\n"
+    "  </Node-Throttle>\n</XCT>\n";
+static const char throttle_node_linearization[] =
+    "<XCT>\n  <Node-Throttle>\n"
+    "    <Lin_Table_Pointer>0,40,4054,4095" CURVE_ZEROS "</Lin_Table_Pointer>\n"
+    "    <Lin_Table_Data>0,0,4095,4095" CURVE_ZEROS "</Lin_Table_Data>\n"
+    "  </Node-Throttle>\n</XCT>\n";
+
+/* Files holding only throttle entries write just those entries. Only the
+ * file with the throttle type and HPD clears calibration and resets. */
+static int test_throttle_only_config_files_wire_sequences(void)
+{
+    const uint16_t speed_x[] = { 0, 100, 2000, 4095 }, speed_y[] = { 0, 0, 2048, 4095 };
+    const uint16_t torque_x[] = { 0, 100, 1000, 4095 }, torque_y[] = { 0, 0, 3000, 4095 };
+    const struct { const char* xml; bool selection, linearization, curves; } cases[] = {
+        { throttle_node_config, true, true, true },
+        { throttle_node_curves, false, false, true },
+        { throttle_node_linearization, false, true, false },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        writable_device_reset();
+        uint8_t expected[VARSET_SIZE];
+        memcpy(expected, device.page, sizeof(expected));
+        if (cases[i].selection) {
+            expected[0xA0] = 4;
+            expected[0xA4] = 1;
+            memcpy(expected + 0xC0, "EZGO ITS", 8);
+        }
+        if (cases[i].linearization)
+            put_curve(expected, "linearization", linear_x, linear_y, 4);
+        if (cases[i].curves) {
+            put_curve(expected, "speed", speed_x, speed_y, 4);
+            put_curve(expected, "torque", torque_x, torque_y, 4);
+        }
+
+        char path[64];
+        ASSERT_EQ(make_temp_path(path), 0);
+        ASSERT_EQ(write_file(path, cases[i].xml), 0);
+        int rc = run_config_load_file(path);
+        remove(path);
+        ASSERT_EQ(rc, 0);
+        ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+        begin_script();
+        expect_settings_write(expected);
+        if (cases[i].selection) {
+            expect_backup_clear();
+            expect_reset();
+        }
+        if (check_wire(true)) return 1;
+    }
+    return 0;
+}
+#endif
+
 int main(void)
 {
     printf("CLI mutation preflight (no USB):\n");
@@ -2493,6 +2928,13 @@ int main(void)
     RUN_TEST(test_throttle_set_no_hpd_turns_hpd_off);
     RUN_TEST(test_throttle_set_keeps_absolute_curve);
     RUN_TEST(test_throttle_set_disables_hpd_for_pump_and_usb);
+    RUN_TEST(test_setting_write_wire_sequence);
+    RUN_TEST(test_reset_trigger_write_wire_sequence);
+    RUN_TEST(test_throttle_select_wire_sequences);
+    RUN_TEST(test_throttle_default_curve_without_hpd_wire_sequence);
+    RUN_TEST(test_restore_defaults_wire_sequence);
+    RUN_TEST(test_monitor_user_inputs_read_block_and_bench_values);
+    RUN_TEST(test_monitor_throttle_view_read_blocks);
     RUN_TEST(test_field_map_writes_require_flag);
     RUN_TEST(test_field_map_writes_include_current_name);
     RUN_TEST(test_field_map_recovery_uses_factory_name);
@@ -2526,6 +2968,8 @@ int main(void)
     RUN_TEST(test_config_load_skips_field_map_without_flag);
     RUN_TEST(test_config_load_fails_closed_on_bad_values);
     RUN_TEST(test_config_save_writes_only_settings_in_toolkit_nodes);
+    RUN_TEST(test_config_load_wire_sequence);
+    RUN_TEST(test_throttle_only_config_files_wire_sequences);
     RUN_TEST(test_field_map_list_marks_current_map_and_upgrade);
     RUN_TEST(test_field_map_file_errors_stop_before_open);
     RUN_TEST(test_field_map_upgrade_selects_newer_version);

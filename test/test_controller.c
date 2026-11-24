@@ -52,6 +52,9 @@ static struct {
     uint32_t boot_rev, program_rev;
     const char* model;
     uint8_t monitor_ram[0x200];  /* 0x2000F000-0x2000F1FF */
+    uint32_t read_addrs[16];     /* First read requests, in order */
+    uint8_t read_lens[16];
+    size_t read_count;
     size_t stuck_offset;         /* 1-based VARSET offset that stays 0xFF */
 } mock;
 
@@ -140,6 +143,10 @@ alltrax_error transport_write(alltrax_controller* ctrl,
     uint32_t addr = request_address();
 
     if (data[0] == 0x01) {
+        if (mock.read_count < sizeof(mock.read_addrs) / sizeof(mock.read_addrs[0])) {
+            mock.read_addrs[mock.read_count] = addr;
+            mock.read_lens[mock.read_count++] = data[1];
+        }
         if (addr >= DATA_ADDR && addr < DATA_ADDR + DATA_SIZE) {
             if (addr != DATA_ADDR + mock.history_bytes_read ||
                 data[1] > DATA_ADDR + DATA_SIZE - addr)
@@ -255,7 +262,7 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
     memset(buf, 0, PACKET_SIZE);
     buf[0] = 0x04;
     if (mock.request[0] == 0x03) {
-        /* Captured successful page-erase reply, independent of constants. */
+        /* Successful page-erase reply, independent of constants. */
         const uint8_t header[] = { 0x04, 0x02, 0, 0, 0x03, 0x01, 0, 0, 0xD4, 0x29 };
         memcpy(buf, header, sizeof(header));
         buf[5] = (uint8_t)request_address();
@@ -972,6 +979,15 @@ static int test_info_exact_read_lengths(void)
     ASSERT_STR_EQ(info.model, "XCT48400-DCS");
     ASSERT_EQ(info.boot_rev, 5002);
     ASSERT_EQ(info.program_rev, 5005);
+    ASSERT_FALSE(info.bootloader_mode);
+    /* Identity, hardware configuration, boot and program revisions. */
+    const uint32_t addrs[] = { 0x08000800, 0x08000880, 0x080067F0, 0x0801FFF0 };
+    const uint8_t lens[] = { 52, 24, 4, 6 };
+    ASSERT_EQ(mock.read_count, 4);
+    for (size_t i = 0; i < 4; i++) {
+        ASSERT_EQ(mock.read_addrs[i], addrs[i]);
+        ASSERT_EQ(mock.read_lens[i], lens[i]);
+    }
     return 0;
 }
 

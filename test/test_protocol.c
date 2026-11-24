@@ -1,7 +1,7 @@
 /*
  * test_protocol.c — Byte-for-byte validation of protocol
  *
- * Ground truth: captures/port2.pcapng, captures/port2-test2.pcapng
+ * Expected packets are literal reference bytes for the controller protocol.
  */
 
 #include "helpers.h"
@@ -28,10 +28,10 @@ static int hex_to_bytes(const char* hex, uint8_t* out, size_t max_len)
 }
 
 /* ------------------------------------------------------------------ */
-/* 1. Read request construction — byte-identical to Wireshark captures */
+/* 1. Read request construction — byte-identical to reference packets  */
 /* ------------------------------------------------------------------ */
 
-/* Captured OUT packets from port2.pcapng */
+/* Reference read requests */
 struct read_request_test {
     uint32_t address;
     uint8_t  num_bytes;
@@ -63,7 +63,7 @@ static const struct read_request_test read_request_tests[] = {
     { 0x080021B0, 0x10, "01100000080021b00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" },
 };
 
-static int test_read_request_matches_capture(void)
+static int test_read_request_matches_reference(void)
 {
     size_t n = sizeof(read_request_tests) / sizeof(read_request_tests[0]);
     for (size_t i = 0; i < n; i++) {
@@ -120,13 +120,13 @@ static int test_read_request_data_bytes_zero(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* 2. Response parsing — from captured responses                       */
+/* 2. Response parsing — from reference responses                      */
 /* ------------------------------------------------------------------ */
 
 static int test_parse_controller_info(void)
 {
     /* Response for 52-byte read from ADDR_CONTROLLER_INFO (0x08000800) */
-    const char* hex = "043400000100000058435434383430302d44435320202000392f352f3230323520202020202020000c9f03008a1300008d1300000b0000000400000000000000";
+    const char* hex = "043400000100000058435434383430302d44435320202000312f322f32303234202020202020200040e201008a1300008d1300000b0000000400000000000000";
     uint8_t response[PACKET_SIZE];
     hex_to_bytes(hex, response, PACKET_SIZE);
 
@@ -149,9 +149,9 @@ static int test_parse_controller_info(void)
     memcpy(build_date, payload + 0x10, 15);
     for (int i = 14; i >= 0 && (build_date[i] == ' ' || build_date[i] == '\0'); i--)
         build_date[i] = '\0';
-    ASSERT_STR_EQ(build_date, "9/5/2025");
+    ASSERT_STR_EQ(build_date, "1/2/2024");
 
-    ASSERT_EQ(get_le32(payload + 0x20), 237324u);   /* serial_number */
+    ASSERT_EQ(get_le32(payload + 0x20), 123456u);   /* serial_number */
     ASSERT_EQ(get_le32(payload + 0x24), 5002u);      /* original_boot_rev */
     ASSERT_EQ(get_le32(payload + 0x28), 5005u);      /* original_program_rev */
     ASSERT_EQ(get_le32(payload + 0x2C), 11u);         /* program_type */
@@ -233,7 +233,7 @@ static int test_parse_hardware_config(void)
 
 static int test_parse_program_name(void)
 {
-    const char* hex = "0420000001000000455a5044532d4443532d56312020202020202020202020202020202020202020000000000000000000000000000000000000000000000000";
+    const char* hex = "042000000100000053414d504c452d4d41502d312020202020202020202020202020202020202020000000000000000000000000000000000000000000000000";
     uint8_t response[PACKET_SIZE];
     hex_to_bytes(hex, response, PACKET_SIZE);
 
@@ -250,7 +250,7 @@ static int test_parse_program_name(void)
     while (end >= 0 && (name[end] == ' ' || name[end] == '\0'))
         name[end--] = '\0';
 
-    ASSERT_STR_EQ(name, "EZPDS-DCS-V1");
+    ASSERT_STR_EQ(name, "SAMPLE-MAP-1");
     return 0;
 }
 
@@ -268,7 +268,7 @@ static int test_parse_response_rejects_wrong_id(void)
 }
 
 /* ------------------------------------------------------------------ */
-/* 3. Write request construction — from port2-test2.pcapng             */
+/* 3. Write request construction — from reference packets             */
 /* ------------------------------------------------------------------ */
 
 struct write_request_test {
@@ -289,7 +289,7 @@ static const struct write_request_test write_request_tests[] = {
       "020100002000fffa0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000" },
 };
 
-static int test_write_request_matches_capture(void)
+static int test_write_request_matches_reference(void)
 {
     size_t n = sizeof(write_request_tests) / sizeof(write_request_tests[0]);
     for (size_t i = 0; i < n; i++) {
@@ -473,10 +473,9 @@ static int test_flash_clear_flags_selective(void)
 /* 6. Special function response parsing                                */
 /* ------------------------------------------------------------------ */
 
-static int test_parse_page_erase_responses_match_captures(void)
+static int test_parse_page_erase_responses_match_reference(void)
 {
-    /* Literal page-erase replies from port2-voltage.pcapng (two erases)
-     * and port2-hpd.pcapng (one erase). Keep the wire type independent
+    /* Literal successful page-erase replies. Keep the wire type independent
      * of RESPONSE_TYPE_SP so an incorrect constant fails this test. */
     const uint8_t responses[][PACKET_SIZE] = {
         { 0x04, 0x02, 0x00, 0x00, 0x03, 0x01, 0x00, 0x00, 0xD4, 0x29 },
@@ -592,7 +591,7 @@ void run_protocol_tests(void)
     printf("protocol:\n");
 
     /* Read request construction */
-    RUN_TEST(test_read_request_matches_capture);
+    RUN_TEST(test_read_request_matches_reference);
     RUN_TEST(test_read_request_is_64_bytes);
     RUN_TEST(test_read_request_routing_is_zero);
     RUN_TEST(test_read_request_address_big_endian);
@@ -607,7 +606,7 @@ void run_protocol_tests(void)
     RUN_TEST(test_parse_response_rejects_wrong_id);
 
     /* Write request construction */
-    RUN_TEST(test_write_request_matches_capture);
+    RUN_TEST(test_write_request_matches_reference);
     RUN_TEST(test_write_request_is_64_bytes);
     RUN_TEST(test_write_request_data_at_byte_8);
 
@@ -624,7 +623,7 @@ void run_protocol_tests(void)
     RUN_TEST(test_flash_clear_flags_selective);
 
     /* Special response parsing */
-    RUN_TEST(test_parse_page_erase_responses_match_captures);
+    RUN_TEST(test_parse_page_erase_responses_match_reference);
     RUN_TEST(test_parse_special_response_rejects_wrong_type);
     RUN_TEST(test_parse_unknown_response_rejects_rw);
     RUN_TEST(test_parse_special_response_with_data);
