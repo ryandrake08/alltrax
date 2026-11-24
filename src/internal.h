@@ -27,6 +27,7 @@ struct alltrax_controller {
     uint16_t     vid;
     uint16_t     pid;
     alltrax_controller_type controller_type; /* Validated model family */
+    bool         is_srx;       /* SRX shares the XCT protocol but has no DATA page */
     uint32_t     boot_rev;     /* Read when the controller is identified */
     uint32_t     program_rev;
     bool         bootloader_mode;
@@ -82,12 +83,15 @@ struct alltrax_controller {
 #define FACTSET_PAGE  2   /* 0x08001000 — factory settings */
 #define SWITCH_PAGE   3   /* 0x08001800 — mode switching */
 #define VARSET_PAGE   4   /* 0x08002000 — user settings */
+#define DATA_PAGE    13   /* 0x08006800 — field-map history on non-SRX XCT family */
 
 #define INFOSET_ADDR  (FLASH_BASE + INFOSET_PAGE * FLASH_PAGE_SIZE)
 #define FACTSET_ADDR  (FLASH_BASE + FACTSET_PAGE * FLASH_PAGE_SIZE)
 #define SWITCH_ADDR   (FLASH_BASE + SWITCH_PAGE  * FLASH_PAGE_SIZE)
 #define VARSET_ADDR   (FLASH_BASE + VARSET_PAGE  * FLASH_PAGE_SIZE)
 #define VARSET_SIZE   FLASH_PAGE_SIZE
+#define DATA_ADDR    (FLASH_BASE + DATA_PAGE * FLASH_PAGE_SIZE)
+#define DATA_SIZE    FLASH_PAGE_SIZE
 
 /* GoodSet markers (first 2 bytes of each settings page) */
 #define ADDR_V_GOODSET  VARSET_ADDR

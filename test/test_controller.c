@@ -21,6 +21,8 @@ static struct {
     alltrax_controller ctrl;
     uint8_t page[VARSET_SIZE];
     uint8_t factory[FLASH_PAGE_SIZE];
+    uint8_t history_page[DATA_SIZE];
+    size_t history_bytes_read;
     uint8_t ram_tail[4];
     uint8_t request[PACKET_SIZE];
     uint8_t mode;
@@ -48,6 +50,7 @@ static struct {
     uint8_t fault_request_len, fault_reply_len;
     unsigned fault_occurrence, matches;
     uint32_t boot_rev, program_rev;
+    const char* model;
     uint8_t monitor_ram[0x200];  /* 0x2000F000-0x2000F1FF */
     size_t stuck_offset;         /* 1-based VARSET offset that stays 0xFF */
 } mock;
@@ -65,6 +68,7 @@ static void mock_reset(void)
     mock.ctrl.vid = ALLTRAX_VID;
     mock.ctrl.pid = ALLTRAX_PID_XCT;
     mock.ctrl.controller_type = ALLTRAX_CONTROLLER_XCT;
+    mock.model = "XCT48400-DCS";
     mock.ctrl.allow_writes = true;
     mock.ctrl.boot_rev = mock.boot_rev = 5002;
     mock.ctrl.program_rev = mock.program_rev = 5005;
@@ -96,14 +100,14 @@ static void record_post_step(char step)
 
 static uint8_t mock_read_byte(uint32_t addr)
 {
-    static const char model[] = "XCT48400-DCS";
-
     if (addr >= VARSET_ADDR && addr < VARSET_ADDR + VARSET_SIZE)
         return mock.page[addr - VARSET_ADDR];
     if (addr >= FACTSET_ADDR && addr < FACTSET_ADDR + FLASH_PAGE_SIZE)
         return mock.factory[addr - FACTSET_ADDR];
-    if (addr >= ADDR_CONTROLLER_INFO && addr < ADDR_CONTROLLER_INFO + sizeof(model))
-        return (uint8_t)model[addr - ADDR_CONTROLLER_INFO];
+    if (addr >= DATA_ADDR && addr < DATA_ADDR + DATA_SIZE)
+        return mock.history_page[addr - DATA_ADDR];
+    if (addr >= ADDR_CONTROLLER_INFO && addr - ADDR_CONTROLLER_INFO < strlen(mock.model))
+        return (uint8_t)mock.model[addr - ADDR_CONTROLLER_INFO];
     if (addr >= ADDR_BOOT_REV && addr < ADDR_BOOT_REV + 4)
         return (uint8_t)(mock.boot_rev >> ((addr - ADDR_BOOT_REV) * 8));
     if (addr >= ADDR_PRGM_REV && addr < ADDR_PRGM_REV + 4)
@@ -136,6 +140,12 @@ alltrax_error transport_write(alltrax_controller* ctrl,
     uint32_t addr = request_address();
 
     if (data[0] == 0x01) {
+        if (addr >= DATA_ADDR && addr < DATA_ADDR + DATA_SIZE) {
+            if (addr != DATA_ADDR + mock.history_bytes_read ||
+                data[1] > DATA_ADDR + DATA_SIZE - addr)
+                return ALLTRAX_ERR_INVALID_ARG;
+            mock.history_bytes_read += data[1];
+        }
         if (addr == ADDR_HARDWARE_CONFIG)
             mock.hw_config_reads++;
         return ALLTRAX_OK;
@@ -1241,6 +1251,89 @@ static int test_info_reports_policy_and_refreshes_revisions(void)
     return 0;
 }
 
+static void set_history_record(size_t index, const char* name)
+{
+    uint8_t* record = mock.history_page + index * 36;
+    const uint8_t date[] = { 0xEA, 0x07, 24, 11 }; /* 11/24/2026 */
+    memcpy(record, date, sizeof(date));
+    memset(record + 4, ' ', 32);
+    memcpy(record + 4, name, strlen(name));
+}
+
+static int test_field_map_history_parses_data_page(void)
+{
+    const char* full_name = "ABCDEFGHIJKLMNOPQRSTUVWXYZ012345";
+    alltrax_field_map_history out;
+
+    mock_reset();
+    memset(mock.history_page, 0xFF, sizeof(mock.history_page));
+    ASSERT_EQ(alltrax_read_field_map_history(&mock.ctrl, &out), ALLTRAX_OK);
+    ASSERT_EQ(out.record_count, 0);
+    ASSERT_EQ(out.map_count, 0);
+    ASSERT_EQ(mock.history_bytes_read, DATA_SIZE);
+    ASSERT_EQ(mock.requests, (DATA_SIZE + MAX_PAYLOAD - 1) / MAX_PAYLOAD);
+
+    mock_reset();
+    memset(mock.history_page, 0xFF, sizeof(mock.history_page));
+    set_history_record(0, "First map");
+    set_history_record(1, full_name);
+    set_history_record(3, "After terminator");
+    mock.history_page[2046] = 2;
+    mock.history_page[2047] = 1;
+    ASSERT_EQ(alltrax_read_field_map_history(&mock.ctrl, &out), ALLTRAX_OK);
+    ASSERT_EQ(out.record_count, 2);
+    ASSERT_EQ(out.map_count, 258 * 46 + 2);
+    ASSERT_EQ(out.records[0].month, 11);
+    ASSERT_EQ(out.records[0].day, 24);
+    ASSERT_EQ(out.records[0].year, 2026);
+    ASSERT_STR_EQ(out.records[0].name, "First map");
+    ASSERT_STR_EQ(out.records[1].name, full_name);
+
+    mock_reset();
+    for (size_t i = 0; i < 56; i++)
+        set_history_record(i, i == 55 ? "Last map" : "Full page");
+    memcpy(mock.history_page + 56 * 36, mock.history_page, 4);
+    ASSERT_EQ(alltrax_read_field_map_history(&mock.ctrl, &out), ALLTRAX_OK);
+    ASSERT_EQ(out.record_count, 56);
+    ASSERT_EQ(out.map_count, 56);
+    ASSERT_STR_EQ(out.records[55].name, "Last map");
+    return 0;
+}
+
+static int test_field_map_history_refuses_unsupported_controllers(void)
+{
+    alltrax_field_map_history out;
+    mock_reset();
+    mock.model = "SRX48300";
+    ASSERT_EQ(identify_controller(&mock.ctrl), ALLTRAX_OK);
+    unsigned requests = mock.requests;
+    ASSERT_EQ(alltrax_read_field_map_history(&mock.ctrl, &out), ALLTRAX_ERR_UNSUPPORTED);
+    ASSERT_EQ(mock.requests, requests);
+    ASSERT_TRUE(strstr(mock.ctrl.error_detail, "SRX") != NULL);
+
+    mock_reset();
+    mock.program_rev = 2002;
+    ASSERT_EQ(identify_controller(&mock.ctrl), ALLTRAX_OK);
+    ASSERT_EQ(alltrax_set_firmware_read_override(&mock.ctrl, true), ALLTRAX_OK);
+    requests = mock.requests;
+    ASSERT_EQ(alltrax_read_field_map_history(&mock.ctrl, &out), ALLTRAX_ERR_FIRMWARE);
+    ASSERT_EQ(mock.requests, requests);
+    ASSERT_TRUE(strstr(mock.ctrl.error_detail, "V2.002") != NULL);
+    return 0;
+}
+
+static int test_field_map_history_read_failure_leaves_output_unchanged(void)
+{
+    mock_reset();
+    mock_fault(DATA_ADDR + MAX_PAYLOAD, MAX_PAYLOAD, 0, 1);
+    alltrax_field_map_history out = { .map_count = 42, .record_count = 1 };
+    ASSERT_EQ(alltrax_read_field_map_history(&mock.ctrl, &out), ALLTRAX_ERR_PROTOCOL);
+    ASSERT_EQ(out.map_count, 42);
+    ASSERT_EQ(out.record_count, 1);
+    ASSERT_EQ(mock.requests, 2);
+    return 0;
+}
+
 static void put_monitor_le16(uint32_t addr, int16_t value)
 {
     mock.monitor_ram[addr - 0x2000F000] = (uint8_t)value;
@@ -1953,6 +2046,9 @@ int main(void)
     RUN_TEST(test_firmware_read_override_does_not_enable_writes);
     RUN_TEST(test_unvalidated_write_diagnostic_names_firmware);
     RUN_TEST(test_info_reports_policy_and_refreshes_revisions);
+    RUN_TEST(test_field_map_history_parses_data_page);
+    RUN_TEST(test_field_map_history_refuses_unsupported_controllers);
+    RUN_TEST(test_field_map_history_read_failure_leaves_output_unchanged);
     RUN_TEST(test_monitor_reads_user_profile_and_inputs);
     RUN_TEST(test_string_writes_are_space_padded);
     RUN_TEST(test_invalid_string_writes_rejected_before_io);

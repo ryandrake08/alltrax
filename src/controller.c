@@ -194,6 +194,7 @@ alltrax_error identify_controller(alltrax_controller* ctrl)
     char model[16];
     get_string(buf, sizeof(buf), model, sizeof(model));
     ctrl->controller_type = detect_controller_type(model);
+    ctrl->is_srx = strstr(model, "SRX") != NULL;
     rc = require_xct_controller(ctrl);
     if (rc) {
         set_error_detail(ctrl, "Unsupported controller model '%s'; "
@@ -374,6 +375,7 @@ alltrax_error alltrax_get_info(alltrax_controller* ctrl, alltrax_info* out)
     get_string(buf, 15, out->model, sizeof(out->model));
     out->controller_type = detect_controller_type(out->model);
     ctrl->controller_type = out->controller_type;
+    ctrl->is_srx = strstr(out->model, "SRX") != NULL;
     rc = require_xct_controller(ctrl);
     if (rc) return rc;
     get_string(buf + 0x10, 15, out->build_date, sizeof(out->build_date));
@@ -1673,6 +1675,48 @@ alltrax_error alltrax_write_curve(alltrax_controller* ctrl,
 {
     const alltrax_assignment item = { .curve = def, .curve_data = data };
     return alltrax_write_assignments(ctrl, &item, 1, opts);
+}
+
+/* ------------------------------------------------------------------ */
+/* Field-map history                                                   */
+/* ------------------------------------------------------------------ */
+
+alltrax_error alltrax_read_field_map_history(alltrax_controller* ctrl,
+    alltrax_field_map_history* out)
+{
+    if (!out) return ALLTRAX_ERR_INVALID_ARG;
+    alltrax_error rc = require_readable_firmware(ctrl);
+    if (rc) return rc;
+    if (ctrl->is_srx) {
+        set_error_detail(ctrl, "Field-map history is unavailable on SRX controllers");
+        return ALLTRAX_ERR_UNSUPPORTED;
+    }
+    if (ctrl->program_rev <= 2002) {
+        set_error_detail(ctrl, "Field-map history requires program firmware newer than V2.002");
+        return ALLTRAX_ERR_FIRMWARE;
+    }
+
+    uint8_t page[DATA_SIZE];
+    rc = read_memory_range(ctrl, DATA_ADDR, sizeof(page), page);
+    if (rc) return rc;
+
+    memset(out, 0, sizeof(*out));
+    for (size_t i = 0; i < ALLTRAX_FIELD_MAP_HISTORY_MAX_RECORDS; i++) {
+        const uint8_t* entry = page + i * 36;
+        if (get_le32(entry) == UINT32_MAX) break;
+        alltrax_field_map_history_record* record = &out->records[i];
+        record->year = get_le16(entry);
+        record->day = entry[2];
+        record->month = entry[3];
+        get_string(entry + 4, 32, record->name, sizeof(record->name));
+        out->record_count++;
+    }
+
+    uint32_t rollovers = get_le16(page + sizeof(page) - 2);
+    if (rollovers == UINT16_MAX) rollovers = 0;
+    /* Each rollover stands for 46 older records no longer on the page. */
+    out->map_count = rollovers * 46 + (uint32_t)out->record_count;
+    return ALLTRAX_OK;
 }
 
 /* ------------------------------------------------------------------ */

@@ -159,6 +159,7 @@ int cmd_restore_defaults(int argc, char** argv);
 int cmd_fan_test(int argc, char** argv);
 int cmd_devices(int argc, char** argv);
 int cmd_monitor(int argc, char** argv);
+int cmd_field_map(int argc, char** argv);
 int cmd_errors(int argc, char** argv);
 int cmd_config(int argc, char** argv);
 int cmd_curve(int argc, char** argv);

@@ -1450,6 +1450,11 @@ static int test_string_encode_valid(void)
  * in place of runtime shape and span checks. */
 static int test_catalog_invariants(void)
 {
+    ASSERT_EQ(DATA_ADDR, 0x08006800);
+    ASSERT_EQ(DATA_SIZE, 2048);
+    ASSERT_TRUE(address_span_fits(DATA_ADDR, DATA_SIZE, FLASH_BASE,
+                                  FLASH_END - FLASH_BASE));
+    ASSERT_TRUE(ALLTRAX_FIELD_MAP_HISTORY_MAX_RECORDS * 36 <= DATA_SIZE - 2);
     for (int g = 0; g < ALLTRAX_VARS_GROUP_COUNT; g++) {
         size_t n;
         const alltrax_var_def* defs = alltrax_get_var_defs((alltrax_var_group)g, &n);

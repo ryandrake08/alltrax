@@ -80,6 +80,7 @@ Alltrax Controller Monitor
 | `alltrax curve reset <type>` | Restore factory curve |
 | `alltrax throttle list` | List throttle labels supported by the connected controller; `*` marks the current one |
 | `alltrax throttle set <name> [--default-curve] [--no-hpd]` | Select a throttle and reboot |
+| `alltrax field-map history` | List saved field-map names, dates, and the total map count |
 
 Command options may appear before or after arguments. Unknown options, options
 a command does not accept, missing option values, and extra arguments are
@@ -261,6 +262,10 @@ page used for the write is written back with the map.
 alltrax write Turbo_Start_RPM=2500 --field-map
 alltrax curve reset field --field-map
 ```
+
+`alltrax field-map history` reads the controller's history on XCT-family
+controllers other than SRX with program firmware newer than V2.002. The total
+map count includes older entries that rolled off the history page.
 
 ### Config save/load
 

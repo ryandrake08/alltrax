@@ -502,6 +502,30 @@ const alltrax_curve_preset* alltrax_find_curve_preset(
     const char* curve_type, const char* name);
 
 /* ------------------------------------------------------------------ */
+/* Field-map history                                                   */
+/* ------------------------------------------------------------------ */
+
+#define ALLTRAX_FIELD_MAP_HISTORY_MAX_RECORDS 56
+
+typedef struct {
+    uint16_t year;
+    uint8_t month, day;
+    char name[33];  /* NUL-terminated, with trailing padding removed */
+} alltrax_field_map_history_record;
+
+typedef struct {
+    uint32_t map_count;    /* Total including records rolled off the page */
+    size_t record_count;  /* Number of records still on the page */
+    alltrax_field_map_history_record records[ALLTRAX_FIELD_MAP_HISTORY_MAX_RECORDS];
+} alltrax_field_map_history;
+
+/* Read field-map history on non-SRX XCT-family controllers with program
+ * firmware newer than V2.002, subject to the normal firmware read bounds.
+ * On failure, the required caller-owned output is unchanged. */
+alltrax_error alltrax_read_field_map_history(alltrax_controller* ctrl,
+    alltrax_field_map_history* out);
+
+/* ------------------------------------------------------------------ */
 /* Monitoring                                                          */
 /* ------------------------------------------------------------------ */
 

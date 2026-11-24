@@ -87,6 +87,7 @@ static struct {
     uint32_t value_addr, value;
     uint8_t page[VARSET_SIZE];
     uint8_t factory[FLASH_PAGE_SIZE];
+    uint8_t history_page[DATA_SIZE];
     uint8_t mode;
     const char* model;
     uint32_t throttle_mask;
@@ -214,6 +215,8 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
             buf[8 + i] = (uint8_t)(device.fact_goodset >> ((a - FACTSET_ADDR) * 8));
         else if (a >= FACTSET_ADDR && a - FACTSET_ADDR < FLASH_PAGE_SIZE)
             buf[8 + i] = device.factory[a - FACTSET_ADDR];
+        else if (a >= DATA_ADDR && a - DATA_ADDR < DATA_SIZE)
+            buf[8 + i] = device.history_page[a - DATA_ADDR];
         if (device.value_addr && a - device.value_addr < 4)
             buf[8 + i] = (uint8_t)(device.value >> ((a - device.value_addr) * 8));
         if (device.monitor_stop_addr && a - 0x2000F000u < sizeof(device.monitor_ram))
@@ -1535,6 +1538,28 @@ static void monitor_fixture(unsigned state, bool keyswitch)
     device.monitor_ram[0x036] = 1; /* Low Battery previously occurred. */
 }
 
+static int test_field_map_history_command(void)
+{
+    char out[128];
+    char* invalid[] = { "field-map", "history", "extra" };
+    writable_device_reset();
+    ASSERT_EQ(capture_cli(cmd_field_map, 3, invalid, out, sizeof(out)), 1);
+    ASSERT_EQ(open_calls, 0);
+
+    const uint8_t record[] = { 0xEA, 0x07, 24, 11, 'M', 'a', 'p' };
+    memset(device.history_page, 0xFF, sizeof(device.history_page));
+    memset(device.history_page, ' ', 36);
+    memcpy(device.history_page, record, sizeof(record));
+    device.history_page[2046] = 1;
+    device.history_page[2047] = 0;
+
+    char* argv[] = { "field-map", "history" };
+    ASSERT_EQ(capture_cli(cmd_field_map, 2, argv, out, sizeof(out)), 0);
+    ASSERT_STR_EQ(out, "Map count: 47\n11/24/2026  Map\n");
+    ASSERT_EQ(device.mutations, 0);
+    return 0;
+}
+
 static int test_monitor_display_gates_live_samples(void)
 {
     char out[4096];
@@ -2191,6 +2216,7 @@ int main(void)
     RUN_TEST(test_reset_wait_timeout_does_not_resend_reset);
     RUN_TEST(test_restore_defaults_cli_keep_flags_and_no_wait);
     RUN_TEST(test_throttle_list_filters_by_model_and_mask);
+    RUN_TEST(test_field_map_history_command);
     RUN_TEST(test_monitor_display_gates_live_samples);
     RUN_TEST(test_monitor_throttle_reads_three_blocks_and_blanks_with_ksi_off);
     RUN_TEST(test_monitor_csv_appends_toolkit_layout_with_timestamp);
