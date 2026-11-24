@@ -8,7 +8,7 @@
 static int reboot(int argc, char** argv, bool clear_autocal)
 {
     const char* command = clear_autocal ? "clear-autocal" : "reset";
-    const unsigned allowed = CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_NO_WAIT;
+    const cli_option_mask allowed = CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_NO_WAIT;
     cli_flags flags;
     if (cli_parse_args(argc, argv, command, allowed, 0, 0, &flags) < 0) {
         fprintf(stderr, "Usage: alltrax %s [options]\n", command);

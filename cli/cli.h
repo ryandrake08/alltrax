@@ -7,6 +7,7 @@
 
 #include "alltrax.h"
 #include <stdbool.h>
+#include <stdint.h>
 #include <stdio.h>
 
 /* Global --device path (NULL = auto-detect) */
@@ -17,29 +18,32 @@ extern const char* cli_device_path;
 extern bool cli_ignore_fw_bounds;
 
 /* Options a command accepts, passed to cli_parse_args() */
-enum {
-    /* User options use bits 0–15. */
-    CLI_OPT_NO_VOLTAGE_LINK     = 1u << 0,
-    CLI_OPT_ALLOW_UNVALIDATED   = 1u << 1,
-    CLI_OPT_FIELD_MAP           = 1u << 2,
-    CLI_OPT_CONFIG_KEY          = 1u << 3,  /* takes a value */
-    CLI_OPT_RESET               = 1u << 4,
-    CLI_OPT_PLOT                = 1u << 5,
-    CLI_OPT_FILE                = 1u << 6,  /* takes a value */
-    CLI_OPT_PRESET              = 1u << 7,  /* takes a value */
-    CLI_OPT_NO_WAIT             = 1u << 8,
-    CLI_OPT_FACTORY             = 1u << 9,
-    CLI_OPT_KEEP_THROTTLE       = 1u << 10,
-    CLI_OPT_KEEP_FIELD_MAP      = 1u << 11,
-    CLI_OPT_DEFAULT_CURVE       = 1u << 12,
-    CLI_OPT_NO_HPD              = 1u << 13,
+typedef uint64_t cli_option_mask;
 
-    /* Debug and development bypasses */
-    CLI_OPT_DEBUG_NO_CAL        = 1u << 16,
-    CLI_OPT_DEBUG_NO_VERIFY     = 1u << 17,
-    CLI_OPT_DEBUG_NO_GOODSET    = 1u << 18,
-    CLI_OPT_DEBUG_NO_POST_WRITE = 1u << 19,
-};
+/* Bits 0–31 are reserved for user options. */
+#define CLI_OPT_NO_VOLTAGE_LINK     (UINT64_C(1) << 0)
+#define CLI_OPT_ALLOW_UNVALIDATED   (UINT64_C(1) << 1)
+#define CLI_OPT_FIELD_MAP           (UINT64_C(1) << 2)
+#define CLI_OPT_CONFIG_KEY          (UINT64_C(1) << 3)  /* takes a value */
+#define CLI_OPT_RESET               (UINT64_C(1) << 4)
+#define CLI_OPT_PLOT                (UINT64_C(1) << 5)
+#define CLI_OPT_FILE                (UINT64_C(1) << 6)  /* takes a value */
+#define CLI_OPT_PRESET              (UINT64_C(1) << 7)  /* takes a value */
+#define CLI_OPT_NO_WAIT             (UINT64_C(1) << 8)
+#define CLI_OPT_FACTORY             (UINT64_C(1) << 9)
+#define CLI_OPT_KEEP_THROTTLE       (UINT64_C(1) << 10)
+#define CLI_OPT_KEEP_FIELD_MAP      (UINT64_C(1) << 11)
+#define CLI_OPT_DEFAULT_CURVE       (UINT64_C(1) << 12)
+#define CLI_OPT_NO_HPD              (UINT64_C(1) << 13)
+#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 14) /* takes a value */
+#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 15) /* takes a value */
+#define CLI_OPT_MONITOR_THROTTLE    (UINT64_C(1) << 16)
+
+/* Bits 32–63 are reserved for debug and development bypasses. */
+#define CLI_OPT_DEBUG_NO_CAL        (UINT64_C(1) << 32)
+#define CLI_OPT_DEBUG_NO_VERIFY     (UINT64_C(1) << 33)
+#define CLI_OPT_DEBUG_NO_GOODSET    (UINT64_C(1) << 34)
+#define CLI_OPT_DEBUG_NO_POST_WRITE (UINT64_C(1) << 35)
 
 /* Options accepted by every command that writes settings */
 #define CLI_OPTS_WRITE (CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_RESET | CLI_OPT_NO_WAIT | \
@@ -59,6 +63,7 @@ typedef struct {
     bool keep_field_map;
     bool default_curve;
     bool no_hpd;
+    bool monitor_throttle;
     bool debug_no_cal;
     bool debug_no_verify;
     bool debug_no_goodset;
@@ -66,6 +71,8 @@ typedef struct {
     const char* file;    /* --file value, or NULL */
     const char* preset;  /* --preset value, or NULL */
     const char* config_key;  /* --config-key value, or NULL */
+    const char* monitor_rate;
+    const char* monitor_log;
 } cli_flags;
 
 /* A 3DES-CBC key and IV. encrypt is false when files are read and
@@ -92,11 +99,11 @@ int cli_resolve_key(const char* command, const char* option, const char* value,
  * (max_args < 0: no limit). Returns the positional count, or -1 after printing
  * an error naming `command`. */
 int cli_parse_args(int argc, char** argv, const char* command,
-    unsigned allowed, int min_args, int max_args, cli_flags* flags);
+    cli_option_mask allowed, int min_args, int max_args, cli_flags* flags);
 
 /* Print the options in `allowed`: user options, then debug bypasses under
  * their own heading. */
-void cli_print_options(FILE* out, unsigned allowed);
+void cli_print_options(FILE* out, cli_option_mask allowed);
 
 /* Library write options for the parsed flags. report may be NULL. */
 alltrax_write_opts cli_write_opts(const cli_flags* flags,

@@ -162,7 +162,9 @@ int cmd_throttle(int argc, char** argv)
     }
 
     cli_flags flags;
-    const unsigned allowed = set ? CLI_OPTS_WRITE | CLI_OPT_DEFAULT_CURVE | CLI_OPT_NO_HPD : 0;
+    const cli_option_mask allowed = set
+        ? CLI_OPTS_WRITE | CLI_OPT_DEFAULT_CURVE | CLI_OPT_NO_HPD
+        : 0;
     const int positional = set ? 1 : 0;
     if (cli_parse_args(argc - 1, argv + 1, set ? "throttle set" : "throttle list",
                        allowed, positional, positional, &flags) < 0) {

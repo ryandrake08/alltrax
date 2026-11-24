@@ -1718,7 +1718,7 @@ alltrax_error alltrax_read_monitor(alltrax_controller* ctrl,
     out->relay_on    = (int16_t)get_le16(blocks[2] + 2);  /* 0x2000F092 */
     out->fan_status  = blocks[2][4] != 0;   /* 0x2000F094 */
     out->hpd_ran     = blocks[2][5] != 0;   /* 0x2000F095 */
-    out->bad_vars_code = (int16_t)get_le16(blocks[2] + 6); /* 0x2000F096 */
+    out->bad_vars_code = get_le16(blocks[2] + 6); /* 0x2000F096 */
     out->footswitch  = blocks[2][8] != 0;   /* 0x2000F098 */
     out->forward     = blocks[2][9] != 0;   /* 0x2000F099 */
     out->user1_input = blocks[2][10] != 0;  /* 0x2000F09A */

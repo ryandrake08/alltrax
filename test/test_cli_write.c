@@ -91,6 +91,10 @@ static struct {
     const char* model;
     uint32_t throttle_mask;
     bool filter_throttles;
+    uint32_t monitor_stop_addr;
+    unsigned samples_left;
+    uint8_t monitor_ram[0x166];
+    bool monitor_speed_sensor, monitor_bms;
 } device;
 
 static uint32_t request_addr(void)
@@ -142,6 +146,11 @@ alltrax_error transport_write(alltrax_controller* ctrl,
 static uint8_t identity_byte(uint32_t a)
 {
     const char* model = device.model ? device.model : "XCT48400-DCS";
+    if (device.monitor_stop_addr) {
+        if (a == ADDR_HARDWARE_CONFIG + 6) return device.monitor_speed_sensor;
+        if (a == ADDR_HARDWARE_CONFIG + 8) return device.monitor_bms;
+        if (a == ADDR_HARDWARE_CONFIG + 10 || a == ADDR_HARDWARE_CONFIG + 21) return 1;
+    }
     const struct { uint32_t addr; uint32_t value; } words[] = {
         { ADDR_CONTROLLER_INFO + 0x24, 5002 }, { ADDR_CONTROLLER_INFO + 0x28, 5005 },
         { ADDR_HARDWARE_CONFIG, 48 | (400u << 16) },
@@ -185,6 +194,13 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
     }
 
     uint32_t addr = request_addr();
+    if (device.monitor_stop_addr && addr == device.monitor_stop_addr) {
+        if (device.samples_left == 0) {
+            raise(SIGINT);
+            return ALLTRAX_ERR_USB;
+        }
+        device.samples_left--;
+    }
     for (uint32_t i = 0; i < buf[1]; i++) {
         uint32_t a = addr + i;
         buf[8 + i] = identity_byte(a);
@@ -200,6 +216,8 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
             buf[8 + i] = device.factory[a - FACTSET_ADDR];
         if (device.value_addr && a - device.value_addr < 4)
             buf[8 + i] = (uint8_t)(device.value >> ((a - device.value_addr) * 8));
+        if (device.monitor_stop_addr && a - 0x2000F000u < sizeof(device.monitor_ram))
+            buf[8 + i] = device.monitor_ram[a - 0x2000F000u];
         if (a == 0x2000F090) buf[8 + i] = device.keyswitch;
     }
     return ALLTRAX_OK;
@@ -495,8 +513,8 @@ static int test_invalid_throttle_config_rejected_before_transport(void)
 
 static int test_options_accepted_before_and_after_positionals(void)
 {
-    const unsigned allowed = CLI_OPT_DEBUG_NO_CAL | CLI_OPT_ALLOW_UNVALIDATED |
-                             CLI_OPT_RESET | CLI_OPT_FILE;
+    const cli_option_mask allowed = CLI_OPT_DEBUG_NO_CAL | CLI_OPT_ALLOW_UNVALIDATED |
+                                    CLI_OPT_RESET | CLI_OPT_FILE;
     char* argv[] = {
         "set", "--reset", "linearization", "--debug-no-cal", "-1,0",
         "--file", "lin.csv", "-", "--allow-unvalidated-firmware",
@@ -517,7 +535,7 @@ static int test_options_accepted_before_and_after_positionals(void)
 
 static int test_invalid_options_and_argument_counts_rejected(void)
 {
-    const unsigned allowed = CLI_OPT_RESET | CLI_OPT_FILE;
+    const cli_option_mask allowed = CLI_OPT_RESET | CLI_OPT_FILE;
     struct { int argc; char* argv[5]; int min, max; } bad[] = {
         { 2, { "cmd", "--bogus" }, 0, -1 },            /* unknown */
         { 2, { "cmd", "--debug-no-goodset" }, 0, -1 }, /* not accepted */
@@ -543,15 +561,16 @@ static int test_write_options_map_to_library_options(void)
 {
     char* argv[] = {
         "write", "--debug-no-cal", "--debug-no-verify", "--debug-no-goodset",
-        "--allow-unvalidated-firmware", "--no-voltage-link",
+        "--debug-no-post-write", "--allow-unvalidated-firmware", "--no-voltage-link",
     };
     cli_flags flags;
-    ASSERT_EQ(cli_parse_args(6, argv, "write", ~0u, 0, -1, &flags), 0);
+    ASSERT_EQ(cli_parse_args(7, argv, "write", CLI_OPTS_WRITE | CLI_OPT_NO_VOLTAGE_LINK,
+                             0, -1, &flags), 0);
     alltrax_write_report report;
     alltrax_write_opts opts = cli_write_opts(&flags, &report);
     ASSERT_TRUE(opts.report == &report);
     ASSERT_TRUE(opts.skip_cal && opts.skip_verify && opts.skip_goodset &&
-                opts.skip_fw_check && opts.skip_voltage_link);
+                opts.skip_post_write && opts.skip_fw_check && opts.skip_voltage_link);
     return 0;
 }
 
@@ -1445,6 +1464,235 @@ static void set_page_bytes(const char* name, const char* bytes, size_t len)
     memcpy(device.page + (var->address - VARSET_ADDR), bytes, len);
 }
 
+static void monitor_word(size_t offset, uint16_t value)
+{
+    device.monitor_ram[offset] = (uint8_t)value;
+    device.monitor_ram[offset + 1] = (uint8_t)(value >> 8);
+}
+
+static void monitor_fixture(unsigned state, bool keyswitch)
+{
+    writable_device_reset();
+    device.monitor_stop_addr = 0x2000F000;
+    device.samples_left = 1;
+    device.keyswitch = keyswitch;
+    device.monitor_bms = true;
+    device.monitor_speed_sensor = true;
+    device.page[0xA7] = 1;
+    device.page[0xBC] = 1;
+    device.page[0xBE] = (uint8_t)state;
+    set_page_bytes("F_Table_Name", "A,\"B\"", 5);
+    monitor_word(0x110, 528);
+    monitor_word(0x116, 2047);
+    monitor_word(0x118, 2047);
+    monitor_word(0x122, 4096);
+    monitor_word(0x128, 4095);
+    monitor_word(0x138, 3500);
+    monitor_word(0x13A, 50);
+    monitor_word(0x14A, 875);
+    monitor_word(0x15E, (uint16_t)-1);
+    monitor_word(0x160, 2);
+    monitor_word(0x162, (uint16_t)-1);
+    monitor_word(0x164, 75);
+    monitor_word(0x096, 65535);
+    device.monitor_ram[0x09A] = device.monitor_ram[0x09C] = device.monitor_ram[0x09D] = 1;
+    device.monitor_ram[0x09F] = 1;
+    device.monitor_ram[0x036] = 1; /* Low Battery previously occurred. */
+}
+
+static int test_monitor_display_gates_live_samples(void)
+{
+    char out[4096];
+    char* argv[] = { "monitor", "--rate", "100" };
+    for (unsigned state = 0; state < 3; state++) {
+        monitor_fixture(state, true);
+        if (state == 0) {
+            device.page[0xA7] = 0; /* Sensor present, speed limiting off. */
+            device.monitor_bms = false;
+        }
+        if (state == 2) device.page[0xA0] = 10; /* USB uses setpoint. */
+        ASSERT_EQ(capture_cli(cmd_monitor, 3, argv, out, sizeof(out)), 0);
+        ASSERT_TRUE(strstr(out, "Motor Voltage         26.4 V") != NULL);
+        ASSERT_TRUE(strstr(out, "Bad Vars Code         65535") != NULL);
+        ASSERT_TRUE(strstr(out, "Active: Over Temperature") != NULL);
+        ASSERT_TRUE(strstr(out, "Previously occurred: Low Battery") != NULL);
+        ASSERT_TRUE(strstr(out, "AuxOut                ON") != NULL);
+        ASSERT_TRUE(strstr(out, state == 2 ? "Throttle              100 %" : "Throttle              49 %") != NULL);
+        if (state == 0) {
+            ASSERT_TRUE(strstr(out, "User 1 Input          ON") != NULL);
+            ASSERT_TRUE(strstr(out, "Motor Speed           N/A") != NULL);
+            ASSERT_NULL(strstr(out, "State of Charge"));
+        } else {
+            ASSERT_TRUE(strstr(out, "Motor Speed           0 RPM") != NULL);
+            ASSERT_TRUE(strstr(out, "State of Charge       87.5 %") != NULL);
+            ASSERT_TRUE(strstr(out, "Disconnected") != NULL);
+            ASSERT_TRUE(strstr(out, state == 1 ? "Selected Profile      User 2"
+                                              : "User2 (Speed)         75 %") != NULL);
+        }
+        ASSERT_EQ(device.mutations, 0);
+    }
+    monitor_fixture(1, false);
+    ASSERT_EQ(capture_cli(cmd_monitor, 3, argv, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "Throttle              0 %") != NULL);
+    ASSERT_TRUE(strstr(out, "Temperature           -") != NULL);
+    ASSERT_TRUE(strstr(out, "User 3 Input          -") != NULL);
+    ASSERT_TRUE(strstr(out, "Charger               -") != NULL);
+    ASSERT_TRUE(strstr(out, "State of Charge       -") != NULL);
+    ASSERT_NULL(strstr(out, "Previously occurred"));
+    ASSERT_NULL(strstr(out, "Active:"));
+
+    monitor_fixture(1, false);
+    device.monitor_ram[14] = device.monitor_ram[15] = device.monitor_ram[16] = 1;
+    ASSERT_EQ(capture_cli(cmd_monitor, 3, argv, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "Active: Aux Stuck") != NULL);
+    ASSERT_TRUE(strstr(out, "Active: Bad Vars") != NULL);
+    ASSERT_NULL(strstr(out, "BMS Missing"));
+    ASSERT_NULL(strstr(out, "Over Temperature"));
+    ASSERT_NULL(strstr(out, "Low Battery"));
+
+    monitor_fixture(1, false);
+    device.monitor_ram[15] = 1;
+    monitor_word(0x050, 1); /* Bad Vars previously occurred. */
+    device.monitor_bms = false;
+    ASSERT_EQ(capture_cli(cmd_monitor, 3, argv, out, sizeof(out)), 0);
+    ASSERT_NULL(strstr(out, "Aux Stuck"));
+    ASSERT_TRUE(strstr(out, "Previously occurred: Bad Vars") != NULL);
+
+    monitor_fixture(0, true);
+    monitor_word(0x096, 0);
+    device.page[0] = 0xFF;
+    device.factory[0xA0] = 9; /* Factory Pump mode uses the setpoint. */
+    device.factory[0xBE] = 1;
+    ASSERT_EQ(capture_cli(cmd_monitor, 3, argv, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "Selected Profile      User 2") != NULL);
+    ASSERT_TRUE(strstr(out, "Throttle              100 %") != NULL);
+    ASSERT_NULL(strstr(out, "State of Charge")); /* Factory does not expect BMS. */
+    ASSERT_NULL(strstr(out, "Bad Vars Code"));
+    return 0;
+}
+
+static int test_monitor_throttle_reads_three_blocks_and_blanks_with_ksi_off(void)
+{
+    char out[512];
+    char* argv[] = { "monitor", "--throttle" };
+    for (int on = 0; on <= 1; on++) {
+        monitor_fixture(0, on != 0);
+        device.monitor_stop_addr = 0x2000F090;
+        ASSERT_EQ(capture_cli(cmd_monitor, 2, argv, out, sizeof(out)), 0);
+        ASSERT_EQ(device.reads, 4); /* Three blocks plus interrupted next sample. */
+        ASSERT_EQ(device.mutations, 0);
+        if (on)
+            ASSERT_TRUE(strstr(out, "Input 0 %   Linearized 100 %   Setpoint 100 %   Output 49 %") != NULL);
+        else {
+            ASSERT_TRUE(strstr(out, "Keyswitch off") != NULL);
+            ASSERT_NULL(strchr(out, '%'));
+        }
+    }
+    return 0;
+}
+
+static size_t comma_count(const char* line)
+{
+    size_t count = 0;
+    for (; *line && *line != '\n'; line++)
+        if (*line == ',') count++;
+    return count;
+}
+
+static int test_monitor_csv_appends_toolkit_layout_with_timestamp(void)
+{
+    char path[] = "/tmp/alltrax-monitor-test-XXXXXX";
+    int fd = mkstemp(path);
+    ASSERT_TRUE(fd >= 0);
+    close(fd);
+    char out[4096], csv[8192];
+    char* argv[] = { "monitor", "--log", path };
+    for (int sample = 0; sample < 3; sample++) {
+        bool keyswitch = sample < 2;
+        monitor_fixture(2, keyswitch);
+        device.monitor_ram[14] = sample != 0;
+        device.monitor_ram[15] = device.monitor_ram[16] = !keyswitch;
+        if (sample == 1) monitor_word(0x096, 0);
+        int rc = capture_cli(cmd_monitor, 3, argv, out, sizeof(out));
+        if (rc) remove(path);
+        ASSERT_EQ(rc, 0);
+        ASSERT_TRUE(strstr(out, sample ? "State of Charge       -" : "State of Charge       87.5 %") != NULL);
+    }
+    FILE* file = fopen(path, "r");
+    remove(path);
+    ASSERT_TRUE(file != NULL);
+    size_t n = fread(csv, 1, sizeof(csv) - 1, file);
+    fclose(file);
+    csv[n] = '\0';
+    ASSERT_TRUE(strstr(csv, "Model: XCT48400-DCS,,,Serial: 0,,,\"Field Map: A,\"\"B\"\"\"\n") != NULL);
+    char* header = strstr(csv, "Date,Time,Keyswitch,Footswitch,Forward Switch,Reverse Switch,");
+    ASSERT_TRUE(header != NULL);
+    ASSERT_TRUE(strstr(header, "User2 Input Percent (Speed),User1 Input Percent (Regen),") != NULL);
+    ASSERT_TRUE(strstr(header, "Bad Vars Code,,,Throttle Position,Throttle Pointer,Overtemp Cap,Timestamp\n") != NULL);
+    const char* row = strchr(header, '\n') + 1;
+    ASSERT_EQ(comma_count(row), comma_count(header));
+    ASSERT_TRUE(strstr(row, ",75,-1,1,49,0,87.5,52.8,") != NULL);
+    ASSERT_TRUE(strstr(row, ",65535,,,2047.0,4095.0,3500,") != NULL);
+    const char* end = strchr(row, '\n');
+    ASSERT_TRUE(end != NULL && end > row && end[-1] == 'Z');
+    const char* next_header = strstr(end, "Date,Time,Keyswitch");
+    ASSERT_TRUE(next_header != NULL);
+    const char* next_row = strchr(next_header, '\n') + 1;
+    ASSERT_EQ(comma_count(next_row), comma_count(next_header));
+    ASSERT_TRUE(strstr(next_row, ",75,-1,1,49,0,,52.8,") != NULL);
+    ASSERT_TRUE(strstr(next_row, ",0,,,2047.0,4095.0,3500,") != NULL);
+    const char* off_header = strstr(next_row, "Date,Time,Keyswitch");
+    ASSERT_TRUE(off_header != NULL);
+    const char* off_row = strchr(off_header, '\n') + 1;
+    ASSERT_EQ(comma_count(off_row), comma_count(off_header));
+    ASSERT_TRUE(strstr(off_row, ",0,1,1,65535,,,2047.0,4095.0,3500,") != NULL);
+    return 0;
+}
+
+static int test_monitor_rejects_bad_options_before_open(void)
+{
+    char* bad_rate[] = { "monitor", "--rate", "250" };
+    char* throttle_log[] = { "monitor", "--throttle", "--log", "unused.csv" };
+    ASSERT_EQ(run_writable(cmd_monitor, 3, bad_rate), 1);
+    ASSERT_EQ(open_calls, 0);
+    ASSERT_EQ(run_writable(cmd_monitor, 4, throttle_log), 1);
+    ASSERT_EQ(open_calls, 0);
+    return 0;
+}
+
+static int test_monitor_sets_up_log_before_polling(void)
+{
+    char out[512];
+    char* invalid[] = { "monitor", "--log", "." };
+    monitor_fixture(2, true);
+    ASSERT_EQ(capture_cli(cmd_monitor, 3, invalid, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "could not open monitor log") != NULL);
+    ASSERT_EQ(open_calls, 0);
+    ASSERT_EQ(transport_calls, 0);
+
+    char path[] = "/tmp/alltrax-monitor-test-XXXXXX";
+    int fd = mkstemp(path);
+    ASSERT_TRUE(fd >= 0);
+    close(fd);
+    char* argv[] = { "monitor", "--log", path };
+    device.samples_left = 0; /* Interrupt the first poll before it returns a sample. */
+    int rc = capture_cli(cmd_monitor, 3, argv, out, sizeof(out));
+    FILE* file = fopen(path, "r");
+    remove(path);
+    ASSERT_TRUE(file != NULL);
+    char csv[2048];
+    size_t n = fread(csv, 1, sizeof(csv) - 1, file);
+    fclose(file);
+    csv[n] = '\0';
+    ASSERT_EQ(rc, 0);
+    ASSERT_TRUE(strstr(csv, "Model: XCT48400-DCS") != NULL);
+    ASSERT_TRUE(strstr(csv, "Date,Time,Keyswitch,") != NULL);
+    const char* end = strstr(csv, ",Timestamp\n");
+    ASSERT_TRUE(end != NULL);
+    ASSERT_STR_EQ(end, ",Timestamp\n");
+    return 0;
+}
+
 static int test_throttle_list_filters_by_model_and_mask(void)
 {
     char out[640];
@@ -1906,6 +2154,11 @@ int main(void)
     RUN_TEST(test_reset_wait_timeout_does_not_resend_reset);
     RUN_TEST(test_restore_defaults_cli_keep_flags_and_no_wait);
     RUN_TEST(test_throttle_list_filters_by_model_and_mask);
+    RUN_TEST(test_monitor_display_gates_live_samples);
+    RUN_TEST(test_monitor_throttle_reads_three_blocks_and_blanks_with_ksi_off);
+    RUN_TEST(test_monitor_csv_appends_toolkit_layout_with_timestamp);
+    RUN_TEST(test_monitor_rejects_bad_options_before_open);
+    RUN_TEST(test_monitor_sets_up_log_before_polling);
     RUN_TEST(test_throttle_list_marks_current_entry);
     RUN_TEST(test_throttle_set_refuses_ambiguous_unknown_and_unavailable);
     RUN_TEST(test_throttle_set_curve_and_label_in_one_batch);

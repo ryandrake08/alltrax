@@ -2,8 +2,8 @@
 
 int cmd_restore_defaults(int argc, char** argv)
 {
-    const unsigned allowed = CLI_OPT_KEEP_THROTTLE | CLI_OPT_KEEP_FIELD_MAP |
-                             CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_NO_WAIT;
+    const cli_option_mask allowed = CLI_OPT_KEEP_THROTTLE | CLI_OPT_KEEP_FIELD_MAP |
+                                    CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_NO_WAIT;
     cli_flags flags;
     if (cli_parse_args(argc, argv, "restore-defaults", allowed, 0, 0, &flags) < 0) {
         fprintf(stderr, "Usage: alltrax restore-defaults [options]\n");

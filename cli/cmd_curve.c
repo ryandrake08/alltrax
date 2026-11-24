@@ -293,8 +293,8 @@ static int do_get(int argc, char** argv)
 static int do_set(int argc, char** argv)
 {
     cli_flags flags;
-    const unsigned allowed = CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP |
-                             CLI_OPT_FILE | CLI_OPT_PRESET;
+    const cli_option_mask allowed = CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP |
+                                    CLI_OPT_FILE | CLI_OPT_PRESET;
     int nargs = cli_parse_args(argc, argv, "curve set", allowed, 1, -1, &flags);
     if (nargs < 0) {
         fprintf(stderr,
@@ -479,7 +479,7 @@ static int do_diff(int argc, char** argv)
 static int do_curve_reset(int argc, char** argv)
 {
     cli_flags flags;
-    const unsigned allowed = CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP;
+    const cli_option_mask allowed = CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP;
     if (cli_parse_args(argc, argv, "curve reset", allowed, 1, 1, &flags) < 0) {
         fprintf(stderr,
             "Usage: alltrax curve reset <type> [options]\n"

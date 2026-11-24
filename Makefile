@@ -94,7 +94,7 @@ ifeq ($(BUILD_CLI),yes)
   ALL_SRC := $(LIB_SRC) $(CLI_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c
   all: $(CLI) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(NOKEYS_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
 else
-  ALL_SRC := $(LIB_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c cli/args.c cli/current.c cli/field_map.c cli/cmd_get.c cli/cmd_write.c cli/cmd_curve.c cli/cmd_throttle.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_devices.c
+  ALL_SRC := $(LIB_SRC) $(TEST_SRC) test/test_controller.c test/test_cli_write.c test/test_transport.c cli/args.c cli/current.c cli/field_map.c cli/cmd_get.c cli/cmd_write.c cli/cmd_curve.c cli/cmd_throttle.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_devices.c cli/cmd_monitor.c
   all: $(LIB) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
 endif
 
@@ -119,7 +119,7 @@ ifeq ($(BUILD_CLI),yes)
   CLI_TEST_CONFIG_LIBS := $(CRYPTO_LIBS) $(XML_LIBS)
   $(BUILD)/test_cli_write.o: CPPFLAGS += -DTEST_CONFIG=1
 endif
-CLI_WRITE_TEST_OBJ := $(BUILD)/args.o $(BUILD)/current.o $(BUILD)/field_map.o $(BUILD)/cmd_get.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(BUILD)/cmd_throttle.o $(BUILD)/cmd_reset.o $(BUILD)/cmd_restore_defaults.o $(BUILD)/cmd_fan_test.o $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
+CLI_WRITE_TEST_OBJ := $(BUILD)/args.o $(BUILD)/current.o $(BUILD)/field_map.o $(BUILD)/cmd_get.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(BUILD)/cmd_throttle.o $(BUILD)/cmd_monitor.o $(BUILD)/cmd_reset.o $(BUILD)/cmd_restore_defaults.o $(BUILD)/cmd_fan_test.o $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
 $(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(CLI_TEST_CONFIG_OBJ) $(CLI_WRITE_TEST_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(CLI_TEST_CONFIG_LIBS) -lm
 

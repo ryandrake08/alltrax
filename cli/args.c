@@ -12,7 +12,7 @@ bool cli_ignore_fw_bounds = false;
 /* Debug bypasses are listed last and printed under their own heading. */
 static const struct {
     const char* name;
-    unsigned    bit;
+    cli_option_mask bit;
     const char* value;  /* value placeholder for options that take one */
     const char* help;
 } options[] = {
@@ -44,6 +44,12 @@ static const struct {
       "Install the default linearization even when the throttle type is unchanged" },
     { "--no-hpd", CLI_OPT_NO_HPD, NULL,
       "Turn high pedal disable (HPD) off" },
+    { "--rate", CLI_OPT_MONITOR_RATE, "<ms>",
+      "Full monitor polling interval: 100, 1000, or 3000 (default 100)" },
+    { "--log", CLI_OPT_MONITOR_LOG, "<file.csv>",
+      "Append full monitor samples to a CSV file" },
+    { "--throttle", CLI_OPT_MONITOR_THROTTLE, NULL,
+      "Show the live throttle view at 100 ms" },
     { "--debug-no-cal", CLI_OPT_DEBUG_NO_CAL, NULL,
       "Skip the CAL/RUN mode bracket" },
     { "--debug-no-verify", CLI_OPT_DEBUG_NO_VERIFY, NULL,
@@ -57,7 +63,7 @@ static const struct {
 #define DEBUG_OPTIONS (CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | \
                        CLI_OPT_DEBUG_NO_GOODSET | CLI_OPT_DEBUG_NO_POST_WRITE)
 
-static unsigned option_bit(const char* arg)
+static cli_option_mask option_bit(const char* arg)
 {
     for (size_t i = 0; i < OPTION_COUNT; i++) {
         if (strcmp(arg, options[i].name) == 0)
@@ -66,7 +72,7 @@ static unsigned option_bit(const char* arg)
     return 0;
 }
 
-static void print_option_group(FILE* out, unsigned allowed)
+static void print_option_group(FILE* out, cli_option_mask allowed)
 {
     for (size_t i = 0; i < OPTION_COUNT; i++) {
         if (!(options[i].bit & allowed))
@@ -79,7 +85,7 @@ static void print_option_group(FILE* out, unsigned allowed)
     }
 }
 
-void cli_print_options(FILE* out, unsigned allowed)
+void cli_print_options(FILE* out, cli_option_mask allowed)
 {
     if (allowed & ~DEBUG_OPTIONS) {
         fprintf(out, "\nOptions:\n");
@@ -135,7 +141,7 @@ alltrax_write_opts cli_write_opts(const cli_flags* flags,
 }
 
 int cli_parse_args(int argc, char** argv, const char* command,
-    unsigned allowed, int min_args, int max_args, cli_flags* flags)
+    cli_option_mask allowed, int min_args, int max_args, cli_flags* flags)
 {
     memset(flags, 0, sizeof(*flags));
 
@@ -147,7 +153,7 @@ int cli_parse_args(int argc, char** argv, const char* command,
             continue;
         }
 
-        unsigned bit = option_bit(arg);
+        cli_option_mask bit = option_bit(arg);
         if (!bit) {
             fprintf(stderr, "Error: %s: unknown option %s\n", command, arg);
             return -1;
@@ -160,6 +166,8 @@ int cli_parse_args(int argc, char** argv, const char* command,
         const char** value = bit == CLI_OPT_FILE ? &flags->file
                            : bit == CLI_OPT_PRESET ? &flags->preset
                            : bit == CLI_OPT_CONFIG_KEY ? &flags->config_key
+                           : bit == CLI_OPT_MONITOR_RATE ? &flags->monitor_rate
+                           : bit == CLI_OPT_MONITOR_LOG ? &flags->monitor_log
                            : NULL;
         if (value) {
             if (i + 1 >= argc || strncmp(argv[i + 1], "--", 2) == 0) {
@@ -187,6 +195,7 @@ int cli_parse_args(int argc, char** argv, const char* command,
         case CLI_OPT_KEEP_FIELD_MAP:    flags->keep_field_map = true; break;
         case CLI_OPT_DEFAULT_CURVE:     flags->default_curve = true; break;
         case CLI_OPT_NO_HPD:            flags->no_hpd = true; break;
+        case CLI_OPT_MONITOR_THROTTLE:  flags->monitor_throttle = true; break;
         case CLI_OPT_PLOT:              flags->plot = true; break;
         case CLI_OPT_DEBUG_NO_CAL:      flags->debug_no_cal = true; break;
         case CLI_OPT_DEBUG_NO_VERIFY:   flags->debug_no_verify = true; break;

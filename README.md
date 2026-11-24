@@ -68,7 +68,8 @@ Alltrax Controller Monitor
 | `alltrax clear-autocal [--no-wait]` | Clear learned throttle calibration and reboot |
 | `alltrax restore-defaults [--keep-throttle] [--keep-field-map] [--no-wait]` | Restore factory settings and reboot |
 | `alltrax fan-test` | Start a timed fan test with the keyswitch on |
-| `alltrax monitor` | Live polling display (Ctrl+C to stop) |
+| `alltrax monitor [--rate <ms>] [--log <file.csv>]` | Live controller readings (Ctrl+C to stop) |
+| `alltrax monitor --throttle` | Live throttle readings (Ctrl+C to stop) |
 | `alltrax errors` | Active error flags and error history |
 | `alltrax config save [flags] <file>` | Save all settings to file |
 | `alltrax config load [flags] <file>` | Load settings from file and write to device |
@@ -145,6 +146,24 @@ The command updates the field-map date and sends one reset on success.
 Use `--no-wait` to return after sending it. Before using the controller,
 check that the field map matches the installed motor and that the speed
 sensor pole count is correct.
+
+### Live monitor
+
+```sh
+alltrax monitor
+alltrax monitor --rate 1000 --log drive.csv
+alltrax monitor --throttle
+```
+
+The full monitor targets 100 ms between samples by default. Use `--rate 1000`
+or `--rate 3000` for slower polling. USB response times can limit the actual
+rate. `--log` appends a session header with the model, serial number, and
+field-map name, then adds one CSV row per sample. The columns follow the
+Toolkit's monitor log and include an extra UTC timestamp with milliseconds.
+
+The throttle view targets 100 ms and shows input, linearized throttle,
+setpoint, and output percentages. The percentages are blank with the
+keyswitch off. Stop either view with Ctrl+C.
 
 ### Throttle selection
 
@@ -1063,7 +1082,7 @@ Reads real-time status in a single call (6 USB reads internally).
 | `check_motor` | `bool` | Check motor warning |
 | `hpd_ran` | `bool` | HPD (high pedal disable) triggered |
 | `relay_on` | `int16_t` | Main contactor relay state |
-| `bad_vars_code` | `int16_t` | Settings corruption code |
+| `bad_vars_code` | `uint16_t` | Settings corruption code |
 | `user1_input` | `bool` | User 1 input state |
 | `user2_input` | `bool` | User 2 input state |
 | `user3_input` | `bool` | User 3 input state |

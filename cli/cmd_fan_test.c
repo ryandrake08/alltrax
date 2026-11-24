@@ -3,7 +3,7 @@
 int cmd_fan_test(int argc, char** argv)
 {
     cli_flags flags;
-    const unsigned allowed = CLI_OPT_ALLOW_UNVALIDATED;
+    const cli_option_mask allowed = CLI_OPT_ALLOW_UNVALIDATED;
     if (cli_parse_args(argc, argv, "fan-test", allowed, 0, 0, &flags) < 0) {
         fprintf(stderr, "Usage: alltrax fan-test [options]\n");
         cli_print_options(stderr, allowed);

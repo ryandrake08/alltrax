@@ -526,7 +526,7 @@ typedef struct {
 
     int16_t throttle_local, throttle_position, throttle_pointer;
 
-    int16_t bad_vars_code;
+    uint16_t bad_vars_code;
 
     /* Meaningful only when alltrax_info.speed_sensor is true. */
     int16_t speed_rpm;
