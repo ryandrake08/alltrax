@@ -103,6 +103,8 @@ void cli_report_write(alltrax_controller* ctrl, const alltrax_write_report* repo
                 "restored before writing.\n");
     if (report->autocal_cleared)
         printf("Cleared throttle auto-calibration\n");
+    if (report->date_stamped)
+        printf("Stamped field-map date\n");
     if (report->reset_sent) {
         printf("Device reset sent (controller will reboot)\n");
         cli_wait_for_reconnect(ctrl);

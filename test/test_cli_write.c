@@ -1463,6 +1463,23 @@ static int test_get_profile_current_shows_amps_and_signed_percent(void)
     return 0;
 }
 
+static int test_write_reports_field_map_date_stamp(void)
+{
+    static char out[4096];
+    char name[] = "F_Table_Name=SAMPLE-MAP-1";
+    char* field_map[] = { "write", name };
+    writable_device_reset();
+    ASSERT_EQ(run_cli_output(cmd_write, 2, field_map, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "Stamped field-map date\n") != NULL);
+
+    char voltage[] = "LoBat_Vlim=28.0";
+    char* setting[] = { "write", voltage };
+    writable_device_reset();
+    ASSERT_EQ(run_cli_output(cmd_write, 2, setting, out, sizeof(out)), 0);
+    ASSERT_NULL(strstr(out, "Stamped field-map date"));
+    return 0;
+}
+
 static int test_get_rejects_unknown_names_before_open(void)
 {
     char* argv[] = { "get", "LoBat_Vlim", "NoSuchVar", "HiBat_Vlim" };
@@ -3238,6 +3255,7 @@ int main(void)
     RUN_TEST(test_get_prints_full_integer_range);
     RUN_TEST(test_get_keeps_scaled_formatting);
     RUN_TEST(test_get_profile_current_shows_amps_and_signed_percent);
+    RUN_TEST(test_write_reports_field_map_date_stamp);
     RUN_TEST(test_get_rejects_unknown_names_before_open);
     RUN_TEST(test_get_lists_settings_without_factory_copies);
     RUN_TEST(test_get_reports_goodset_and_reads_factory);
