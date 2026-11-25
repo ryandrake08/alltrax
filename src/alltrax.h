@@ -368,8 +368,6 @@ typedef struct {
     bool skip_goodset;       /* Skip GoodSet checks and factory recovery */
     /* User options */
     bool skip_fw_check;      /* Allow unvalidated firmware within V0.001-V5.999 */
-    bool skip_voltage_link;  /* Skip voltage link validation, including the
-                              * rated range for BMS_Missing_HiBat_Vlim */
     bool skip_post_write;    /* Debug bypass: skip automatic calibration clear, date stamp and reset */
     bool reset_after_write;  /* Send one reset after success, even with skip_post_write */
     alltrax_write_report* report;  /* Optional; cleared, then filled by writes */
@@ -465,13 +463,9 @@ typedef struct {
  * With GoodSet checks enabled, invalid factory settings stop the batch.
  * Invalid user settings are restored from factory before applying the batch.
  * Limits: 16 RAM variables and 96 FLASH patches (each curve uses 2).
- * Permissions and firmware policy apply as for alltrax_write_vars(). Batches
- * with a voltage setting or a nonzero Throttle_Type read the controller info
- * before writing: AnalogInputs_Threshold, LoBat_Vlim, and HiBat_Vlim (and
- * BMS_Missing_HiBat_Vlim unless skip_voltage_link) must lie within 16.0-62.0V
- * on 48V controllers or 20.0-90.0V on 72V controllers (other ratings cannot
- * write them), and the throttle type must be allowed by the version-gated
- * throttles_allowed. The voltage link check then applies.
+ * Permissions and firmware policy apply as for alltrax_write_vars(). Values
+ * are checked against the catalog only: callers apply any limits based on
+ * the controller's rating, hardware or other settings.
  * After successful writes and RUN cleanup, F_Table_Name stamps FieldMap_Date,
  * Throttle_Type or HPD clears throttle auto-calibration and requests a reset,
  * and Speed_Limit_On or Tach_4_8 requests a reset. Triggering depends on

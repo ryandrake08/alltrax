@@ -234,6 +234,28 @@ side effects.
 The command prints each action it performed, such as "Cleared throttle
 auto-calibration" and "Device reset sent", including after a failed write.
 
+### Value rules
+
+`write`, `curve set`, `config load`, `field-map install` and `field-map
+upgrade` refuse values the controller would store but that are unsafe,
+meaningless on a vehicle, or outside the controller's rating:
+
+| Rule | Why |
+|------|-----|
+| Throttle curves (`linearization`, `speed`, `torque`) start at 0,0 and end at 100 % X | No output with the pedal released; every pedal position is covered |
+| Throttle curve X rises by at least 1 % per point and Y never falls | More pedal never gives less output |
+| Field-map curves (`field`, `genfield`) start at X 0, end at 750 A X and rise strictly in X | Every field current is covered; Y may fall |
+| `N/U1/U2_RollDetect_BrakingCurrent` is at least 10 A | Keeps roll-detect braking from being set to almost nothing |
+| `N/U1/U2_Throttle_Rate` and `*_Throttle_Rate_Max` are at most 100 MU | Caps how fast the throttle responds |
+| `Speed_Limit_On=1` needs a speed sensor | Speed limits are in RPM, measured by the speed sensor |
+| Voltage settings lie within 16.0–62.0 V (48 V controllers) or 20.0–90.0 V (72 V); other ratings cannot set them | Keeps cutoffs within the controller's rating |
+| `AnalogInputs_Threshold` + 1 V ≤ `LoBat_Vlim`; `LoBat_Vlim` + 1 V ≤ `HiBat_Vlim` and ≤ `BMS_Missing_HiBat_Vlim` ≤ `HiBat_Vlim` | Keeps the cutoffs in order. Values not in the batch are read from the settings the write changes (the factory settings while the user settings are invalid) |
+| `Throttle_Type` is one the hardware allows | `restore-defaults --keep-throttle` checks the kept type too |
+
+Trailing 0,0 curve points are unused and ignored. Factory data and built-in
+presets (`curve reset`, `restore-defaults`, `throttle set`) are not checked.
+`--debug-no-rules` skips the rules.
+
 Before a FLASH write, the tool checks both settings pages. If the factory
 page is invalid, it refuses the write. If only the user settings page is
 invalid, it restores the factory page to user settings, applies the
@@ -243,7 +265,6 @@ requested changes, and reports the recovery.
 
 | Option | Effect |
 |--------|--------|
-| `--no-voltage-link` | Skip the [voltage link checks](#voltage) |
 | `--allow-unvalidated-firmware` | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | Allow writing field-map data (see [Field maps](#field-maps)) |
 | `--reset` | Reboot controller after a successful write |
@@ -371,7 +392,6 @@ text of `config save` and `config load` shows whether a key is built in.
 | Option | Applies to | Effect |
 |--------|-----------|--------|
 | `--config-key auto\|<key>:<iv>\|none` | save, load | Encryption key, or plain XML with `none` |
-| `--no-voltage-link` | load | Skip the voltage relationship check |
 | `--allow-unvalidated-firmware` | load | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | load | Also write the file's field-map entries |
 | `--reset` | load | Reboot controller after write |
@@ -496,6 +516,7 @@ tool, not for normal use, and are listed separately in every usage message.
 | Option | Applies to | Bypasses |
 |--------|-----------|----------|
 | `--debug-ignore-fw-bounds` | global (before the command) | Firmware bounds for reads (firmware outside V0.001-V5.999); never widens writes |
+| `--debug-no-rules` | `write`, `curve set`, `config load`, `field-map install`, `field-map upgrade`, `restore-defaults` | [Value rules](#value-rules) |
 | `--debug-no-cal` | write commands | CAL/RUN mode bracket |
 | `--debug-no-verify` | write commands | FLASH read-back verification |
 | `--debug-no-goodset` | write commands | GoodSet checks and factory recovery |
@@ -924,7 +945,6 @@ Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
 
 | Field | Effect |
 |-------|--------|
-| `skip_voltage_link` | Skip the voltage relationship check (CLI `--no-voltage-link`) |
 | `skip_fw_check` | Allow writes on unvalidated firmware within V0.001-V5.999 (CLI `--allow-unvalidated-firmware`) |
 | `skip_cal` | Debug bypass: skip the CAL/RUN bracket |
 | `skip_verify` | Debug bypass: skip read-back verification (FLASH only) |
@@ -934,11 +954,11 @@ Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
 | `report` | Optional `alltrax_write_report*`, cleared and then filled with the actions the write performed: `factory_restored`, `autocal_cleared`, `date_stamped`, `reset_sent`. Each flag is set once its action succeeded, so a failed write still reports what ran. |
 
 Each variable or curve may appear once per batch; repeated or overlapping
-targets return `ALLTRAX_ERR_INVALID_ARG` before device I/O. Batches that
-write a voltage setting or a nonzero `Throttle_Type` read the controller info
-first: voltage settings must lie within the rated-voltage range (48 V:
-16.0–62.0 V, 72 V: 20.0–90.0 V; other ratings cannot write them), and the
-throttle type must be allowed by the version-gated `throttles_allowed`.
+targets return `ALLTRAX_ERR_INVALID_ARG` before device I/O. The library
+checks values against the catalog only. Limits that depend on the
+controller's rating, hardware or other settings (rated-voltage ranges, voltage
+order, the throttle types the hardware allows) are applied by the CLI's
+[value rules](#value-rules).
 
 **RAM variables** (`is_flash=false`) take effect immediately but are not
 persistent across power cycles.
@@ -1248,13 +1268,12 @@ Battery voltage limits and analog input threshold.
 | `HiBat_Vlim` | High battery voltage cutoff | V |
 | `BMS_Missing_HiBat_Vlim` | High battery voltage cutoff when BMS is missing | V |
 
-The allowed range is 16.0–62.0 V on 48 V controllers and 20.0–90.0 V on 72 V
-controllers. The rated-voltage check rejects other ratings. The voltage link
-check requires the analog threshold to be at least 1 V below the low cutoff
-and the high cutoff to be at least 1 V above the low cutoff. `BMS_Missing_HiBat_Vlim`
-must be at least 1 V above the low cutoff and
-at or below the high cutoff. `--no-voltage-link` skips these relationships
-and the rated-voltage check for the BMS-missing cutoff.
+The CLI's [value rules](#value-rules) limit these settings to 16.0–62.0 V on
+48 V controllers and 20.0–90.0 V on 72 V controllers, and refuse them on other
+ratings. They also require the analog threshold to be at least 1 V below the
+low cutoff, the high cutoff at least 1 V above the low cutoff, and
+`BMS_Missing_HiBat_Vlim` at least 1 V above the low cutoff and at or below the
+high cutoff. Settings not being written are read from the controller.
 
 #### User Profiles (Normal, User 1, User 2)
 
@@ -1299,10 +1318,10 @@ Throttle type selection, calibration values, and related settings.
 `Throttle_Type` selects the throttle hardware:
 
 Assignments must be integral values from 0 through 11; fractions and undefined
-types are rejected. Each nonzero type must be allowed by the controller's
-hardware mask. On older hardware without a programmed mask, the fallback
-allows every type except EZGO ITS. Type 0 (None) is always allowed and does
-not require a mask read. Write options cannot bypass these checks.
+types are rejected. The CLI's [value rules](#value-rules) also require each
+nonzero type to be allowed by the controller's hardware mask. On older
+hardware without a programmed mask, the fallback allows every type except
+EZGO ITS. Type 0 (None) is always allowed and does not require a mask read.
 
 Writing `Throttle_Type` or `HPD` clears the learned throttle calibration
 and reboots the controller.

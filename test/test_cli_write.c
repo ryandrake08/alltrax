@@ -94,6 +94,7 @@ static struct {
     uint8_t mode;
     const char* model;
     uint32_t throttle_mask;
+    uint16_t rated_volts;  /* 0: 48 V */
     bool filter_throttles;
     uint32_t monitor_stop_addr;
     unsigned samples_left;
@@ -155,14 +156,14 @@ alltrax_error transport_write(alltrax_controller* ctrl,
 static uint8_t identity_byte(uint32_t a)
 {
     const char* model = device.model ? device.model : "XCT48400-DCS";
+    if (a == ADDR_HARDWARE_CONFIG + 6) return device.monitor_speed_sensor;
     if (device.monitor_stop_addr) {
-        if (a == ADDR_HARDWARE_CONFIG + 6) return device.monitor_speed_sensor;
         if (a == ADDR_HARDWARE_CONFIG + 8) return device.monitor_bms;
         if (a == ADDR_HARDWARE_CONFIG + 10 || a == ADDR_HARDWARE_CONFIG + 21) return 1;
     }
     const struct { uint32_t addr; uint32_t value; } words[] = {
         { ADDR_CONTROLLER_INFO + 0x24, 5002 }, { ADDR_CONTROLLER_INFO + 0x28, 5005 },
-        { ADDR_HARDWARE_CONFIG, 48 | (400u << 16) },
+        { ADDR_HARDWARE_CONFIG, (device.rated_volts ? device.rated_volts : 48u) | (400u << 16) },
         { ADDR_HARDWARE_CONFIG + 16, device.filter_throttles ? device.throttle_mask : 0x7FF },
         { ADDR_BOOT_REV, 5002 }, { ADDR_PRGM_REV, fake_ctrl.program_rev },
     };
@@ -572,16 +573,24 @@ static int test_write_options_map_to_library_options(void)
 {
     char* argv[] = {
         "write", "--debug-no-cal", "--debug-no-verify", "--debug-no-goodset",
-        "--debug-no-post-write", "--allow-unvalidated-firmware", "--no-voltage-link",
+        "--debug-no-post-write", "--allow-unvalidated-firmware", "--debug-no-rules",
     };
     cli_flags flags;
-    ASSERT_EQ(cli_parse_args(7, argv, "write", CLI_OPTS_WRITE | CLI_OPT_NO_VOLTAGE_LINK,
+    ASSERT_EQ(cli_parse_args(7, argv, "write", CLI_OPTS_WRITE | CLI_OPT_DEBUG_NO_RULES,
                              0, -1, &flags), 0);
+    ASSERT_TRUE(flags.debug_no_rules);
     alltrax_write_report report;
     alltrax_write_opts opts = cli_write_opts(&flags, &report);
     ASSERT_TRUE(opts.report == &report);
     ASSERT_TRUE(opts.skip_cal && opts.skip_verify && opts.skip_goodset &&
-                opts.skip_post_write && opts.skip_fw_check && opts.skip_voltage_link);
+                opts.skip_post_write && opts.skip_fw_check);
+
+    /* The voltage check has no separate bypass. */
+    char assign[] = "LoBat_Vlim=28";
+    char* removed[] = { "write", assign, "--no-voltage-link" };
+    open_calls = 0;
+    ASSERT_EQ(cmd_write(3, removed), 1);
+    ASSERT_EQ(open_calls, 0);
     return 0;
 }
 
@@ -1092,6 +1101,17 @@ static void writable_device_reset(void)
         const alltrax_var_def* var = alltrax_find_var(limits[i].name);
         alltrax_encode_var(var, limits[i].volts,
                            device.page + (var->address - VARSET_ADDR));
+    }
+    /* Curves that satisfy the value rules: a straight line over full scale. */
+    for (size_t c = 0; c < alltrax_curve_count(); c++) {
+        const alltrax_curve_def* def = alltrax_curve_by_index(c);
+        const int16_t xs[] = { 0, def->x_raw_max }, ys[] = { 0, def->y_raw_max };
+        for (size_t i = 0; i < 2; i++) {
+            uint8_t* x = device.page + (def->x_address - VARSET_ADDR) + i * 2;
+            uint8_t* y = device.page + (def->y_address - VARSET_ADDR) + i * 2;
+            x[0] = (uint8_t)xs[i]; x[1] = (uint8_t)(xs[i] >> 8);
+            y[0] = (uint8_t)ys[i]; y[1] = (uint8_t)(ys[i] >> 8);
+        }
     }
     device.page[0] = device.page[1] = 0;  /* Var_GoodSet valid */
 }
@@ -2887,6 +2907,283 @@ static int test_throttle_only_config_files_wire_sequences(void)
 }
 #endif
 
+/* ------------------------------------------------------------------ */
+/* Value rules                                                        */
+/* ------------------------------------------------------------------ */
+
+static int run_curve_points(char* type, const char* const* points, size_t n, bool bypass)
+{
+    char text[8][24];
+    char* argv[12] = { "curve", "set", type, "--field-map" };
+    int argc = 4;
+    for (size_t i = 0; i < n && i < 8; i++) {
+        snprintf(text[i], sizeof(text[i]), "%s", points[i]);
+        argv[argc++] = text[i];
+    }
+    if (bypass) argv[argc++] = "--debug-no-rules";
+    argv[argc++] = "--no-wait";
+    writable_device_reset();
+    return run_writable(cmd_curve, argc, argv);
+}
+
+static int test_curve_rules_reject_before_open(void)
+{
+    const struct { char* type; const char* points[4]; size_t n; } bad[] = {
+        { "linearization", { "0,10", "50,50", "100,100" }, 3 },   /* Output at rest */
+        { "linearization", { "1,0", "50,50", "100,100" }, 3 },    /* First X not 0 */
+        { "speed", { "0,0", "50,100" }, 2 },                      /* Short of full scale */
+        { "torque", { "0,0", "0.5,10", "100,100" }, 3 },          /* Step under 1 % */
+        { "linearization", { "0,0", "50,60", "100,50" }, 3 },     /* Y falls */
+        { "field", { "0,10", "0,5", "750,1" }, 3 },               /* Repeated X */
+        { "genfield", { "0,10", "375,5" }, 2 },                   /* Short of full scale */
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        ASSERT_EQ(run_curve_points(bad[i].type, bad[i].points, bad[i].n, false), 1);
+        ASSERT_EQ(open_calls, 0);
+        ASSERT_EQ(device.mutations, 0);
+        ASSERT_EQ(run_curve_points(bad[i].type, bad[i].points, bad[i].n, true), 0);
+        ASSERT_EQ(device.erases, 1);
+    }
+
+    /* A 1 % step at stored precision, trailing zero points, and a falling
+     * field-map Y are allowed. */
+    const char* steps[] = { "0,0", "1,0", "99,100", "100,100" };
+    ASSERT_EQ(run_curve_points("linearization", steps, 4, false), 0);
+    const char* field[] = { "0,10", "375,5", "750,1" };
+    ASSERT_EQ(run_curve_points("field", field, 3, false), 0);
+    ASSERT_EQ(device.erases, 1);
+    return 0;
+}
+
+static int run_rule_write(const char* a, const char* b, bool bypass)
+{
+    char text[2][64];
+    char* argv[6] = { "write" };
+    int argc = 1;
+    const char* args[] = { a, b };
+    for (size_t i = 0; i < 2 && args[i]; i++) {
+        snprintf(text[i], sizeof(text[i]), "%s", args[i]);
+        argv[argc++] = text[i];
+    }
+    if (bypass) argv[argc++] = "--debug-no-rules";
+    argv[argc++] = "--no-wait";
+    return run_writable(cmd_write, argc, argv);
+}
+
+static int test_setting_rules_reject_before_writes(void)
+{
+    /* The simulated controller is rated 400 A: 10 A is 102 counts. */
+    const char* bad[] = {
+        "N_RollDetect_BrakingCurrent=9.9A", "U1_RollDetect_BrakingCurrent=-2",
+        "N_Throttle_Rate=100.5", "U2_Throttle_Rate_Max=101", "Speed_Limit_On=1",
+    };
+    for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
+        writable_device_reset();
+        ASSERT_EQ(run_rule_write(bad[i], NULL, false), 1);
+        ASSERT_EQ(device.mutations, 0);
+        writable_device_reset();
+        ASSERT_EQ(run_rule_write(bad[i], NULL, true), 0);
+        ASSERT_EQ(device.erases, 1);
+    }
+    const char* good[] = {
+        "N_RollDetect_BrakingCurrent=10A", "U2_RollDetect_BrakingCurrent=-2.5",
+        "N_Throttle_Rate=100", "U1_Throttle_Rate_Max=100", "Speed_Limit_On=0",
+    };
+    for (size_t i = 0; i < sizeof(good) / sizeof(good[0]); i++) {
+        writable_device_reset();
+        ASSERT_EQ(run_rule_write(good[i], NULL, false), 0);
+        ASSERT_EQ(device.erases, 1);
+    }
+    writable_device_reset();
+    device.monitor_speed_sensor = true;
+    ASSERT_EQ(run_rule_write("Speed_Limit_On=1", NULL, false), 0);
+
+    /* Every item in a batch is checked. */
+    writable_device_reset();
+    ASSERT_EQ(run_rule_write("N_Throttle_Rate=50", "N_Throttle_Rate_Max=150", false), 1);
+    ASSERT_EQ(device.mutations, 0);
+    return 0;
+}
+
+static int run_write_args(const char* const* args, size_t n, bool bypass)
+{
+    char text[6][48];
+    char* argv[9] = { "write" };
+    int argc = 1;
+    for (size_t i = 0; i < n && i < 6; i++) {
+        snprintf(text[i], sizeof(text[i]), "%s", args[i]);
+        argv[argc++] = text[i];
+    }
+    if (bypass) argv[argc++] = "--debug-no-rules";
+    argv[argc++] = "--no-wait";
+    return run_writable(cmd_write, argc, argv);
+}
+
+static void set_volts(uint8_t* page, const char* name, double volts)
+{
+    const alltrax_var_def* var = alltrax_find_var(name);
+    alltrax_encode_var(var, volts, page + (var->address - VARSET_ADDR));
+}
+
+static int test_voltage_rules_use_rated_voltage(void)
+{
+    const struct { uint16_t rated; const char* assign; bool ok; } cases[] = {
+        { 48, "AnalogInputs_Threshold=16.0", true },
+        { 48, "AnalogInputs_Threshold=15.9", false },
+        { 48, "HiBat_Vlim=62.0", true },
+        { 48, "HiBat_Vlim=62.1", false },
+        { 48, "BMS_Missing_HiBat_Vlim=62.1", false },
+        { 72, "LoBat_Vlim=19.9", false },
+        { 72, "HiBat_Vlim=90.0", true },
+        { 72, "HiBat_Vlim=90.1", false },
+        { 36, "LoBat_Vlim=30.0", false },
+        { 36, "BMS_Missing_HiBat_Vlim=30.0", false },
+    };
+    char out[512];
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        for (int bypass = 0; bypass <= 1; bypass++) {
+            writable_device_reset();
+            device.rated_volts = cases[i].rated;
+            /* Existing settings that keep the voltage order satisfied. */
+            set_volts(device.page, "AnalogInputs_Threshold", 16.0);
+            set_volts(device.page, "LoBat_Vlim", 21.0);
+            set_volts(device.page, "HiBat_Vlim", 62.0);
+            set_volts(device.page, "BMS_Missing_HiBat_Vlim", 60.0);
+            char assign[48];
+            snprintf(assign, sizeof(assign), "%s", cases[i].assign);
+            char* argv[] = { "write", assign, "--debug-no-rules" };
+            int rc = run_cli_output(cmd_write, bypass ? 3 : 2, argv, out, sizeof(out));
+            bool ok = cases[i].ok || bypass;
+            ASSERT_EQ(rc, ok ? 0 : 1);
+            ASSERT_EQ(device.erases, ok ? 1u : 0u);
+            if (!ok)
+                ASSERT_TRUE(strstr(out, "outside") != NULL || strstr(out, "defined only") != NULL);
+        }
+    }
+    return 0;
+}
+
+static int test_voltage_order_rules(void)
+{
+    const struct { const char* ksi; const char* low; const char* high; const char* bms; bool ok; } cases[] = {
+        { "20", "25", "30", "28", true },
+        { "20", "21", "22", "22", true },      /* Exact 1 V gaps */
+        { "25", "25.5", "30", "28", false },   /* KSI too close to low battery */
+        { "25", "25", "30", "28", false },
+        { "20", "29.5", "30", "30", false },   /* Low battery too close to high */
+        { "20", "30", "30", "30", false },
+        { "20", "25", "30", "24", false },     /* BMS-missing below low battery + 1 V */
+        { "20", "25", "30", "31", false },     /* BMS-missing above high battery */
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        char a[4][48];
+        snprintf(a[0], sizeof(a[0]), "AnalogInputs_Threshold=%s", cases[i].ksi);
+        snprintf(a[1], sizeof(a[1]), "LoBat_Vlim=%s", cases[i].low);
+        snprintf(a[2], sizeof(a[2]), "HiBat_Vlim=%s", cases[i].high);
+        snprintf(a[3], sizeof(a[3]), "BMS_Missing_HiBat_Vlim=%s", cases[i].bms);
+        const char* args[] = { a[0], a[1], a[2], a[3] };
+        writable_device_reset();
+        ASSERT_EQ(run_write_args(args, 4, false), cases[i].ok ? 0 : 1);
+        ASSERT_EQ(device.mutations ? 1 : 0, cases[i].ok ? 1 : 0);
+        writable_device_reset();
+        ASSERT_EQ(run_write_args(args, 4, true), 0);
+    }
+
+    /* Settings outside the batch come from the user page (KSI 18 V). */
+    const char* close[] = { "LoBat_Vlim=18.5" };
+    const char* gap[] = { "LoBat_Vlim=19" };
+    writable_device_reset();
+    ASSERT_EQ(run_write_args(close, 1, false), 1);
+    ASSERT_EQ(device.mutations, 0);
+    writable_device_reset();
+    ASSERT_EQ(run_write_args(gap, 1, false), 0);
+
+    /* While the user page is invalid they come from the factory page, which
+     * the write restores first. */
+    const char* low[] = { "LoBat_Vlim=28" };
+    for (int bad = 0; bad <= 1; bad++) {
+        writable_device_reset();
+        memcpy(device.factory, device.page, VARSET_SIZE);
+        set_volts(device.factory, "BMS_Missing_HiBat_Vlim", bad ? 25 : 55);
+        device.page[0] = device.page[1] = 0xFF;
+        ASSERT_EQ(run_write_args(low, 1, false), bad ? 1 : 0);
+        ASSERT_EQ(device.erases, bad ? 0u : 2u);
+    }
+    return 0;
+}
+
+static int test_throttle_type_rules_use_hardware_mask(void)
+{
+    const char* unsupported[] = { "Throttle_Type=2" };
+    const char* supported[] = { "Throttle_Type=1" };
+    const char* none[] = { "Throttle_Type=0" };
+    const char* const* cases[] = { unsupported, supported, none };
+    for (size_t i = 0; i < 3; i++) {
+        for (int bypass = 0; bypass <= 1; bypass++) {
+            writable_device_reset();
+            device.filter_throttles = true;
+            device.throttle_mask = 0x001;  /* Type 1 only */
+            bool ok = i != 0 || bypass;
+            ASSERT_EQ(run_write_args(cases[i], 1, bypass), ok ? 0 : 1);
+            ASSERT_EQ(device.erases, ok ? 1u : 0u);
+        }
+    }
+
+    /* restore-defaults --keep-throttle keeps only a supported type. */
+    for (int bypass = 0; bypass <= 1; bypass++) {
+        writable_device_reset();
+        memcpy(device.factory, device.page, VARSET_SIZE);
+        device.page[0xA0] = 4;
+        device.filter_throttles = true;
+        device.throttle_mask = 0x7FF & ~(1u << 3);
+        char* argv[] = { "restore-defaults", "--keep-throttle", "--no-wait", "--debug-no-rules" };
+        ASSERT_EQ(run_writable(cmd_restore_defaults, bypass ? 4 : 3, argv), bypass ? 0 : 1);
+        ASSERT_EQ(device.mutations ? 1 : 0, bypass ? 1 : 0);
+    }
+    return 0;
+}
+
+#ifdef ALLTRAX_HAVE_XML
+static int test_config_load_applies_rules(void)
+{
+    static const char* const files[] = {
+        "<XCT>\n  <Node-Throttle>\n"
+        "    <Lin_Table_Pointer>0,40,4054,4095,0,0,0,0,0,0,0,0,0,0,0,0</Lin_Table_Pointer>\n"
+        "    <Lin_Table_Data>100,100,4095,4095,0,0,0,0,0,0,0,0,0,0,0,0</Lin_Table_Data>\n"
+        "  </Node-Throttle>\n</XCT>\n",
+        "<XCT>\n  <Node-Normal_User>\n"
+        "    <N_RollDetect_BrakingCurrent>-50</N_RollDetect_BrakingCurrent>\n"
+        "  </Node-Normal_User>\n</XCT>\n",
+        "<XCT>\n  <Node-Voltage>\n"
+        "    <LoBat_Vlim>700</LoBat_Vlim>\n"
+        "  </Node-Voltage>\n</XCT>\n",
+        "<XCT>\n  <Node-Throttle>\n"
+        "    <Throttle_Type>2</Throttle_Type>\n"
+        "  </Node-Throttle>\n</XCT>\n",
+    };
+    for (size_t i = 0; i < sizeof(files) / sizeof(files[0]); i++) {
+        char path[64];
+        ASSERT_EQ(make_temp_path(path), 0);
+        ASSERT_EQ(write_file(path, files[i]), 0);
+        writable_device_reset();
+        device.filter_throttles = true;
+        device.throttle_mask = 0x001;
+        char* checked[] = { "config", "load", "--config-key", "none", path };
+        int refused = run_writable(cmd_config, 5, checked);
+        unsigned mutations = device.mutations;
+        writable_device_reset();
+        char* bypass[] = { "config", "load", "--config-key", "none", path, "--debug-no-rules" };
+        int bypassed = run_writable(cmd_config, 6, bypass);
+        remove(path);
+        ASSERT_EQ(refused, 1);
+        ASSERT_EQ(mutations, 0);
+        ASSERT_EQ(bypassed, 0);
+        ASSERT_EQ(device.erases, 1);
+    }
+    return 0;
+}
+#endif
+
 int main(void)
 {
     printf("CLI mutation preflight (no USB):\n");
@@ -2935,6 +3232,11 @@ int main(void)
     RUN_TEST(test_restore_defaults_wire_sequence);
     RUN_TEST(test_monitor_user_inputs_read_block_and_bench_values);
     RUN_TEST(test_monitor_throttle_view_read_blocks);
+    RUN_TEST(test_curve_rules_reject_before_open);
+    RUN_TEST(test_setting_rules_reject_before_writes);
+    RUN_TEST(test_voltage_rules_use_rated_voltage);
+    RUN_TEST(test_voltage_order_rules);
+    RUN_TEST(test_throttle_type_rules_use_hardware_mask);
     RUN_TEST(test_field_map_writes_require_flag);
     RUN_TEST(test_field_map_writes_include_current_name);
     RUN_TEST(test_field_map_recovery_uses_factory_name);
@@ -2970,6 +3272,7 @@ int main(void)
     RUN_TEST(test_config_save_writes_only_settings_in_toolkit_nodes);
     RUN_TEST(test_config_load_wire_sequence);
     RUN_TEST(test_throttle_only_config_files_wire_sequences);
+    RUN_TEST(test_config_load_applies_rules);
     RUN_TEST(test_field_map_list_marks_current_map_and_upgrade);
     RUN_TEST(test_field_map_file_errors_stop_before_open);
     RUN_TEST(test_field_map_upgrade_selects_newer_version);

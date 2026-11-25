@@ -21,39 +21,39 @@ extern bool cli_ignore_fw_bounds;
 typedef uint64_t cli_option_mask;
 
 /* Bits 0–31 are reserved for user options. */
-/* Writes: firmware policy, validation, and field-map confirmation */
+/* Writes: firmware policy and field-map confirmation */
 #define CLI_OPT_ALLOW_UNVALIDATED   (UINT64_C(1) << 0)
-#define CLI_OPT_NO_VOLTAGE_LINK     (UINT64_C(1) << 1)
-#define CLI_OPT_FIELD_MAP           (UINT64_C(1) << 2)
+#define CLI_OPT_FIELD_MAP           (UINT64_C(1) << 1)
 /* Reboot after a write or reset command */
-#define CLI_OPT_RESET               (UINT64_C(1) << 3)
-#define CLI_OPT_NO_WAIT             (UINT64_C(1) << 4)
+#define CLI_OPT_RESET               (UINT64_C(1) << 2)
+#define CLI_OPT_NO_WAIT             (UINT64_C(1) << 3)
 /* File encryption keys */
-#define CLI_OPT_CONFIG_KEY          (UINT64_C(1) << 5)  /* takes a value */
-#define CLI_OPT_FIELD_MAP_KEY       (UINT64_C(1) << 6)  /* takes a value */
+#define CLI_OPT_CONFIG_KEY          (UINT64_C(1) << 4)  /* takes a value */
+#define CLI_OPT_FIELD_MAP_KEY       (UINT64_C(1) << 5)  /* takes a value */
 /* get */
-#define CLI_OPT_FACTORY             (UINT64_C(1) << 7)
+#define CLI_OPT_FACTORY             (UINT64_C(1) << 6)
 /* curve */
-#define CLI_OPT_FILE                (UINT64_C(1) << 8)  /* takes a value */
-#define CLI_OPT_PRESET              (UINT64_C(1) << 9)  /* takes a value */
-#define CLI_OPT_PLOT                (UINT64_C(1) << 10)
+#define CLI_OPT_FILE                (UINT64_C(1) << 7)  /* takes a value */
+#define CLI_OPT_PRESET              (UINT64_C(1) << 8)  /* takes a value */
+#define CLI_OPT_PLOT                (UINT64_C(1) << 9)
 /* restore-defaults */
-#define CLI_OPT_KEEP_THROTTLE       (UINT64_C(1) << 11)
-#define CLI_OPT_KEEP_FIELD_MAP      (UINT64_C(1) << 12)
+#define CLI_OPT_KEEP_THROTTLE       (UINT64_C(1) << 10)
+#define CLI_OPT_KEEP_FIELD_MAP      (UINT64_C(1) << 11)
 /* throttle set */
-#define CLI_OPT_DEFAULT_CURVE       (UINT64_C(1) << 13)
-#define CLI_OPT_NO_HPD              (UINT64_C(1) << 14)
+#define CLI_OPT_DEFAULT_CURVE       (UINT64_C(1) << 12)
+#define CLI_OPT_NO_HPD              (UINT64_C(1) << 13)
 /* monitor */
-#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 15) /* takes a value */
-#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 16) /* takes a value */
-#define CLI_OPT_MONITOR_THROTTLE    (UINT64_C(1) << 17)
+#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 14) /* takes a value */
+#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 15) /* takes a value */
+#define CLI_OPT_MONITOR_THROTTLE    (UINT64_C(1) << 16)
 
 /* Bits 32–63 are reserved for debug and development bypasses, in write
  * sequence order. */
-#define CLI_OPT_DEBUG_NO_GOODSET    (UINT64_C(1) << 32)
-#define CLI_OPT_DEBUG_NO_CAL        (UINT64_C(1) << 33)
-#define CLI_OPT_DEBUG_NO_VERIFY     (UINT64_C(1) << 34)
-#define CLI_OPT_DEBUG_NO_POST_WRITE (UINT64_C(1) << 35)
+#define CLI_OPT_DEBUG_NO_RULES      (UINT64_C(1) << 32)
+#define CLI_OPT_DEBUG_NO_GOODSET    (UINT64_C(1) << 33)
+#define CLI_OPT_DEBUG_NO_CAL        (UINT64_C(1) << 34)
+#define CLI_OPT_DEBUG_NO_VERIFY     (UINT64_C(1) << 35)
+#define CLI_OPT_DEBUG_NO_POST_WRITE (UINT64_C(1) << 36)
 
 /* Options accepted by every command that writes settings */
 #define CLI_OPTS_WRITE (CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_RESET | CLI_OPT_NO_WAIT | \
@@ -62,7 +62,6 @@ typedef uint64_t cli_option_mask;
 
 /* Options parsed from argv */
 typedef struct {
-    bool no_voltage_link;
     bool allow_unvalidated_firmware;
     bool field_map;
     bool reset;
@@ -74,6 +73,7 @@ typedef struct {
     bool default_curve;
     bool no_hpd;
     bool monitor_throttle;
+    bool debug_no_rules;
     bool debug_no_cal;
     bool debug_no_verify;
     bool debug_no_goodset;
@@ -203,6 +203,19 @@ bool cli_is_profile_current(const alltrax_var_def* var);
 int cli_convert_profile_currents(alltrax_controller* ctrl,
     alltrax_assignment* items, const bool* in_amps, size_t count,
     alltrax_info* info, bool* have_info);
+
+/* Value rules for settings and curves entered through the CLI (rules.c).
+ * Both return 0 to proceed, or 1 after printing the broken rule; with
+ * --debug-no-rules they print a warning and return 0.
+ * cli_rules_check_curve() needs no device. cli_rules_check() checks every
+ * setting and curve in a batch, reading controller information only when a
+ * rule needs it; `info` may pass information the caller already has. */
+int cli_rules_check_curve(const alltrax_curve_data* curve, const cli_flags* flags);
+int cli_rules_check(alltrax_controller* ctrl, const alltrax_assignment* items,
+    size_t count, const alltrax_info* info, const cli_flags* flags);
+/* restore-defaults --keep-throttle: the installed throttle type must be one
+ * the hardware allows. */
+int cli_rules_check_kept_throttle(alltrax_controller* ctrl, const cli_flags* flags);
 
 /* Subcommand handlers — each returns 0 on success, 1 on error */
 int cmd_info(int argc, char** argv);

@@ -422,7 +422,7 @@ static int do_list(int argc, char** argv)
     return 0;
 }
 
-#define UPGRADE_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP_KEY)
+#define UPGRADE_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP_KEY | CLI_OPT_DEBUG_NO_RULES)
 
 static int do_upgrade(int argc, char** argv)
 {
@@ -486,7 +486,8 @@ done:
     return ret;
 }
 
-#define INSTALL_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP_KEY | CLI_OPT_FIELD_MAP)
+#define INSTALL_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP_KEY | CLI_OPT_FIELD_MAP | \
+                         CLI_OPT_DEBUG_NO_RULES)
 
 static const char* pole_count(bool eight)
 {

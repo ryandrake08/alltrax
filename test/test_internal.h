@@ -15,9 +15,6 @@ void build_flash_get_flag_request(uint8_t flag, uint8_t buf[PACKET_SIZE]);
 void build_flash_clear_flags_request(uint8_t flags, uint8_t buf[PACKET_SIZE]);
 
 /* controller.c */
-alltrax_error validate_voltage_link(
-    double ksi, double under_volt, double over_volt,
-    double bms_missing, char* err_msg, size_t err_msg_size);
 char* format_rev(uint32_t rev, char* buf, size_t buflen);
 bool firmware_in_bounds(alltrax_controller_type type,
     uint32_t boot_rev, uint32_t program_rev);

@@ -16,8 +16,8 @@
 int cmd_write(int argc, char** argv)
 {
     cli_flags flags;
-    const cli_option_mask allowed = CLI_OPTS_WRITE | CLI_OPT_NO_VOLTAGE_LINK |
-                                    CLI_OPT_FIELD_MAP;
+    const cli_option_mask allowed = CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP |
+                                    CLI_OPT_DEBUG_NO_RULES;
     int n_assignments = cli_parse_args(argc, argv, "write", allowed, 1, -1,
                                        &flags);
 
@@ -128,6 +128,8 @@ int cmd_write(int argc, char** argv)
     alltrax_info info;
     bool have_info;
     if (cli_convert_profile_currents(ctrl, assigns, in_amps, count, &info, &have_info))
+        goto done;
+    if (cli_rules_check(ctrl, assigns, count, have_info ? &info : NULL, &flags))
         goto done;
 
     alltrax_write_report report;

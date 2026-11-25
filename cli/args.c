@@ -18,8 +18,6 @@ static const struct {
 } options[] = {
     { "--allow-unvalidated-firmware", CLI_OPT_ALLOW_UNVALIDATED, NULL,
       "Write to firmware V0.001-V5.999 not yet validated for writes" },
-    { "--no-voltage-link", CLI_OPT_NO_VOLTAGE_LINK, NULL,
-      "Skip the KSI/under-voltage/over-voltage relationship check" },
     { "--field-map", CLI_OPT_FIELD_MAP, NULL,
       "Allow writing field-map data (must match the installed motor)" },
     { "--reset", CLI_OPT_RESET, NULL,
@@ -52,6 +50,8 @@ static const struct {
       "Append full monitor samples to a CSV file" },
     { "--throttle", CLI_OPT_MONITOR_THROTTLE, NULL,
       "Show the live throttle view at 100 ms" },
+    { "--debug-no-rules", CLI_OPT_DEBUG_NO_RULES, NULL,
+      "Skip the value rules for settings and curves" },
     { "--debug-no-goodset", CLI_OPT_DEBUG_NO_GOODSET, NULL,
       "Skip GoodSet checks and factory recovery" },
     { "--debug-no-cal", CLI_OPT_DEBUG_NO_CAL, NULL,
@@ -62,8 +62,9 @@ static const struct {
       "Skip automatic calibration clear, date stamp and reset" },
 };
 #define OPTION_COUNT (sizeof(options) / sizeof(options[0]))
-#define DEBUG_OPTIONS (CLI_OPT_DEBUG_NO_GOODSET | CLI_OPT_DEBUG_NO_CAL | \
-                       CLI_OPT_DEBUG_NO_VERIFY | CLI_OPT_DEBUG_NO_POST_WRITE)
+#define DEBUG_OPTIONS (CLI_OPT_DEBUG_NO_RULES | CLI_OPT_DEBUG_NO_GOODSET | \
+                       CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | \
+                       CLI_OPT_DEBUG_NO_POST_WRITE)
 
 static cli_option_mask option_bit(const char* arg)
 {
@@ -136,7 +137,6 @@ alltrax_write_opts cli_write_opts(const cli_flags* flags,
         .skip_goodset = flags->debug_no_goodset,
         .skip_post_write = flags->debug_no_post_write,
         .skip_fw_check = flags->allow_unvalidated_firmware,
-        .skip_voltage_link = flags->no_voltage_link,
         .reset_after_write = flags->reset,
         .report = report,
     };
@@ -189,7 +189,6 @@ int cli_parse_args(int argc, char** argv, const char* command,
 
         switch (bit) {
         case CLI_OPT_ALLOW_UNVALIDATED: flags->allow_unvalidated_firmware = true; break;
-        case CLI_OPT_NO_VOLTAGE_LINK:   flags->no_voltage_link = true; break;
         case CLI_OPT_FIELD_MAP:         flags->field_map = true; break;
         case CLI_OPT_RESET:             flags->reset = true; break;
         case CLI_OPT_NO_WAIT:           flags->no_wait = true; break;
@@ -200,6 +199,7 @@ int cli_parse_args(int argc, char** argv, const char* command,
         case CLI_OPT_DEFAULT_CURVE:     flags->default_curve = true; break;
         case CLI_OPT_NO_HPD:            flags->no_hpd = true; break;
         case CLI_OPT_MONITOR_THROTTLE:  flags->monitor_throttle = true; break;
+        case CLI_OPT_DEBUG_NO_RULES:    flags->debug_no_rules = true; break;
         case CLI_OPT_DEBUG_NO_GOODSET:  flags->debug_no_goodset = true; break;
         case CLI_OPT_DEBUG_NO_CAL:      flags->debug_no_cal = true; break;
         case CLI_OPT_DEBUG_NO_VERIFY:   flags->debug_no_verify = true; break;

@@ -89,7 +89,7 @@ FLAGS_TEXT := $(CC) $(CFLAGS) $(CPPFLAGS) $(HIDAPI_CFLAGS) $(CRYPTO_CFLAGS) $(XM
 # --- Sources ---
 
 LIB_SRC  := src/protocol.c src/transport.c src/controller.c src/variables.c
-CLI_SRC  := cli/main.c cli/args.c cli/current.c cli/field_map.c cli/cmd_info.c cli/cmd_devices.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_monitor.c cli/cmd_errors.c cli/cmd_curve.c cli/cmd_throttle.c cli/cmd_field_map.c $(if $(HAS_XML),cli/cmd_config.c)
+CLI_SRC  := cli/main.c cli/args.c cli/current.c cli/field_map.c cli/cmd_info.c cli/cmd_devices.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_monitor.c cli/cmd_errors.c cli/cmd_curve.c cli/cmd_throttle.c cli/cmd_field_map.c cli/rules.c $(if $(HAS_XML),cli/cmd_config.c)
 TEST_SRC := test/test_main.c test/test_protocol.c test/test_variables.c test/test_curves.c
 
 LIB_OBJ  := $(patsubst %.c,$(BUILD)/%.o,$(notdir $(LIB_SRC)))
@@ -128,7 +128,7 @@ $(CONTROLLER_TEST_BIN): $(BUILD)/test_controller.o $(filter-out $(BUILD)/transpo
 # a fake transport/open. Config coverage follows the optional libraries.
 CLI_TEST_CONFIG_OBJ := $(if $(HAS_XML),$(BUILD)/cmd_config.o)
 CLI_TEST_CONFIG_LIBS := $(CRYPTO_LIBS) $(XML_LIBS)
-CLI_WRITE_TEST_OBJ := $(BUILD)/args.o $(BUILD)/current.o $(BUILD)/field_map.o $(BUILD)/cmd_get.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(BUILD)/cmd_throttle.o $(BUILD)/cmd_monitor.o $(BUILD)/cmd_reset.o $(BUILD)/cmd_restore_defaults.o $(BUILD)/cmd_fan_test.o $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
+CLI_WRITE_TEST_OBJ := $(BUILD)/args.o $(BUILD)/current.o $(BUILD)/field_map.o $(BUILD)/rules.o $(BUILD)/cmd_get.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(BUILD)/cmd_throttle.o $(BUILD)/cmd_monitor.o $(BUILD)/cmd_reset.o $(BUILD)/cmd_restore_defaults.o $(BUILD)/cmd_fan_test.o $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
 $(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(CLI_TEST_CONFIG_OBJ) $(BUILD)/cmd_field_map.o $(CLI_WRITE_TEST_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(CLI_TEST_CONFIG_LIBS) -lm
 

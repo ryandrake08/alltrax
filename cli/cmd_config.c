@@ -588,6 +588,8 @@ alltrax_assignment* cli_config_assignments(const cli_config* config,
 int cli_config_write(alltrax_controller* ctrl, alltrax_assignment* items,
     size_t count, const cli_flags* flags)
 {
+    if (cli_rules_check(ctrl, items, count, NULL, flags))
+        return 1;
     alltrax_write_report report;
     alltrax_write_opts write_opts = cli_write_opts(flags, &report);
     char field_map_name[33];
@@ -669,8 +671,8 @@ char* cli_read_file(const char* path, const cli_key* key, const char* option,
     return (char*)data;
 }
 
-#define LOAD_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_CONFIG_KEY | \
-                      CLI_OPT_NO_VOLTAGE_LINK | CLI_OPT_FIELD_MAP)
+#define LOAD_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_CONFIG_KEY | CLI_OPT_FIELD_MAP | \
+                      CLI_OPT_DEBUG_NO_RULES)
 
 /* ------------------------------------------------------------------ */
 /* alltrax config save <file>                                          */
