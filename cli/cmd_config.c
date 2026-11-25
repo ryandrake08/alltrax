@@ -791,7 +791,7 @@ static int do_load(int argc, char** argv)
         return 1;
     }
 
-    printf("Loaded %zu writable variables + %zu curves from %s",
+    printf("Read %zu writable variables + %zu curves from %s",
            config.count, config.curve_count, filepath);
     if (config.skipped > 0)
         printf(" (%zu skipped)", config.skipped);
