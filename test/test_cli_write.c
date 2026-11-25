@@ -1463,6 +1463,15 @@ static int test_get_profile_current_shows_amps_and_signed_percent(void)
     return 0;
 }
 
+static int test_get_rejects_unknown_names_before_open(void)
+{
+    char* argv[] = { "get", "LoBat_Vlim", "NoSuchVar", "HiBat_Vlim" };
+    writable_device_reset();
+    ASSERT_EQ(run_writable(cmd_get, 4, argv), 1);
+    ASSERT_EQ(open_calls, 0);
+    return 0;
+}
+
 static int test_get_lists_settings_without_factory_copies(void)
 {
     static char out[16384];
@@ -3229,6 +3238,7 @@ int main(void)
     RUN_TEST(test_get_prints_full_integer_range);
     RUN_TEST(test_get_keeps_scaled_formatting);
     RUN_TEST(test_get_profile_current_shows_amps_and_signed_percent);
+    RUN_TEST(test_get_rejects_unknown_names_before_open);
     RUN_TEST(test_get_lists_settings_without_factory_copies);
     RUN_TEST(test_get_reports_goodset_and_reads_factory);
     RUN_TEST(test_fan_test_requires_keyswitch_and_writes_once);

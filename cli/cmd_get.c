@@ -83,6 +83,12 @@ int cmd_get(int argc, char** argv)
         cli_print_options(stderr, CLI_OPT_FACTORY);
         return 1;
     }
+    for (int i = 1; i <= nargs; i++) {
+        if (!alltrax_find_var(argv[i])) {
+            fprintf(stderr, "Unknown variable: %s\n", argv[i]);
+            return 1;
+        }
+    }
 
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, false);
@@ -135,10 +141,6 @@ int cmd_get(int argc, char** argv)
         /* Specific variables by name */
         for (int i = 1; i <= nargs; i++) {
             const alltrax_var_def* var = alltrax_find_var(argv[i]);
-            if (!var) {
-                fprintf(stderr, "Unknown variable: %s\n", argv[i]);
-                goto done;
-            }
 
             /* Settings (writable FLASH entries) depend on the page markers. */
             if (!checked_goodset && var->is_flash && var->writable) {
