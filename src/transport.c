@@ -180,7 +180,7 @@ alltrax_error alltrax_wait_for_reconnect(alltrax_controller* old,
             if (!d->path || !is_xct_device(d)) continue;
             bool same_path = strcmp(d->path, old->device_path) == 0;
             old_listed |= same_path;
-            if (!disconnected || (!same_path && !has_serial)) continue;
+            if (!same_path && (!disconnected || !has_serial)) continue;
 
             now = monotonic_ms();
             if (now < 0 || now >= deadline) break;
@@ -188,11 +188,15 @@ alltrax_error alltrax_wait_for_reconnect(alltrax_controller* old,
             int wait_ms = remaining < DEFAULT_TIMEOUT_MS ? (int)remaining : DEFAULT_TIMEOUT_MS;
             char model[16];
             uint32_t serial;
-            if (probe_identity(d->path, wait_ms, model, &serial) &&
-                serial == old->reset_serial && strcmp(model, old->reset_model) == 0) {
+            bool match = probe_identity(d->path, wait_ms, model, &serial) &&
+                serial == old->reset_serial && strcmp(model, old->reset_model) == 0;
+            if (match && disconnected) {
                 found = true;
                 break;
             }
+            /* The host may recover a rebooting controller in place, keeping
+             * its path and the old handle; it stops answering meanwhile. */
+            if (!match) disconnected = true;
         }
         hid_free_enumeration(devs);
         if (found) return ALLTRAX_OK;

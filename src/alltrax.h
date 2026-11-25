@@ -582,10 +582,12 @@ const char* alltrax_throttle_type_name(uint8_t type);
 alltrax_error alltrax_reset_device(alltrax_controller* ctrl,
     const alltrax_write_opts* opts);
 
-/* Wait up to timeout_ms for the controller to re-enumerate after a reset
- * sent through this handle (by a reset, factory restore, auto-calibration
- * clear, or write). The controller is matched by model and serial
- * number using read-only requests. Returns ALLTRAX_OK when it answers,
+/* Wait up to timeout_ms for the controller to come back after a reset sent
+ * through this handle (by a reset, factory restore, auto-calibration clear,
+ * or write). The reboot shows as the old handle failing, the old path
+ * disappearing, or the controller not answering on its old path; then the
+ * controller is matched by model and serial number using read-only
+ * requests, on a new path or the old one. Returns ALLTRAX_OK when it answers,
  * ALLTRAX_ERR_TIMEOUT if it does not, and ALLTRAX_ERR_INVALID_ARG if no reset
  * was sent. The handle stays stale: close it and open a new one. */
 alltrax_error alltrax_wait_for_reconnect(alltrax_controller* ctrl,

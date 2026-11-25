@@ -18,6 +18,7 @@ static struct {
     const char* models[3];
     uint32_t serials[3];
     bool old_handle_gone, stale_probe;
+    unsigned failed_probes;  /* Identity probes that fail before stale_probe applies */
     bool fail_open;
     size_t count;
     unsigned enumerations, frees, opens, closes, reads, writes, mutations;
@@ -128,9 +129,13 @@ int hid_write(hid_device* hid, const unsigned char* data, size_t size)
     if (mock.write_result != PACKET_SIZE &&
         (!mock.write_result_report || data[0] == mock.write_result_report))
         return mock.write_result;
-    if (mock.stale_probe && data[0] == REPORT_ID_READ &&
-        data[1] == SERIAL_NUMBER_OFFSET + 4)
-        return -1;
+    if (data[0] == REPORT_ID_READ && data[1] == SERIAL_NUMBER_OFFSET + 4) {
+        if (mock.failed_probes) {
+            mock.failed_probes--;
+            return -1;
+        }
+        if (mock.stale_probe) return -1;
+    }
     memcpy(mock.request, data, size);
     if (data[0] != 0x01) mock.mutations++;
     if (data[0] == 0x02 && request_address() == ADDR_RUN_MODE)
@@ -764,6 +769,24 @@ static int test_reset_wait_matches_reenumerated_controller(void)
     return 0;
 }
 
+static int test_reset_wait_matches_controller_recovered_in_place(void)
+{
+    mock_reset();
+    add_device("hidraw0", ALLTRAX_VID, ALLTRAX_PID_XCT, "XCT48400-DCS");
+    mock.serials[0] = 123456;
+    alltrax_controller* ctrl = NULL;
+    ASSERT_EQ(alltrax_open(&ctrl, "hidraw0", true), ALLTRAX_OK);
+    ASSERT_EQ(alltrax_reset_device(ctrl, NULL), ALLTRAX_OK);
+    /* The path stays listed and the old handle never fails; the controller
+     * only stops answering while it reboots. */
+    mock.failed_probes = 2;
+    ASSERT_EQ(alltrax_wait_for_reconnect(ctrl, 2000), ALLTRAX_OK);
+    ASSERT_EQ(mock.failed_probes, 0);
+    ASSERT_EQ(mock.mutations, 1);
+    alltrax_close(ctrl);
+    return 0;
+}
+
 int main(void)
 {
     printf("transport (simulated hidapi):\n");
@@ -772,6 +795,7 @@ int main(void)
     RUN_TEST(test_bootloader_mode_allows_info_and_blocks_operations);
     RUN_TEST(test_cli_devices_prints_supported_path_model_and_serial);
     RUN_TEST(test_reset_wait_matches_reenumerated_controller);
+    RUN_TEST(test_reset_wait_matches_controller_recovered_in_place);
     RUN_TEST(test_no_devices_and_unknown_paths);
     RUN_TEST(test_explicit_paths_require_supported_usb_identity);
     RUN_TEST(test_auto_detection_skips_unsupported_devices);
