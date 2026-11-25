@@ -527,7 +527,6 @@ tool, not for normal use, and are listed separately in every usage message.
 | `--debug-no-rules` | `write`, `curve set`, `config load`, `field-map install`, `field-map upgrade`, `restore-defaults` | [Value rules](#value-rules) |
 | `--debug-no-cal` | write commands | CAL/RUN mode bracket |
 | `--debug-no-verify` | write commands | FLASH read-back verification |
-| `--debug-no-goodset` | write commands | GoodSet checks and factory recovery |
 | `--debug-no-post-write` | write commands | Automatic calibration clear, date stamp and reset. An explicit `--reset` still applies. |
 
 The write commands are `write`, `config load`, `curve set`, and `curve reset`.
@@ -955,7 +954,6 @@ Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
 | `skip_fw_check` | Allow writes on unvalidated firmware within V0.001-V5.999 (CLI `--allow-unvalidated-firmware`) |
 | `skip_cal` | Debug bypass: skip the CAL/RUN bracket |
 | `skip_verify` | Debug bypass: skip read-back verification (FLASH only) |
-| `skip_goodset` | Debug bypass: skip GoodSet checks and factory recovery |
 | `skip_post_write` | Debug bypass: skip automatic calibration clear, date stamp and reset |
 | `reset_after_write` | Request one reset after a successful write |
 | `report` | Optional `alltrax_write_report*`, cleared and then filled with the actions the write performed: `factory_restored`, `autocal_cleared`, `date_stamped`, `reset_sent`. Each flag is set once its action succeeded, so a failed write still reports what ran. |

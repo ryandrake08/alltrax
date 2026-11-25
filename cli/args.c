@@ -50,8 +50,6 @@ static const struct {
       "Show the live throttle view at 100 ms" },
     { "--debug-no-rules", CLI_OPT_DEBUG_NO_RULES, NULL,
       "Skip the value rules for settings and curves" },
-    { "--debug-no-goodset", CLI_OPT_DEBUG_NO_GOODSET, NULL,
-      "Skip GoodSet checks and factory recovery" },
     { "--debug-no-cal", CLI_OPT_DEBUG_NO_CAL, NULL,
       "Skip the CAL/RUN mode bracket" },
     { "--debug-no-verify", CLI_OPT_DEBUG_NO_VERIFY, NULL,
@@ -60,9 +58,8 @@ static const struct {
       "Skip automatic calibration clear, date stamp and reset" },
 };
 #define OPTION_COUNT (sizeof(options) / sizeof(options[0]))
-#define DEBUG_OPTIONS (CLI_OPT_DEBUG_NO_RULES | CLI_OPT_DEBUG_NO_GOODSET | \
-                       CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | \
-                       CLI_OPT_DEBUG_NO_POST_WRITE)
+#define DEBUG_OPTIONS (CLI_OPT_DEBUG_NO_RULES | CLI_OPT_DEBUG_NO_CAL | \
+                       CLI_OPT_DEBUG_NO_VERIFY | CLI_OPT_DEBUG_NO_POST_WRITE)
 
 static cli_option_mask option_bit(const char* arg)
 {
@@ -132,7 +129,6 @@ alltrax_write_opts cli_write_opts(const cli_flags* flags,
     return (alltrax_write_opts){
         .skip_cal = flags->debug_no_cal,
         .skip_verify = flags->debug_no_verify,
-        .skip_goodset = flags->debug_no_goodset,
         .skip_post_write = flags->debug_no_post_write,
         .skip_fw_check = flags->allow_unvalidated_firmware,
         .reset_after_write = flags->reset,
@@ -197,7 +193,6 @@ int cli_parse_args(int argc, char** argv, const char* command,
         case CLI_OPT_NO_HPD:            flags->no_hpd = true; break;
         case CLI_OPT_MONITOR_THROTTLE:  flags->monitor_throttle = true; break;
         case CLI_OPT_DEBUG_NO_RULES:    flags->debug_no_rules = true; break;
-        case CLI_OPT_DEBUG_NO_GOODSET:  flags->debug_no_goodset = true; break;
         case CLI_OPT_DEBUG_NO_CAL:      flags->debug_no_cal = true; break;
         case CLI_OPT_DEBUG_NO_VERIFY:   flags->debug_no_verify = true; break;
         case CLI_OPT_DEBUG_NO_POST_WRITE: flags->debug_no_post_write = true; break;

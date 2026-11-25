@@ -199,7 +199,7 @@ static int check_setting(alltrax_controller* ctrl, const alltrax_assignment* ite
 /* Voltage settings in the batch, with the others read from the page the
  * write lands on, in stored units (0.1 V). */
 static int check_voltage_order(alltrax_controller* ctrl,
-    const alltrax_assignment* items, size_t count, const cli_flags* flags)
+    const alltrax_assignment* items, size_t count)
 {
     long volts[4];
     bool given[4] = { false, false, false, false };
@@ -224,16 +224,7 @@ static int check_voltage_order(alltrax_controller* ctrl,
     }
     if (n) {
         alltrax_var_value values[4];
-        bool factory = false;
-        alltrax_error err = ALLTRAX_OK;
-        if (!flags->debug_no_goodset) {
-            const alltrax_var_def* marker = alltrax_find_var("Var_GoodSet");
-            err = alltrax_read_vars(ctrl, &marker, 1, values);
-            factory = !err && values[0].raw.u16 != 0;
-        }
-        if (!err)
-            err = factory ? alltrax_read_factory_vars(ctrl, missing, n, values)
-                          : alltrax_read_vars(ctrl, missing, n, values);
+        alltrax_error err = cli_read_current_settings(ctrl, missing, n, values);
         if (err) {
             cli_error(ctrl, err, "reading voltage settings");
             return 1;
@@ -276,7 +267,7 @@ int cli_rules_check(alltrax_controller* ctrl, const alltrax_assignment* items,
             if (check_setting(ctrl, &items[i], &read_info, &have_info)) return 1;
         }
     }
-    return check_voltage_order(ctrl, items, count, flags);
+    return check_voltage_order(ctrl, items, count);
 }
 
 int cli_rules_check_kept_throttle(alltrax_controller* ctrl, const cli_flags* flags)

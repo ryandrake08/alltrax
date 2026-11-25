@@ -365,7 +365,6 @@ typedef struct {
     /* Debug and development bypasses */
     bool skip_cal;           /* Skip CAL/RUN bracket and its restoration */
     bool skip_verify;        /* Skip read-back verification (FLASH only) */
-    bool skip_goodset;       /* Skip GoodSet checks and factory recovery */
     /* User options */
     bool skip_fw_check;      /* Allow unvalidated firmware within V0.001-V5.999 */
     bool skip_post_write;    /* Debug bypass: skip automatic calibration clear, date stamp and reset */

@@ -56,7 +56,7 @@ int cli_check_field_map(const alltrax_assignment* items, size_t count,
 }
 
 alltrax_error cli_add_field_map_name(alltrax_controller* ctrl,
-    alltrax_assignment* items, size_t* count, char name[33], bool skip_goodset)
+    alltrax_assignment* items, size_t* count, char name[33])
 {
     const alltrax_var_def* var = alltrax_find_var("F_Table_Name");
     if (!touches_field_map(items, *count))
@@ -66,18 +66,7 @@ alltrax_error cli_add_field_map_name(alltrax_controller* ctrl,
             return ALLTRAX_OK;
     }
     alltrax_var_value value;
-    const alltrax_var_def* source = var;
-    if (!skip_goodset) {
-        const alltrax_var_def* goodset = alltrax_find_var("Var_GoodSet");
-        alltrax_error err = alltrax_read_vars(ctrl, &goodset, 1, &value);
-        if (err) {
-            cli_error(ctrl, err, "reading Var_GoodSet");
-            return err;
-        }
-        if (value.raw.u16 != 0)
-            source = alltrax_find_var("F_F_Table_Name");
-    }
-    alltrax_error err = alltrax_read_vars(ctrl, &source, 1, &value);
+    alltrax_error err = cli_read_current_settings(ctrl, &var, 1, &value);
     if (err) {
         cli_error(ctrl, err, "reading F_Table_Name");
         return err;

@@ -592,8 +592,7 @@ int cli_config_write(alltrax_controller* ctrl, alltrax_assignment* items,
     alltrax_write_report report;
     alltrax_write_opts write_opts = cli_write_opts(flags, &report);
     char field_map_name[33];
-    if (cli_add_field_map_name(ctrl, items, &count, field_map_name,
-                               flags->debug_no_goodset))
+    if (cli_add_field_map_name(ctrl, items, &count, field_map_name))
         return 1;
 
     /* Settings, strings, and curves go to the device in one batch: one

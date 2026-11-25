@@ -49,14 +49,13 @@ typedef uint64_t cli_option_mask;
 /* Bits 32–63 are reserved for debug and development bypasses, in write
  * sequence order. */
 #define CLI_OPT_DEBUG_NO_RULES      (UINT64_C(1) << 32)
-#define CLI_OPT_DEBUG_NO_GOODSET    (UINT64_C(1) << 33)
-#define CLI_OPT_DEBUG_NO_CAL        (UINT64_C(1) << 34)
-#define CLI_OPT_DEBUG_NO_VERIFY     (UINT64_C(1) << 35)
-#define CLI_OPT_DEBUG_NO_POST_WRITE (UINT64_C(1) << 36)
+#define CLI_OPT_DEBUG_NO_CAL        (UINT64_C(1) << 33)
+#define CLI_OPT_DEBUG_NO_VERIFY     (UINT64_C(1) << 34)
+#define CLI_OPT_DEBUG_NO_POST_WRITE (UINT64_C(1) << 35)
 
 /* Options accepted by every command that writes settings */
 #define CLI_OPTS_WRITE (CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_RESET | CLI_OPT_NO_WAIT | \
-    CLI_OPT_DEBUG_NO_GOODSET | CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | \
+    CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | \
     CLI_OPT_DEBUG_NO_POST_WRITE)
 
 /* Options parsed from argv */
@@ -75,7 +74,6 @@ typedef struct {
     bool debug_no_rules;
     bool debug_no_cal;
     bool debug_no_verify;
-    bool debug_no_goodset;
     bool debug_no_post_write;
     const char* file;    /* --file value, or NULL */
     const char* preset;  /* --preset value, or NULL */
@@ -189,10 +187,16 @@ int cli_check_field_map(const alltrax_assignment* items, size_t count,
  * name from the page the write will use (items needs room for one more).
  * `name` holds the text for the appended item. */
 alltrax_error cli_add_field_map_name(alltrax_controller* ctrl,
-    alltrax_assignment* items, size_t* count, char name[33], bool skip_goodset);
+    alltrax_assignment* items, size_t* count, char name[33]);
 
 /* After a successful field-map write, remind the user about the pole count. */
 void cli_field_map_written(const alltrax_assignment* items, size_t count);
+
+/* Read user settings from the page a settings write starts from: the user
+ * page, or the factory page while the user page is invalid (the write
+ * restores it first). */
+alltrax_error cli_read_current_settings(alltrax_controller* ctrl,
+    const alltrax_var_def** vars, size_t count, alltrax_var_value* out);
 
 /* Profile current fields are stored as percentages of rated current. */
 bool cli_is_profile_current(const alltrax_var_def* var);

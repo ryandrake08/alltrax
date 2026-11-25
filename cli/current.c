@@ -50,3 +50,14 @@ int cli_convert_profile_currents(alltrax_controller* ctrl,
     }
     return 0;
 }
+
+alltrax_error cli_read_current_settings(alltrax_controller* ctrl,
+    const alltrax_var_def** vars, size_t count, alltrax_var_value* out)
+{
+    const alltrax_var_def* marker = alltrax_find_var("Var_GoodSet");
+    alltrax_var_value value;
+    alltrax_error err = alltrax_read_vars(ctrl, &marker, 1, &value);
+    if (err) return err;
+    return value.raw.u16 != 0 ? alltrax_read_factory_vars(ctrl, vars, count, out)
+                              : alltrax_read_vars(ctrl, vars, count, out);
+}

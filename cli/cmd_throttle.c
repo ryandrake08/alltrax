@@ -73,21 +73,12 @@ static bool hpd_forced_off(uint8_t type)
 
 /* Read the selected throttle type and name from the settings page the library
  * writes: the user page, or the factory page while the user page is invalid. */
-static alltrax_error read_current(alltrax_controller* ctrl, bool skip_goodset,
-    alltrax_var_value out[2])
+static alltrax_error read_current(alltrax_controller* ctrl, alltrax_var_value out[2])
 {
     const alltrax_var_def* vars[] = {
         alltrax_find_var("Throttle_Type"), alltrax_find_var("Throttle_Type_Name"),
     };
-    if (!skip_goodset) {
-        const alltrax_var_def* marker = alltrax_find_var("Var_GoodSet");
-        alltrax_var_value value;
-        alltrax_error err = alltrax_read_vars(ctrl, &marker, 1, &value);
-        if (err) return err;
-        if (value.raw.u16 != 0)
-            return alltrax_read_factory_vars(ctrl, vars, 2, out);
-    }
-    return alltrax_read_vars(ctrl, vars, 2, out);
+    return cli_read_current_settings(ctrl, vars, 2, out);
 }
 
 /* The current entry is the first available one with the stored type whose
@@ -193,7 +184,7 @@ int cmd_throttle(int argc, char** argv)
                 entry->label, info.model);
     } else {
         alltrax_var_value current[2];
-        err = read_current(ctrl, set && flags.debug_no_goodset, current);
+        err = read_current(ctrl, current);
         if (err) {
             cli_error(ctrl, err, "reading current throttle");
         } else if (set) {

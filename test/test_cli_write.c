@@ -550,7 +550,7 @@ static int test_invalid_options_and_argument_counts_rejected(void)
     const cli_option_mask allowed = CLI_OPT_RESET | CLI_OPT_FILE;
     struct { int argc; char* argv[5]; int min, max; } bad[] = {
         { 2, { "cmd", "--bogus" }, 0, -1 },            /* unknown */
-        { 2, { "cmd", "--debug-no-goodset" }, 0, -1 }, /* not accepted */
+        { 2, { "cmd", "--debug-no-cal" }, 0, -1 },     /* not accepted */
         { 2, { "cmd", "--file" }, 0, -1 },             /* missing value */
         { 3, { "cmd", "--file", "--reset" }, 0, -1 },  /* option as value */
         { 5, { "cmd", "--file", "a", "--file", "b" }, 0, -1 }, /* repeated */
@@ -572,17 +572,17 @@ static int test_invalid_options_and_argument_counts_rejected(void)
 static int test_write_options_map_to_library_options(void)
 {
     char* argv[] = {
-        "write", "--debug-no-cal", "--debug-no-verify", "--debug-no-goodset",
+        "write", "--debug-no-cal", "--debug-no-verify",
         "--debug-no-post-write", "--allow-unvalidated-firmware", "--debug-no-rules",
     };
     cli_flags flags;
-    ASSERT_EQ(cli_parse_args(7, argv, "write", CLI_OPTS_WRITE | CLI_OPT_DEBUG_NO_RULES,
+    ASSERT_EQ(cli_parse_args(6, argv, "write", CLI_OPTS_WRITE | CLI_OPT_DEBUG_NO_RULES,
                              0, -1, &flags), 0);
     ASSERT_TRUE(flags.debug_no_rules);
     alltrax_write_report report;
     alltrax_write_opts opts = cli_write_opts(&flags, &report);
     ASSERT_TRUE(opts.report == &report);
-    ASSERT_TRUE(opts.skip_cal && opts.skip_verify && opts.skip_goodset &&
+    ASSERT_TRUE(opts.skip_cal && opts.skip_verify &&
                 opts.skip_post_write && opts.skip_fw_check);
     return 0;
 }

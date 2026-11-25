@@ -136,8 +136,7 @@ int cmd_write(int argc, char** argv)
     alltrax_write_opts write_opts = cli_write_opts(&flags, &report);
     char field_map_name[33];
 
-    err = cli_add_field_map_name(ctrl, assigns, &count, field_map_name,
-                                 flags.debug_no_goodset);
+    err = cli_add_field_map_name(ctrl, assigns, &count, field_map_name);
     if (err) goto done;
     err = alltrax_write_assignments(ctrl, assigns, count, &write_opts);
     if (err) {

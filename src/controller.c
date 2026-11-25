@@ -1242,7 +1242,7 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
     /* Select the base page before any writes. */
     bool recover = false;
     uint8_t page_data[VARSET_SIZE];
-    if (flash_count && !opts->skip_goodset) {
+    if (flash_count) {
         rc = check_goodset(ctrl, &recover);
         if (rc) return rc;
         if (recover) {

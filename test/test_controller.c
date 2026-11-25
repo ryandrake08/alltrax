@@ -328,7 +328,7 @@ static int test_string_assignments_rejected_before_device_access(void)
 {
     const char* names[] = { "Throttle_Type_Name", "F_Table_Name" };
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     const alltrax_write_opts* options[] = { NULL, &unchecked };
@@ -383,7 +383,7 @@ static int test_unsupported_identity_blocks_all_operations(void)
         { ALLTRAX_VID, ALLTRAX_PID_XCT, ALLTRAX_CONTROLLER_BMS2 },
     };
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     const alltrax_write_opts* options[] = { NULL, &unchecked };
@@ -436,7 +436,7 @@ static int test_read_only_variables_reject_entire_batch_before_io(void)
         "SerialNum", "Model",
     };
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     const alltrax_write_opts* options[] = { NULL, &unchecked };
@@ -484,7 +484,7 @@ static int test_invalid_numeric_batches_reject_before_io(void)
         0x1p63, -0x1p63, 999.49, 8000.5,
     };
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     const alltrax_write_opts* options[] = { NULL, &unchecked };
@@ -547,7 +547,7 @@ static int test_invalid_curve_points_reject_before_io(void)
 {
     const double invalid[] = { NAN, INFINITY, -INFINITY, DBL_MAX, -DBL_MAX, -1, 200 };
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     const alltrax_write_opts* options[] = { NULL, &unchecked };
@@ -635,7 +635,7 @@ static int test_invalid_throttle_types_reject_batch_before_io(void)
 {
     const double invalid[] = { 33, 12, 32, 255, -1, -0.1, 0.49, 0.5, 1.9, 10.9, 11.1 };
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     const alltrax_write_opts* options[] = { NULL, &unchecked };
@@ -1549,16 +1549,6 @@ static int test_invalid_factory_blocks_flash_writes_before_cal(void)
     ASSERT_EQ(mock.erases, 0);
     ASSERT_EQ(mock.settings_writes, 0);
     ASSERT_MEM_EQ(mock.page, original, sizeof(original));
-
-    mock.page[0] = mock.page[1] = 0xFF;
-    const alltrax_var_def* hpd = alltrax_find_var("HPD");
-    double one = 1;
-    const alltrax_write_opts skip = { .skip_goodset = true };
-    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &hpd, &one, 1, &skip), ALLTRAX_OK);
-    ASSERT_EQ(mock.erases, 1);
-    ASSERT_EQ(mock.goodset_clears, 1);
-    ASSERT_EQ(get_le16(mock.page), 0x0000);
-    ASSERT_EQ(mock.page[hpd->address - VARSET_ADDR], 1);
     return 0;
 }
 
@@ -1806,7 +1796,7 @@ static int test_non_catalog_variables_rejected_before_io(void)
     copies[7].is_flash = true;
     copies[7].address = 0x08004000;                          /* firmware area */
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true, .skip_goodset = true,
+        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     for (size_t i = 0; i <= 8; i++) {

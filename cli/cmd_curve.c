@@ -371,8 +371,7 @@ static int do_set(int argc, char** argv)
     alltrax_write_report report;
     alltrax_write_opts opts = cli_write_opts(&flags, &report);
     char field_map_name[33];
-    err = cli_add_field_map_name(ctrl, items, &count, field_map_name,
-                                 flags.debug_no_goodset);
+    err = cli_add_field_map_name(ctrl, items, &count, field_map_name);
     if (err) {
         alltrax_close(ctrl);
         return 1;
@@ -547,8 +546,7 @@ static int do_curve_reset(int argc, char** argv)
         }
     }
     size_t count = n;
-    err = cli_add_field_map_name(ctrl, items, &count, field_map_name,
-                                 flags.debug_no_goodset);
+    err = cli_add_field_map_name(ctrl, items, &count, field_map_name);
     if (err) {
         ret = 1;
         goto done;
