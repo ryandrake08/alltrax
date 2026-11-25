@@ -1898,20 +1898,17 @@ static int test_throttle_set_curve_and_label_in_one_batch(void)
     ASSERT_EQ(get_le16(device.page + 0x104), 3276); /* Type 5: 80% */
     ASSERT_EQ(get_le16(device.page + 0x124), 4095);
 
+    /* Selecting the same type again also installs its default curve. */
     char* same[] = { "throttle", "set", "Yamaha G19" };
     device.page[0x104] = 123;
     device.page[0x105] = 0;
     ASSERT_EQ(run_writable(cmd_throttle, 3, same), 0);
     ASSERT_MEM_EQ(device.page + 0xC0, "Yamaha G19/G22  ", 16);
-    ASSERT_EQ(get_le16(device.page + 0x104), 123);
-
-    char* force[] = { "throttle", "set", "--default-curve", "Yamaha G19/G22" };
-    ASSERT_EQ(run_writable(cmd_throttle, 4, force), 0);
     ASSERT_EQ(get_le16(device.page + 0x104), 3276);
     return 0;
 }
 
-static int test_throttle_set_preserves_factory_curve_on_recovery(void)
+static int test_throttle_set_after_factory_recovery(void)
 {
     writable_device_reset();
     device.page[0] = 0xFF;
@@ -1921,7 +1918,7 @@ static int test_throttle_set_preserves_factory_curve_on_recovery(void)
     char* argv[] = { "throttle", "set", "Yamaha G19/G22" };
     ASSERT_EQ(run_writable(cmd_throttle, 3, argv), 0);
     ASSERT_EQ(device.erases, 2);
-    ASSERT_EQ(get_le16(device.page + 0x104), 123);
+    ASSERT_EQ(get_le16(device.page + 0x104), 3276);
     ASSERT_EQ(device.resets, 1);
     return 0;
 }
@@ -1944,40 +1941,17 @@ static int test_throttle_set_uses_type_specific_preset(void)
     return 0;
 }
 
-static int test_throttle_set_no_hpd_turns_hpd_off(void)
-{
-    char out[256];
-    writable_device_reset();
-    set_page_bytes("HPD", "\1", 1);
-    char* argv[] = { "throttle", "set", "0-5V", "--no-hpd" };
-    ASSERT_EQ(run_writable(cmd_throttle, 4, argv), 0);
-    ASSERT_EQ(device.page[0xA0], 3);
-    ASSERT_EQ(device.page[0xA4], 0);
-
-    char* pump[] = { "throttle", "set", "Pump", "--no-hpd" };
-    open_calls = 0;
-    ASSERT_EQ(run_cli_output(cmd_throttle, 4, pump, out, sizeof(out)), 1);
-    ASSERT_TRUE(strstr(out, "HPD is always off") != NULL);
-    ASSERT_EQ(open_calls, 0);
-    return 0;
-}
-
-static int test_throttle_set_keeps_absolute_curve(void)
+static int test_throttle_set_absolute_installs_linear_curve(void)
 {
     char out[256];
     writable_device_reset();
     set_page_bytes("Throttle_Type", "\13", 1);
     device.page[0x104] = 123;
     device.page[0x105] = 0;
-    char* force[] = { "throttle", "set", "Absolute", "--default-curve" };
-    ASSERT_EQ(run_cli_output(cmd_throttle, 4, force, out, sizeof(out)), 1);
-    ASSERT_TRUE(strstr(out, "--default-curve is not available") != NULL);
-    ASSERT_EQ(device.mutations, 0);
-
     char* same[] = { "throttle", "set", "Absolute" };
     ASSERT_EQ(run_cli_output(cmd_throttle, 3, same, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "Set throttle to Absolute (11), HPD on") != NULL);
-    ASSERT_EQ(get_le16(device.page + 0x104), 123);
+    ASSERT_EQ(get_le16(device.page + 0x104), 4054);
     return 0;
 }
 
@@ -2764,7 +2738,7 @@ static int test_throttle_select_wire_sequences(void)
     return run_throttle_select("EZGO ITS", ezgo);
 }
 
-static int test_throttle_default_curve_without_hpd_wire_sequence(void)
+static int test_throttle_reselect_installs_default_curve_wire_sequence(void)
 {
     const uint16_t custom_x[] = { 0, 100, 1000, 2000, 4095 };
     const uint16_t custom_y[] = { 0, 0, 1500, 3000, 4095 };
@@ -2774,12 +2748,11 @@ static int test_throttle_default_curve_without_hpd_wire_sequence(void)
     put_curve(device.page, "linearization", custom_x, custom_y, 5);
     uint8_t expected[VARSET_SIZE];
     memcpy(expected, device.page, sizeof(expected));
-    expected[0xA4] = 0;
     memcpy(expected + 0xC0, "EZGO ITS", 8);
     put_curve(expected, "linearization", linear_x, linear_y, 4);
 
-    char* argv[] = { "throttle", "set", "EZGO ITS", "--no-hpd", "--default-curve" };
-    ASSERT_EQ(run_writable(cmd_throttle, 5, argv), 0);
+    char* argv[] = { "throttle", "set", "EZGO ITS" };
+    ASSERT_EQ(run_writable(cmd_throttle, 3, argv), 0);
     ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
     begin_script();
     expect_settings_write(expected);
@@ -3270,15 +3243,14 @@ int main(void)
     RUN_TEST(test_throttle_list_marks_current_entry);
     RUN_TEST(test_throttle_set_refuses_ambiguous_unknown_and_unavailable);
     RUN_TEST(test_throttle_set_curve_and_label_in_one_batch);
-    RUN_TEST(test_throttle_set_preserves_factory_curve_on_recovery);
+    RUN_TEST(test_throttle_set_after_factory_recovery);
     RUN_TEST(test_throttle_set_uses_type_specific_preset);
-    RUN_TEST(test_throttle_set_no_hpd_turns_hpd_off);
-    RUN_TEST(test_throttle_set_keeps_absolute_curve);
+    RUN_TEST(test_throttle_set_absolute_installs_linear_curve);
     RUN_TEST(test_throttle_set_disables_hpd_for_pump_and_usb);
     RUN_TEST(test_setting_write_wire_sequence);
     RUN_TEST(test_reset_trigger_write_wire_sequence);
     RUN_TEST(test_throttle_select_wire_sequences);
-    RUN_TEST(test_throttle_default_curve_without_hpd_wire_sequence);
+    RUN_TEST(test_throttle_reselect_installs_default_curve_wire_sequence);
     RUN_TEST(test_restore_defaults_wire_sequence);
     RUN_TEST(test_monitor_user_inputs_read_block_and_bench_values);
     RUN_TEST(test_monitor_throttle_view_read_blocks);

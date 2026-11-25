@@ -79,7 +79,7 @@ Alltrax Controller Monitor
 | `alltrax curve diff <type>` | Compare user vs factory curve |
 | `alltrax curve reset <type>` | Restore factory curve |
 | `alltrax throttle list` | List throttle labels supported by the connected controller; `*` marks the current one |
-| `alltrax throttle set <name> [--default-curve] [--no-hpd]` | Select a throttle and reboot |
+| `alltrax throttle set <name>` | Select a throttle and reboot |
 | `alltrax field-map history` | List saved field-map names, dates, and the total map count |
 | `alltrax field-map list <file>` | List the maps in a field-map file and any upgrade for the controller |
 | `alltrax field-map upgrade <file>` | Install a newer version of the controller's field map |
@@ -173,21 +173,21 @@ keyswitch off. Stop either view with Ctrl+C.
 ```sh
 alltrax throttle list
 alltrax throttle set "0-5K 2 Wire"
-alltrax throttle set "0-5K 2 Wire" --default-curve
+alltrax write HPD=0          # optional: turn high pedal disable off afterwards
 ```
 
 Choose a label from the connected controller's list. Names are case
 insensitive, and an unambiguous prefix also works. The stored label is
 limited to 16 characters. In the list, `*` marks the current throttle: the
 entry of the stored type whose label starts with the stored name, otherwise
-the first entry of that type. Selecting a different throttle type installs
-its default linearization. Selecting another label for the same type
-keeps the current curve unless you pass `--default-curve`. An Absolute
-throttle that is already selected always keeps its curve, so
-`--default-curve` is refused for it.
+the first entry of that type.
 
-The command turns high pedal disable (HPD) on unless you pass `--no-hpd`.
-HPD is always off for Pump and USB, and `--no-hpd` is refused for them.
+`throttle set` writes the throttle type, its label, its HPD default and its
+default linearization curve, even when the same type is already selected. To
+keep a custom curve, load it again afterwards with `curve set` or
+`config load`. High pedal disable (HPD) is turned on, except for Digital, Pump
+and USB, where it is always off. To turn HPD off for another throttle, write
+`HPD=0` afterwards (a second settings write and reboot).
 The command clears learned throttle calibration and sends one reset. For an absolute
 throttle, verify its calibration before operating the controller.
 

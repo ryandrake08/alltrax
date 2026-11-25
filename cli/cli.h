@@ -33,12 +33,9 @@ typedef uint64_t cli_option_mask;
 #define CLI_OPT_FILE                (UINT64_C(1) << 5)  /* takes a value */
 #define CLI_OPT_PRESET              (UINT64_C(1) << 6)  /* takes a value */
 #define CLI_OPT_PLOT                (UINT64_C(1) << 7)
-/* throttle set */
-#define CLI_OPT_DEFAULT_CURVE       (UINT64_C(1) << 8)
-#define CLI_OPT_NO_HPD              (UINT64_C(1) << 9)
 /* monitor */
-#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 10) /* takes a value */
-#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 11) /* takes a value */
+#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 8) /* takes a value */
+#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 9) /* takes a value */
 
 /* Bits 32–63 are reserved for debug and development bypasses, in write
  * sequence order. */
@@ -59,8 +56,6 @@ typedef struct {
     bool field_map;
     bool plot;
     bool factory;
-    bool default_curve;
-    bool no_hpd;
     bool debug_no_rules;
     bool debug_no_cal;
     bool debug_no_verify;

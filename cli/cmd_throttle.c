@@ -97,39 +97,32 @@ static const throttle_entry* current_entry(const alltrax_info* info,
     return first;
 }
 
+/* Write the entry's type and label, its HPD default and its default
+ * linearization curve in one batch. */
 static int set_throttle(alltrax_controller* ctrl, const throttle_entry* entry,
-    uint8_t current, const cli_flags* flags)
+    const cli_flags* flags)
 {
-    if (flags->default_curve && entry->type == 11 && current == 11) {
-        fprintf(stderr, "Error: Absolute is already selected and keeps its "
-                        "linearization; --default-curve is not available\n");
-        return 1;
-    }
     const alltrax_var_def* type = alltrax_find_var("Throttle_Type");
     const alltrax_var_def* name = alltrax_find_var("Throttle_Type_Name");
     char label[17];
     snprintf(label, sizeof(label), "%.*s", (int)name->size, entry->label);
-    bool hpd = !hpd_forced_off(entry->type) && !flags->no_hpd;
+    bool hpd = !hpd_forced_off(entry->type);
     alltrax_assignment items[4] = {
         { .var = type, .number = entry->type },
         { .var = name, .text = label },
         { .var = alltrax_find_var("HPD"), .number = hpd },
     };
-    size_t count = 3;
-
-    alltrax_curve_data curve;
-    if (flags->default_curve || current != entry->type) {
-        const alltrax_curve_preset* preset =
-            alltrax_find_curve_preset("linearization", linearization_preset(entry->type));
-        if (!preset) {
-            fprintf(stderr, "Error: no default linearization for %s\n", entry->label);
-            return 1;
-        }
-        curve.def = alltrax_find_curve("linearization");
-        memcpy(curve.x, preset->x, sizeof(curve.x));
-        memcpy(curve.y, preset->y, sizeof(curve.y));
-        items[count++] = (alltrax_assignment){ .curve = curve.def, .curve_data = &curve };
+    const alltrax_curve_preset* preset =
+        alltrax_find_curve_preset("linearization", linearization_preset(entry->type));
+    if (!preset) {
+        fprintf(stderr, "Error: no default linearization for %s\n", entry->label);
+        return 1;
     }
+    alltrax_curve_data curve = { .def = alltrax_find_curve("linearization") };
+    memcpy(curve.x, preset->x, sizeof(curve.x));
+    memcpy(curve.y, preset->y, sizeof(curve.y));
+    items[3] = (alltrax_assignment){ .curve = curve.def, .curve_data = &curve };
+    size_t count = 4;
 
     alltrax_write_report report;
     alltrax_write_opts opts = cli_write_opts(flags, &report);
@@ -153,9 +146,7 @@ int cmd_throttle(int argc, char** argv)
     }
 
     cli_flags flags;
-    const cli_option_mask allowed = set
-        ? CLI_OPTS_WRITE | CLI_OPT_DEFAULT_CURVE | CLI_OPT_NO_HPD
-        : 0;
+    const cli_option_mask allowed = set ? CLI_OPTS_WRITE : 0;
     const int positional = set ? 1 : 0;
     if (cli_parse_args(argc - 1, argv + 1, set ? "throttle set" : "throttle list",
                        allowed, positional, positional, &flags) < 0) {
@@ -164,11 +155,6 @@ int cmd_throttle(int argc, char** argv)
     }
     const throttle_entry* entry = set ? find_throttle(argv[2]) : NULL;
     if (set && !entry) return 1;
-    if (set && flags.no_hpd && hpd_forced_off(entry->type)) {
-        fprintf(stderr, "Error: HPD is always off for %s; --no-hpd does not apply\n",
-                entry->label);
-        return 1;
-    }
 
     alltrax_controller* ctrl = NULL;
     if (cli_open(&ctrl, set)) return 1;
@@ -182,13 +168,13 @@ int cmd_throttle(int argc, char** argv)
     } else if (set && !throttle_available(&info, entry)) {
         fprintf(stderr, "Error: %s is not available on %s. See throttle list.\n",
                 entry->label, info.model);
+    } else if (set) {
+        rc = set_throttle(ctrl, entry, &flags);
     } else {
         alltrax_var_value current[2];
         err = read_current(ctrl, current);
         if (err) {
             cli_error(ctrl, err, "reading current throttle");
-        } else if (set) {
-            rc = set_throttle(ctrl, entry, current[0].raw.u8, &flags);
         } else {
             const throttle_entry* selected =
                 current_entry(&info, current[0].raw.u8, current[1].raw.str);

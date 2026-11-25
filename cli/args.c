@@ -32,10 +32,6 @@ static const struct {
       "Use a built-in preset curve" },
     { "--plot", CLI_OPT_PLOT, NULL,
       "Show an ASCII plot instead of a table" },
-    { "--default-curve", CLI_OPT_DEFAULT_CURVE, NULL,
-      "Install the default linearization even when the throttle type is unchanged" },
-    { "--no-hpd", CLI_OPT_NO_HPD, NULL,
-      "Turn high pedal disable (HPD) off" },
     { "--rate", CLI_OPT_MONITOR_RATE, "<ms>",
       "Full monitor polling interval: 100, 1000, or 3000 (default 100)" },
     { "--log", CLI_OPT_MONITOR_LOG, "<file.csv>",
@@ -175,8 +171,6 @@ int cli_parse_args(int argc, char** argv, const char* command,
         case CLI_OPT_FIELD_MAP:         flags->field_map = true; break;
         case CLI_OPT_FACTORY:           flags->factory = true; break;
         case CLI_OPT_PLOT:              flags->plot = true; break;
-        case CLI_OPT_DEFAULT_CURVE:     flags->default_curve = true; break;
-        case CLI_OPT_NO_HPD:            flags->no_hpd = true; break;
         case CLI_OPT_DEBUG_NO_RULES:    flags->debug_no_rules = true; break;
         case CLI_OPT_DEBUG_NO_CAL:      flags->debug_no_cal = true; break;
         case CLI_OPT_DEBUG_NO_VERIFY:   flags->debug_no_verify = true; break;
