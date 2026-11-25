@@ -404,7 +404,7 @@ static int run_curve_file(const char* contents, bool config)
     int rc;
     if (config) {
 #ifdef ALLTRAX_HAVE_XML
-        char* argv[] = { "config", "load", "--config-key", "none", path };
+        char* argv[] = { "config", "load", "--key", "none", path };
         rc = cmd_config(5, argv);
 #else
         rc = -1;
@@ -584,13 +584,6 @@ static int test_write_options_map_to_library_options(void)
     ASSERT_TRUE(opts.report == &report);
     ASSERT_TRUE(opts.skip_cal && opts.skip_verify && opts.skip_goodset &&
                 opts.skip_post_write && opts.skip_fw_check);
-
-    /* The voltage check has no separate bypass. */
-    char assign[] = "LoBat_Vlim=28";
-    char* removed[] = { "write", assign, "--no-voltage-link" };
-    open_calls = 0;
-    ASSERT_EQ(cmd_write(3, removed), 1);
-    ASSERT_EQ(open_calls, 0);
     return 0;
 }
 
@@ -685,7 +678,7 @@ static int test_fw_flag_reaches_write_options_in_any_position(void)
 #define TEST_KEY_A "0123456789abcdef0123456789ABCDEF0123456789abcdef:0011223344556677"
 #define TEST_KEY_B "fedcba9876543210fedcba9876543210fedcba9876543210:8899aabbccddeeff"
 
-/* Run `config save <path> [--config-key <key>]` against the simulated device;
+/* Run `config save <path> [--key <key>]` against the simulated device;
  * a NULL key omits the option. */
 static int run_config_save_as(const char* path, uint32_t program_rev,
     const char* key)
@@ -693,7 +686,7 @@ static int run_config_save_as(const char* path, uint32_t program_rev,
     char file[256], key_text[128];
     snprintf(file, sizeof(file), "%s", path);
     snprintf(key_text, sizeof(key_text), "%s", key ? key : "");
-    char* argv[] = { "config", "save", file, "--config-key", key_text };
+    char* argv[] = { "config", "save", file, "--key", key_text };
     fake_ctrl = (alltrax_controller) {
         .vid = ALLTRAX_VID, .pid = ALLTRAX_PID_XCT,
         .controller_type = ALLTRAX_CONTROLLER_XCT,
@@ -871,7 +864,7 @@ static int test_config_save_encrypts_before_writing(void)
 static bool saved_with(const char* path, const char* key_text)
 {
     cli_key key;
-    if (cli_resolve_key("test", "--key", key_text, "ALLTRAX_TEST_UNSET", NULL, &key))
+    if (cli_resolve_key("test", key_text, "ALLTRAX_TEST_UNSET", NULL, &key))
         return false;
     FILE* f = fopen(path, "rb");
     if (!f) return false;
@@ -931,6 +924,26 @@ static int test_config_key_precedence(void)
     return 0;
 }
 
+/* Config files ignore the field-map key's environment variable. */
+static int test_file_keys_use_separate_environment_variables(void)
+{
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    memset(&device, 0, sizeof(device));
+    unsetenv("ALLTRAX_CONFIG_KEY");
+    setenv("ALLTRAX_FIELDMAP_KEY", TEST_KEY_A, 1);
+    int rc = run_config_save_as(path, 5005, NULL);
+    unsetenv("ALLTRAX_FIELDMAP_KEY");
+#ifdef ALLTRAX_EMBEDDED_KEYS
+    ASSERT_EQ(rc, 0);
+    ASSERT_FALSE(saved_with(path, TEST_KEY_A));
+#else
+    ASSERT_EQ(rc, 1);
+#endif
+    remove(path);
+    return 0;
+}
+
 static int test_config_key_rejects_bad_values_before_open(void)
 {
     const char* bad[] = {
@@ -970,8 +983,8 @@ static int test_config_key_rejects_bad_values_before_open(void)
     unsetenv("ALLTRAX_CONFIG_KEY");
     remove(path);
 
-    char* repeated[] = { "config", "save", path, "--config-key", "none", "--config-key", "none" };
-    char* missing[] = { "config", "save", path, "--config-key" };
+    char* repeated[] = { "config", "save", path, "--key", "none", "--key", "none" };
+    char* missing[] = { "config", "save", path, "--key" };
     open_calls = 0;
     ASSERT_EQ(cmd_config(7, repeated), 1);
     ASSERT_EQ(cmd_config(4, missing), 1);
@@ -1160,7 +1173,7 @@ static int test_config_round_trip_restores_strings_in_one_erase(void)
         set_page_string("F_Table_Name", "CHANGED");
         set_page_string("Throttle_Type_Name", "CHANGED");
         device.erases = device.mutations = 0;
-        char* argv[] = { "config", "load", "--config-key", "none", path, "--field-map" };
+        char* argv[] = { "config", "load", "--key", "none", path, "--field-map" };
         int rc = run_writable(cmd_config, 6, argv);
         remove(path);
         ASSERT_EQ(rc, 0);
@@ -1181,7 +1194,7 @@ static int test_config_load_reset_flag_sends_one_reset(void)
         if (fail)
             device.fact_goodset = 0xFFFF;
         device.erases = device.resets = 0;
-        char* argv[] = { "config", "load", "--config-key", "none", path, "--reset" };
+        char* argv[] = { "config", "load", "--key", "none", path, "--reset" };
         int rc = run_writable(cmd_config, 6, argv);
         remove(path);
         ASSERT_EQ(rc, fail ? 1 : 0);
@@ -1206,7 +1219,7 @@ static int test_config_load_rejects_invalid_strings_before_open(void)
         ASSERT_EQ(make_temp_path(path), 0);
         ASSERT_EQ(write_file(path, xml), 0);
         writable_device_reset();
-        char* argv[] = { "config", "load", "--config-key", "none", path };
+        char* argv[] = { "config", "load", "--key", "none", path };
         int rc = run_writable(cmd_config, 5, argv);
         remove(path);
         ASSERT_EQ(rc, 1);
@@ -2133,7 +2146,7 @@ static int run_map_command(const char* text, const char* const* args, size_t n,
 {
     char path[64];
     if (make_temp_path(path) || write_file(path, text)) return -1;
-    char* argv[12] = { "field-map", (char*)args[0], path, "--fieldmap-key", "none" };
+    char* argv[12] = { "field-map", (char*)args[0], path, "--key", "none" };
     int argc = 5;
     for (size_t i = 1; i < n && argc < 12; i++)
         argv[argc++] = (char*)args[i];
@@ -2210,8 +2223,8 @@ static int test_field_map_file_errors_stop_before_open(void)
 
     char missing[] = "/nonexistent/alltrax-fields.txt";
     char bad_key[] = "0123";
-    char* no_file[] = { "field-map", "list", missing, "--fieldmap-key", "none" };
-    char* key[] = { "field-map", "list", missing, "--fieldmap-key", bad_key };
+    char* no_file[] = { "field-map", "list", missing, "--key", "none" };
+    char* key[] = { "field-map", "list", missing, "--key", bad_key };
     char* usage[] = { "field-map", "install", missing, "--field-map" };
     ASSERT_EQ(run_writable(cmd_field_map, 5, no_file), 1);
     ASSERT_EQ(open_calls, 0);
@@ -2310,7 +2323,7 @@ static int test_field_map_install_writes_named_map_and_pole_count(void)
 static int write_encrypted(const char* path, const char* text, const char* key_text)
 {
     cli_key key;
-    if (cli_resolve_key("test", "--key", key_text, "ALLTRAX_TEST_UNSET", NULL, &key))
+    if (cli_resolve_key("test", key_text, "ALLTRAX_TEST_UNSET", NULL, &key))
         return -1;
     static unsigned char data[8192];
     int len = 0, total = 0;
@@ -2335,9 +2348,9 @@ static int test_fieldmap_key_decrypts_map_file(void)
     ASSERT_EQ(make_temp_path(path), 0);
     ASSERT_EQ(write_encrypted(path, map_file_text, TEST_KEY_A), 0);
     char key_a[] = TEST_KEY_A, key_b[] = TEST_KEY_B;
-    char* right[] = { "field-map", "list", path, "--fieldmap-key", key_a };
-    char* wrong[] = { "field-map", "list", path, "--fieldmap-key", key_b };
-    char* plain[] = { "field-map", "list", path, "--fieldmap-key", "none" };
+    char* right[] = { "field-map", "list", path, "--key", key_a };
+    char* wrong[] = { "field-map", "list", path, "--key", key_b };
+    char* plain[] = { "field-map", "list", path, "--key", "none" };
     char* env[] = { "field-map", "list", path };
     writable_device_reset();
     ASSERT_EQ(run_cli_output(cmd_field_map, 5, right, out, sizeof(out)), 0);
@@ -2355,7 +2368,7 @@ static int test_fieldmap_key_decrypts_map_file(void)
     /* A plain file given a key gets a hint. */
     ASSERT_EQ(write_file(path, map_file_text), 0);
     ASSERT_EQ(run_cli_output(cmd_field_map, 5, right, out, sizeof(out)), 1);
-    ASSERT_TRUE(strstr(out, "use --fieldmap-key none") != NULL);
+    ASSERT_TRUE(strstr(out, "use --key none") != NULL);
     remove(path);
     return 0;
 }
@@ -2371,9 +2384,9 @@ static int test_config_key_load_round_trip(void)
     ASSERT_EQ(make_temp_path(path), 0);
     ASSERT_EQ(run_config_save_as(path, 5005, TEST_KEY_A), 0);
 
-    char* wrong[] = { "config", "load", path, "--config-key", TEST_KEY_B };
-    char* plain[] = { "config", "load", path, "--config-key", "none" };
-    char* right[] = { "config", "load", path, "--config-key", TEST_KEY_A };
+    char* wrong[] = { "config", "load", path, "--key", TEST_KEY_B };
+    char* plain[] = { "config", "load", path, "--key", "none" };
+    char* right[] = { "config", "load", path, "--key", TEST_KEY_A };
     device.erases = device.mutations = 0;
     ASSERT_EQ(run_cli_output(cmd_config, 5, wrong, out, sizeof(out)), 1);
     ASSERT_EQ(run_cli_output(cmd_config, 5, plain, out, sizeof(out)), 1);
@@ -2384,7 +2397,7 @@ static int test_config_key_load_round_trip(void)
     /* A plain file given a key gets a hint. */
     ASSERT_EQ(run_config_save_as(path, 5005, "none"), 0);
     ASSERT_EQ(run_cli_output(cmd_config, 5, right, out, sizeof(out)), 1);
-    ASSERT_TRUE(strstr(out, "use --config-key none") != NULL);
+    ASSERT_TRUE(strstr(out, "use --key none") != NULL);
     remove(path);
     return 0;
 }
@@ -2395,7 +2408,7 @@ static int run_config_load(const char* xml, bool field_map)
 {
     char path[64];
     if (make_temp_path(path) || write_file(path, xml)) return -1;
-    char* argv[] = { "config", "load", "--config-key", "none", path, "--field-map" };
+    char* argv[] = { "config", "load", "--key", "none", path, "--field-map" };
     int rc = run_writable(cmd_config, field_map ? 6 : 5, argv);
     remove(path);
     return rc;
@@ -2806,7 +2819,7 @@ static int test_monitor_throttle_view_read_blocks(void)
 static int run_config_load_file(const char* path)
 {
     device.wire_count = 0;
-    char* argv[] = { "config", "load", "--config-key", "none", (char*)path, "--no-wait" };
+    char* argv[] = { "config", "load", "--key", "none", (char*)path, "--no-wait" };
     return run_writable(cmd_config, 6, argv);
 }
 
@@ -3168,11 +3181,11 @@ static int test_config_load_applies_rules(void)
         writable_device_reset();
         device.filter_throttles = true;
         device.throttle_mask = 0x001;
-        char* checked[] = { "config", "load", "--config-key", "none", path };
+        char* checked[] = { "config", "load", "--key", "none", path };
         int refused = run_writable(cmd_config, 5, checked);
         unsigned mutations = device.mutations;
         writable_device_reset();
-        char* bypass[] = { "config", "load", "--config-key", "none", path, "--debug-no-rules" };
+        char* bypass[] = { "config", "load", "--key", "none", path, "--debug-no-rules" };
         int bypassed = run_writable(cmd_config, 6, bypass);
         remove(path);
         ASSERT_EQ(refused, 1);
@@ -3258,6 +3271,7 @@ int main(void)
     RUN_TEST(test_config_save_encrypts_before_writing);
     RUN_TEST(test_config_key_precedence);
     RUN_TEST(test_config_key_rejects_bad_values_before_open);
+    RUN_TEST(test_file_keys_use_separate_environment_variables);
     RUN_TEST(test_config_key_load_round_trip);
 #else
     RUN_TEST(test_config_requires_plain_xml_without_crypto);

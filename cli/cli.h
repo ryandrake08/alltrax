@@ -28,24 +28,23 @@ typedef uint64_t cli_option_mask;
 #define CLI_OPT_RESET               (UINT64_C(1) << 2)
 #define CLI_OPT_NO_WAIT             (UINT64_C(1) << 3)
 /* File encryption keys */
-#define CLI_OPT_CONFIG_KEY          (UINT64_C(1) << 4)  /* takes a value */
-#define CLI_OPT_FIELD_MAP_KEY       (UINT64_C(1) << 5)  /* takes a value */
+#define CLI_OPT_KEY                 (UINT64_C(1) << 4)  /* takes a value */
 /* get */
-#define CLI_OPT_FACTORY             (UINT64_C(1) << 6)
+#define CLI_OPT_FACTORY             (UINT64_C(1) << 5)
 /* curve */
-#define CLI_OPT_FILE                (UINT64_C(1) << 7)  /* takes a value */
-#define CLI_OPT_PRESET              (UINT64_C(1) << 8)  /* takes a value */
-#define CLI_OPT_PLOT                (UINT64_C(1) << 9)
+#define CLI_OPT_FILE                (UINT64_C(1) << 6)  /* takes a value */
+#define CLI_OPT_PRESET              (UINT64_C(1) << 7)  /* takes a value */
+#define CLI_OPT_PLOT                (UINT64_C(1) << 8)
 /* restore-defaults */
-#define CLI_OPT_KEEP_THROTTLE       (UINT64_C(1) << 10)
-#define CLI_OPT_KEEP_FIELD_MAP      (UINT64_C(1) << 11)
+#define CLI_OPT_KEEP_THROTTLE       (UINT64_C(1) << 9)
+#define CLI_OPT_KEEP_FIELD_MAP      (UINT64_C(1) << 10)
 /* throttle set */
-#define CLI_OPT_DEFAULT_CURVE       (UINT64_C(1) << 12)
-#define CLI_OPT_NO_HPD              (UINT64_C(1) << 13)
+#define CLI_OPT_DEFAULT_CURVE       (UINT64_C(1) << 11)
+#define CLI_OPT_NO_HPD              (UINT64_C(1) << 12)
 /* monitor */
-#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 14) /* takes a value */
-#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 15) /* takes a value */
-#define CLI_OPT_MONITOR_THROTTLE    (UINT64_C(1) << 16)
+#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 13) /* takes a value */
+#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 14) /* takes a value */
+#define CLI_OPT_MONITOR_THROTTLE    (UINT64_C(1) << 15)
 
 /* Bits 32–63 are reserved for debug and development bypasses, in write
  * sequence order. */
@@ -80,8 +79,7 @@ typedef struct {
     bool debug_no_post_write;
     const char* file;    /* --file value, or NULL */
     const char* preset;  /* --preset value, or NULL */
-    const char* config_key;  /* --config-key value, or NULL */
-    const char* fieldmap_key;  /* --fieldmap-key value, or NULL */
+    const char* key;     /* --key value, or NULL */
     const char* monitor_rate;
     const char* monitor_log;
 } cli_flags;
@@ -94,7 +92,7 @@ typedef struct {
     unsigned char iv[8];
 } cli_key;
 
-/* Resolve the key for `option` from its value (NULL means "auto"):
+/* Resolve a file key from the --key value (NULL means "auto"):
  *   none         unencrypted files
  *   <key>:<iv>   48 and 16 hex digits, used as given
  *   auto         the key in environment variable `env`, else `embedded`
@@ -102,13 +100,13 @@ typedef struct {
  * The environment variable must hold <key>:<iv>; an empty one is ignored.
  * Builds without libcrypto accept only none.
  * Returns 0, or 1 after printing an error naming `command`. */
-int cli_resolve_key(const char* command, const char* option, const char* value,
-    const char* env, const cli_key* embedded, cli_key* out);
+int cli_resolve_key(const char* command, const char* value, const char* env,
+    const cli_key* embedded, cli_key* out);
 
 /* Print whether encrypted `what` files are available and whether a key is
  * built in (`embedded` is NULL when none is). */
-void cli_print_key_status(FILE* out, const char* what, const char* option,
-    const char* env, const cli_key* embedded);
+void cli_print_key_status(FILE* out, const char* what, const char* env,
+    const cli_key* embedded);
 
 /* Settings parsed from a config document (cmd_config.c, libxml2 builds). */
 typedef struct {
@@ -128,10 +126,8 @@ typedef struct {
 } cli_config;
 
 /* Read a file of at most 1 MiB, decrypting it unless key->encrypt is false.
- * Returns a NUL-terminated buffer, or NULL after printing an error; `option`
- * names the key option in hints. */
-char* cli_read_file(const char* path, const cli_key* key, const char* option,
-    size_t* len);
+ * Returns a NUL-terminated buffer, or NULL after printing an error. */
+char* cli_read_file(const char* path, const cli_key* key, size_t* len);
 
 /* Parse a config document: writable variables and curves. Any invalid value
  * or curve fails the whole document. Returns 0, or 1 after printing an error. */

@@ -325,30 +325,38 @@ Both writes go through the same batch write as `config load`: one CAL/RUN
 bracket and one settings page erase, followed by the field-map date update.
 They accept the [write options](#write-options).
 
-`--fieldmap-key` selects how the file is decrypted, with the same rules as
-[`--config-key`](#config-saveload): `auto` (the default) uses the key in the
-`ALLTRAX_FIELDMAP_KEY` environment variable, otherwise the key built into the
-CLI; `<key>:<iv>` uses the given key; `none` reads a plain text file. The
-usage text of each command shows whether a key is built in.
+`--key` selects how the file is decrypted:
+
+- `auto` (the default) uses the key in the `ALLTRAX_FIELDMAP_KEY` environment
+  variable, otherwise the field-map key built into the CLI. If neither is
+  available, the command fails before the controller is opened.
+- `<key>:<iv>` uses the given 3DES key: 48 hex digits, a colon, and 16 hex
+  digits (either case). It overrides `ALLTRAX_FIELDMAP_KEY`.
+- `none` reads a plain text file.
+
+`ALLTRAX_FIELDMAP_KEY` holds a `<key>:<iv>` value only; `auto`, `none`, or a
+malformed value there is an error, and an empty value is ignored. Malformed
+`--key` values also fail before the controller is opened. The usage text of
+`list`, `upgrade` and `install` shows whether a key is built in.
 
 ### Config save/load
 
 Save and restore controller settings to a file. By default, files are 3DES
 encrypted for compatibility with the Windows Alltrax Toolkit. Use
-`--config-key none` for plain XML.
+`--key none` for plain XML.
 
 ```sh
 # Save settings (encrypted, Toolkit-compatible)
 alltrax config save settings.txt
 
 # Save settings (plain XML, human-readable)
-alltrax config save --config-key none settings.xml
+alltrax config save --key none settings.xml
 
 # Load settings from file and write to controller
 alltrax config load settings.txt
 
 # Load plain XML and reboot controller after writing
-alltrax config load --config-key none --reset settings.xml
+alltrax config load --key none --reset settings.xml
 ```
 
 `config save` writes every writable setting and curve, including the field
@@ -372,9 +380,9 @@ that is too long or not ASCII.
 
 Config files saved by the Alltrax Toolkit ("Save All Settings") can be loaded
 with `alltrax config load`. Config files saved by the CLI can be loaded by the
-Toolkit (unless `--config-key none` was used).
+Toolkit (unless `--key none` was used).
 
-`--config-key` selects how files are encrypted:
+`--key` selects how files are encrypted:
 
 - `auto` (the default) uses the key in the `ALLTRAX_CONFIG_KEY` environment
   variable, otherwise the key built into the CLI. If neither is available,
@@ -385,13 +393,13 @@ Toolkit (unless `--config-key none` was used).
 
 `ALLTRAX_CONFIG_KEY` holds a `<key>:<iv>` value only; `auto`, `none`, or a
 malformed value there is an error, and an empty value is ignored. Malformed
-`--config-key` values also fail before the controller is opened. `config save`
+`--key` values also fail before the controller is opened. `config save`
 reports whether the file was written encrypted or as plain XML, and the usage
 text of `config save` and `config load` shows whether a key is built in.
 
 | Option | Applies to | Effect |
 |--------|-----------|--------|
-| `--config-key auto\|<key>:<iv>\|none` | save, load | Encryption key, or plain XML with `none` |
+| `--key auto\|<key>:<iv>\|none` | save, load | Encryption key, or plain XML with `none` |
 | `--allow-unvalidated-firmware` | load | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | load | Also write the file's field-map entries |
 | `--reset` | load | Reboot controller after write |
@@ -548,8 +556,7 @@ missing optional library:
 - Without libxml2, the `config` command and `field-map list`, `upgrade` and
   `install` report that they are unavailable.
 - Without libcrypto, `config save` and `config load` handle plain XML only and
-  require `--config-key none`, and the `field-map` file commands require
-  `--fieldmap-key none`; encrypted files and the built-in keys are not
+  require `--key none`, as do the `field-map` file commands; encrypted files and the built-in keys are not
   available.
 
 Installing a missing library and running `make` again rebuilds the affected

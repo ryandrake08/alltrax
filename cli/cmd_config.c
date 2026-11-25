@@ -45,14 +45,13 @@ static const cli_key embedded_config_key = {
 static int resolve_config_key(const char* command, const cli_flags* flags,
     cli_key* key)
 {
-    return cli_resolve_key(command, "--config-key", flags->config_key,
-                           "ALLTRAX_CONFIG_KEY", EMBEDDED_CONFIG_KEY, key);
+    return cli_resolve_key(command, flags->key, "ALLTRAX_CONFIG_KEY",
+                           EMBEDDED_CONFIG_KEY, key);
 }
 
 static void print_key_status(FILE* out)
 {
-    cli_print_key_status(out, "config", "--config-key", "ALLTRAX_CONFIG_KEY",
-                         EMBEDDED_CONFIG_KEY);
+    cli_print_key_status(out, "config", "ALLTRAX_CONFIG_KEY", EMBEDDED_CONFIG_KEY);
 }
 
 #ifdef ALLTRAX_HAVE_CRYPTO
@@ -617,8 +616,7 @@ int cli_config_write(alltrax_controller* ctrl, alltrax_assignment* items,
     return 0;
 }
 
-char* cli_read_file(const char* path, const cli_key* key, const char* option,
-    size_t* len)
+char* cli_read_file(const char* path, const cli_key* key, size_t* len)
 {
     FILE* f = fopen(path, "rb");
     if (!f) {
@@ -659,19 +657,17 @@ char* cli_read_file(const char* path, const cli_key* key, const char* option,
         bool looks_plain = data[0] == '<' || data[0] == 'F';
         free(data);
         if (!plain)
-            fprintf(stderr, "Error: 3DES decryption failed (wrong key or corrupt file)%s%s%s\n",
-                    looks_plain ? "; the file looks unencrypted, so use " : "",
-                    looks_plain ? option : "", looks_plain ? " none" : "");
+            fprintf(stderr, "Error: 3DES decryption failed (wrong key or corrupt file)%s\n",
+                    looks_plain ? "; the file looks unencrypted, so use --key none" : "");
         return plain;
     }
 #else
     (void)key;
-    (void)option;
 #endif
     return (char*)data;
 }
 
-#define LOAD_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_CONFIG_KEY | CLI_OPT_FIELD_MAP | \
+#define LOAD_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_FIELD_MAP | \
                       CLI_OPT_DEBUG_NO_RULES)
 
 /* ------------------------------------------------------------------ */
@@ -681,10 +677,10 @@ char* cli_read_file(const char* path, const cli_key* key, const char* option,
 static int do_save(int argc, char** argv)
 {
     cli_flags flags;
-    if (cli_parse_args(argc, argv, "config save", CLI_OPT_CONFIG_KEY, 1, 1,
+    if (cli_parse_args(argc, argv, "config save", CLI_OPT_KEY, 1, 1,
                        &flags) < 0) {
         fprintf(stderr, "Usage: alltrax config save [options] <file>\n");
-        cli_print_options(stderr, CLI_OPT_CONFIG_KEY);
+        cli_print_options(stderr, CLI_OPT_KEY);
         print_key_status(stderr);
         return 1;
     }
@@ -780,7 +776,7 @@ static int do_load(int argc, char** argv)
     if (resolve_config_key("config load", &flags, &key)) return 1;
 
     size_t xml_len;
-    char* xml = cli_read_file(filepath, &key, "--config-key", &xml_len);
+    char* xml = cli_read_file(filepath, &key, &xml_len);
     if (!xml)
         return 1;
     cli_config config;

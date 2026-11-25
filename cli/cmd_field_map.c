@@ -168,11 +168,11 @@ static int load_map_file(const char* command, const char* path,
 {
     memset(out, 0, sizeof(*out));
     cli_key key;
-    if (cli_resolve_key(command, "--fieldmap-key", flags->fieldmap_key,
-                        "ALLTRAX_FIELDMAP_KEY", EMBEDDED_FIELDMAP_KEY, &key))
+    if (cli_resolve_key(command, flags->key, "ALLTRAX_FIELDMAP_KEY",
+                        EMBEDDED_FIELDMAP_KEY, &key))
         return 1;
     size_t len;
-    out->text = cli_read_file(path, &key, "--fieldmap-key", &len);
+    out->text = cli_read_file(path, &key, &len);
     if (!out->text)
         return 1;
 
@@ -360,17 +360,16 @@ static const char* item_text(const alltrax_assignment* items, size_t count,
 
 static void print_key_status(void)
 {
-    cli_print_key_status(stderr, "field-map", "--fieldmap-key",
-                         "ALLTRAX_FIELDMAP_KEY", EMBEDDED_FIELDMAP_KEY);
+    cli_print_key_status(stderr, "field-map", "ALLTRAX_FIELDMAP_KEY", EMBEDDED_FIELDMAP_KEY);
 }
 
 static int do_list(int argc, char** argv)
 {
     cli_flags flags;
-    if (cli_parse_args(argc, argv, "field-map list", CLI_OPT_FIELD_MAP_KEY, 1, 1,
+    if (cli_parse_args(argc, argv, "field-map list", CLI_OPT_KEY, 1, 1,
                        &flags) < 0) {
         fprintf(stderr, "Usage: alltrax field-map list [options] <file>\n");
-        cli_print_options(stderr, CLI_OPT_FIELD_MAP_KEY);
+        cli_print_options(stderr, CLI_OPT_KEY);
         print_key_status();
         return 1;
     }
@@ -422,7 +421,7 @@ static int do_list(int argc, char** argv)
     return 0;
 }
 
-#define UPGRADE_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP_KEY | CLI_OPT_DEBUG_NO_RULES)
+#define UPGRADE_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_DEBUG_NO_RULES)
 
 static int do_upgrade(int argc, char** argv)
 {
@@ -486,7 +485,7 @@ done:
     return ret;
 }
 
-#define INSTALL_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP_KEY | CLI_OPT_FIELD_MAP | \
+#define INSTALL_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_FIELD_MAP | \
                          CLI_OPT_DEBUG_NO_RULES)
 
 static const char* pole_count(bool eight)

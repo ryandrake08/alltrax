@@ -24,10 +24,8 @@ static const struct {
       "Reboot the controller after writing" },
     { "--no-wait", CLI_OPT_NO_WAIT, NULL,
       "Return after sending the reset command" },
-    { "--config-key", CLI_OPT_CONFIG_KEY, "<key>",
-      "auto (default), none for plain XML, or <48 hex>:<16 hex>" },
-    { "--fieldmap-key", CLI_OPT_FIELD_MAP_KEY, "<key>",
-      "auto (default), none for plain text, or <48 hex>:<16 hex>" },
+    { "--key", CLI_OPT_KEY, "<key>",
+      "File key: auto (default), none for an unencrypted file, or <48 hex>:<16 hex>" },
     { "--factory", CLI_OPT_FACTORY, NULL,
       "Read the factory settings page" },
     { "--file", CLI_OPT_FILE, "<f.csv>",
@@ -165,8 +163,7 @@ int cli_parse_args(int argc, char** argv, const char* command,
             return -1;
         }
 
-        const char** value = bit == CLI_OPT_CONFIG_KEY ? &flags->config_key
-                           : bit == CLI_OPT_FIELD_MAP_KEY ? &flags->fieldmap_key
+        const char** value = bit == CLI_OPT_KEY ? &flags->key
                            : bit == CLI_OPT_FILE ? &flags->file
                            : bit == CLI_OPT_PRESET ? &flags->preset
                            : bit == CLI_OPT_MONITOR_RATE ? &flags->monitor_rate
@@ -250,21 +247,21 @@ static bool parse_key(const char* text, cli_key* out)
            parse_hex(colon + 1, out->iv, sizeof(out->iv));
 }
 
-int cli_resolve_key(const char* command, const char* option, const char* value,
-    const char* env, const cli_key* embedded, cli_key* out)
+int cli_resolve_key(const char* command, const char* value, const char* env,
+    const cli_key* embedded, cli_key* out)
 {
     memset(out, 0, sizeof(*out));
     if (value && strcmp(value, "none") == 0)
         return 0;
 #ifndef ALLTRAX_HAVE_CRYPTO
     fprintf(stderr, "Error: %s: this build reads and writes only unencrypted files "
-            "(built without libcrypto). Use %s none.\n", command, option);
+            "(built without libcrypto). Use --key none.\n", command);
     return 1;
 #endif
     if (value && strcmp(value, "auto") != 0) {
         if (parse_key(value, out)) return 0;
-        fprintf(stderr, "Error: %s: %s must be auto, none, or "
-                "<48 hex digits>:<16 hex digits>\n", command, option);
+        fprintf(stderr, "Error: %s: --key must be auto, none, or "
+                "<48 hex digits>:<16 hex digits>\n", command);
         return 1;
     }
 
@@ -280,23 +277,22 @@ int cli_resolve_key(const char* command, const char* option, const char* value,
         out->encrypt = true;
         return 0;
     }
-    fprintf(stderr, "Error: %s: no key is built in. Use %s <48 hex digits>:<16 hex digits>, "
-            "set %s, or use %s none for an unencrypted file\n",
-            command, option, env, option);
+    fprintf(stderr, "Error: %s: no key is built in. Use --key <48 hex digits>:<16 hex digits>, "
+            "set %s, or use --key none for an unencrypted file\n",
+            command, env);
     return 1;
 }
 
-void cli_print_key_status(FILE* out, const char* what, const char* option,
-    const char* env, const cli_key* embedded)
+void cli_print_key_status(FILE* out, const char* what, const char* env,
+    const cli_key* embedded)
 {
 #ifdef ALLTRAX_HAVE_CRYPTO
-    (void)option;
     fprintf(out, "\nBuilt-in %s key: %s. %s=<key>:<iv> supplies a key for auto.\n",
             what, embedded ? "yes" : "no", env);
 #else
     (void)env;
     (void)embedded;
     fprintf(out, "\nEncrypted %s files: unavailable (built without libcrypto). "
-            "Use %s none.\n", what, option);
+            "Use --key none.\n", what);
 #endif
 }
