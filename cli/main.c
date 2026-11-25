@@ -58,7 +58,7 @@ static void print_usage(void)
         "  clear-autocal     Clear throttle calibration and reboot\n"
         "  restore-defaults  Restore factory settings and reboot\n"
         "  fan-test          Start a timed fan test (keyswitch must be on)\n"
-        "  monitor           Live polling (Ctrl+C to stop)\n"
+        "  monitor           Live polling; monitor throttle for the throttle view (Ctrl+C to stop)\n"
         "  errors            Error flags and history\n"
         CONFIG_USAGE
         "  curve             Read/write curve tables\n"

@@ -16,8 +16,7 @@
 int cmd_write(int argc, char** argv)
 {
     cli_flags flags;
-    const cli_option_mask allowed = CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP |
-                                    CLI_OPT_DEBUG_NO_RULES;
+    const cli_option_mask allowed = CLI_OPTS_WRITE | CLI_OPT_DEBUG_NO_RULES;
     int n_assignments = cli_parse_args(argc, argv, "write", allowed, 1, -1,
                                        &flags);
 
@@ -120,8 +119,7 @@ int cmd_write(int argc, char** argv)
     }
 
     size_t count = (size_t)n_assignments;
-    if (cli_check_field_map(assigns, count, flags.field_map))
-        goto done;
+    cli_warn_field_map(assigns, count);
 
     alltrax_error err = cli_open(&ctrl, true);
     if (err) goto done;

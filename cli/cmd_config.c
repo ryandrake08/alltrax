@@ -666,7 +666,7 @@ char* cli_read_file(const char* path, const cli_key* key, size_t* len)
     return (char*)data;
 }
 
-#define LOAD_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_FIELD_MAP | \
+#define LOAD_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_THROTTLE | CLI_OPT_FIELD_MAP | \
                       CLI_OPT_DEBUG_NO_RULES)
 
 /* ------------------------------------------------------------------ */
@@ -803,24 +803,15 @@ static int do_load(int argc, char** argv)
         return 1;
     }
 
-    if (!flags.field_map) {
-        size_t kept = 0;
-        for (size_t i = 0; i < n_items; i++) {
-            if (!cli_assignment_is_field_map(&items[i]))
-                items[kept++] = items[i];
-        }
-        if (kept < n_items)
-            printf("Skipping %zu field-map entries (add --field-map to write them)\n",
-                   n_items - kept);
-        n_items = kept;
-    }
     alltrax_controller* ctrl = NULL;
     int ret = 1;
-    if (n_items == 0)
+    if (n_items == 0) {
         fprintf(stderr, "Error: nothing to write\n");
-    else if (!cli_check_field_map(items, n_items, flags.field_map) &&
-             !cli_open(&ctrl, true))
-        ret = cli_config_write(ctrl, items, n_items, &flags);
+    } else if (!cli_check_bulk(filepath, items, n_items, &flags)) {
+        cli_warn_field_map(items, n_items);
+        if (!cli_open(&ctrl, true))
+            ret = cli_config_write(ctrl, items, n_items, &flags);
+    }
 
     if (ctrl) alltrax_close(ctrl);
     free(items);

@@ -293,8 +293,7 @@ static int do_get(int argc, char** argv)
 static int do_set(int argc, char** argv)
 {
     cli_flags flags;
-    const cli_option_mask allowed = CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP |
-                                    CLI_OPT_FILE | CLI_OPT_PRESET |
+    const cli_option_mask allowed = CLI_OPTS_WRITE | CLI_OPT_FILE | CLI_OPT_PRESET |
                                     CLI_OPT_DEBUG_NO_RULES;
     int nargs = cli_parse_args(argc, argv, "curve set", allowed, 1, -1, &flags);
     if (nargs < 0) {
@@ -361,8 +360,7 @@ static int do_set(int argc, char** argv)
 
     alltrax_assignment items[2] = { { .curve = def, .curve_data = &curve } };
     size_t count = 1;
-    if (cli_check_field_map(items, count, flags.field_map))
-        return 1;
+    cli_warn_field_map(items, count);
 
     alltrax_controller* ctrl = NULL;
     err = cli_open(&ctrl, true);
@@ -481,7 +479,7 @@ static int do_diff(int argc, char** argv)
 static int do_curve_reset(int argc, char** argv)
 {
     cli_flags flags;
-    const cli_option_mask allowed = CLI_OPTS_WRITE | CLI_OPT_FIELD_MAP;
+    const cli_option_mask allowed = CLI_OPTS_WRITE | CLI_OPT_THROTTLE | CLI_OPT_FIELD_MAP;
     if (cli_parse_args(argc, argv, "curve reset", allowed, 1, 1, &flags) < 0) {
         fprintf(stderr,
             "Usage: alltrax curve reset <type> [options]\n"
@@ -516,11 +514,13 @@ static int do_curve_reset(int argc, char** argv)
             n++;
         }
     }
-    if (cli_check_field_map(items, n, flags.field_map)) {
+    /* Resetting every curve is a bulk write of both groups. */
+    if (all && cli_check_bulk("curve reset all", items, n, &flags)) {
         free(factory);
         free(items);
         return 1;
     }
+    cli_warn_field_map(items, n);
 
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, true);

@@ -66,10 +66,10 @@ Alltrax Controller Monitor
 | `alltrax write var=value [...]` | Write settings |
 | `alltrax reset` | Reboot controller and wait for it to reconnect |
 | `alltrax clear-autocal` | Clear learned throttle calibration and reboot |
-| `alltrax restore-defaults [--keep-throttle] [--keep-field-map]` | Restore factory settings and reboot |
+| `alltrax restore-defaults --throttle --field-map` | Restore factory settings and reboot |
 | `alltrax fan-test` | Start a timed fan test with the keyswitch on |
 | `alltrax monitor [--rate <ms>] [--log <file.csv>]` | Live controller readings (Ctrl+C to stop) |
-| `alltrax monitor --throttle` | Live throttle readings (Ctrl+C to stop) |
+| `alltrax monitor throttle` | Live throttle readings (Ctrl+C to stop) |
 | `alltrax errors` | Active error flags and error history |
 | `alltrax config save [flags] <file>` | Save all settings to file |
 | `alltrax config load [flags] <file>` | Load settings from file and write to device |
@@ -83,7 +83,7 @@ Alltrax Controller Monitor
 | `alltrax field-map history` | List saved field-map names, dates, and the total map count |
 | `alltrax field-map list <file>` | List the maps in a field-map file and any upgrade for the controller |
 | `alltrax field-map upgrade <file>` | Install a newer version of the controller's field map |
-| `alltrax field-map install --field-map <file> <name>` | Install a named field map and its speed sensor pole count |
+| `alltrax field-map install <file> <name>` | Install a named field map and its speed sensor pole count |
 
 Command options may appear before or after arguments. Unknown options, options
 a command does not accept, missing option values, and extra arguments are
@@ -132,19 +132,18 @@ and reconnect the USB cable to restore access in that case.
 ### Restore factory defaults
 
 ```sh
-alltrax restore-defaults
-alltrax restore-defaults --keep-throttle --keep-field-map
+alltrax config save backup.txt        # optional: keep a copy to restore from
+alltrax restore-defaults --throttle --field-map
 ```
 
-`restore-defaults` replaces the user settings with the controller's factory
-settings and checks that the factory page is valid before writing. Use
-`--keep-throttle` to preserve the throttle type, name, linearization curve,
-and absolute throttle calibration if selected. HPD comes from the factory page.
-Use `--keep-field-map` to preserve the map name, both curves, and field
-settings. The speed sensor pole count comes from the factory page. Both
-keep options require a valid user settings page. The result is written in
-one verified page write. Throttle auto-calibration is cleared when the throttle
-type or HPD changes, and with `--keep-throttle`.
+`restore-defaults` replaces all user settings, including the throttle setup
+and the field map, with the controller's factory settings. It checks that the
+factory page is valid before writing, and requires `--throttle` and
+`--field-map` because it replaces the throttle settings and the field map (see
+[Throttle and field-map settings](#throttle-and-field-map-settings)). To bring back some of your settings afterwards, load
+a config file that holds just those settings with `config load`. The result
+is written in one verified page write. Throttle auto-calibration is cleared
+when the throttle type or HPD changes.
 
 The command updates the field-map date and sends one reset on success.
 Before using the controller,
@@ -156,7 +155,7 @@ sensor pole count is correct.
 ```sh
 alltrax monitor
 alltrax monitor --rate 1000 --log drive.csv
-alltrax monitor --throttle
+alltrax monitor throttle
 ```
 
 The full monitor targets 100 ms between samples by default. Use `--rate 1000`
@@ -254,7 +253,7 @@ meaningless on a vehicle, or outside the controller's rating:
 | `Speed_Limit_On=1` needs a speed sensor | Speed limits are in RPM, measured by the speed sensor |
 | Voltage settings lie within 16.0–62.0 V (48 V controllers) or 20.0–90.0 V (72 V); other ratings cannot set them | Keeps cutoffs within the controller's rating |
 | `AnalogInputs_Threshold` + 1 V ≤ `LoBat_Vlim`; `LoBat_Vlim` + 1 V ≤ `HiBat_Vlim` and ≤ `BMS_Missing_HiBat_Vlim` ≤ `HiBat_Vlim` | Keeps the cutoffs in order. Values not in the batch are read from the settings the write changes (the factory settings while the user settings are invalid) |
-| `Throttle_Type` is one the hardware allows | `restore-defaults --keep-throttle` checks the kept type too |
+| `Throttle_Type` is one the hardware allows | |
 
 Trailing 0,0 curve points are unused and ignored. Factory data and built-in
 presets (`curve reset`, `restore-defaults`, `throttle set`) are not checked.
@@ -270,24 +269,46 @@ requested changes, and reports the recovery.
 | Option | Effect |
 |--------|--------|
 | `--allow-unvalidated-firmware` | Allow writes on unvalidated firmware within V0.001-V5.999 |
-| `--field-map` | Allow writing field-map data (see [Field maps](#field-maps)) |
 
 Debug bypasses are listed under [Debug and development options](#debug-and-development-options).
 
-### Field maps
+### Throttle and field-map settings
 
-A field map (`F_Table_Name`, the `field` and `genfield` curves, and the six
-field weakening variables) must match the installed motor; a wrong map can
-damage the motor. Any command that writes field-map data requires
-`--field-map`, prints a warning, and afterwards reminds you to check the speed
-sensor pole count (`Tach_4_8`). Field-map writes always include
-`F_Table_Name`: when a command does not set it, the name from the settings
-page used for the write is written back with the map.
+Two groups of settings must match the installed hardware:
+
+- **Throttle settings** (`Throttle_Type`, `Throttle_Type_Name`, `HPD`, the
+  `ABS_*` calibration values, and the `linearization`, `speed` and `torque`
+  curves) must match the installed throttle.
+- **The field map** (`F_Table_Name`, the six field weakening settings, and the
+  `field` and `genfield` curves) must match the installed motor; a wrong map
+  can damage the motor.
+
+Commands that name what they write need no confirmation: `write`,
+`curve set`, `curve reset` of one curve, `throttle set`, and `field-map
+upgrade` and `install`. Bulk commands write these groups only when you
+confirm each one: `--throttle` for throttle settings and `--field-map` for the
+field map. A bulk command missing a confirmation refuses before the controller
+is opened and names what is missing; it never writes only part of what you
+asked for.
+
+| Bulk command | Needs |
+|--------------|-------|
+| `config load <file>` | `--throttle` if the file has throttle settings, `--field-map` if it has field-map settings |
+| `curve reset all` | `--throttle --field-map` |
+| `restore-defaults` | `--throttle --field-map` |
+
+Field-map writes print a warning and afterwards remind you to check the speed
+sensor pole count (`Tach_4_8`). They always include `F_Table_Name`: when a
+command does not set it, the name from the settings page used for the write
+is written back with the map.
 
 ```sh
-alltrax write Turbo_Start_RPM=2500 --field-map
-alltrax curve reset field --field-map
+alltrax write Turbo_Start_RPM=2500
+alltrax curve reset field
+alltrax config load --throttle --field-map backup.txt
 ```
+
+### Field maps
 
 `alltrax field-map history` reads the controller's history on XCT-family
 controllers other than SRX with program firmware newer than V2.002. The total
@@ -305,7 +326,7 @@ need libxml2.
 ```sh
 alltrax field-map list fields.txt
 alltrax field-map upgrade fields.txt
-alltrax field-map install --field-map fields.txt MOTOR-MAP
+alltrax field-map install fields.txt MOTOR-MAP
 ```
 
 - `list` prints every map with its version and aliases, marks the controller's
@@ -315,13 +336,13 @@ alltrax field-map install --field-map fields.txt MOTOR-MAP
   `-V` is its version (0 when absent). The upgrade is the last map in the file
   that has the same name and a higher version, or that lists the name as an
   alias; it is installed only when its version is higher than the
-  controller's. The controller's user settings must be valid (Var_GoodSet = 0).
-  The speed sensor pole count (`Tach_4_8`) is kept. If the installed map is the
+  controller's. The controller's user settings must
+  be valid (Var_GoodSet = 0). The speed sensor pole count (`Tach_4_8`) is kept. If the installed map is the
   universal map (UNIMAP), the command says so.
 - `install` writes the named map, or the highest version of it when the file
   has several. A name that matches no map is looked up among the aliases. It
-  requires `--field-map`, prints the old and new speed sensor pole count, and
-  writes `Tach_4_8` with the map, which reboots the controller.
+  prints the old and new speed sensor pole count and writes `Tach_4_8` with
+  the map, which reboots the controller.
 
 Both writes go through the same batch write as `config load`: one CAL/RUN
 bracket and one settings page erase, followed by the field-map date update.
@@ -355,10 +376,10 @@ alltrax config save settings.txt
 alltrax config save --key none settings.xml
 
 # Load settings from file and write to controller
-alltrax config load settings.txt
+alltrax config load --throttle --field-map settings.txt
 
 # Load plain XML
-alltrax config load --key none settings.xml
+alltrax config load --key none --throttle --field-map settings.xml
 ```
 
 `config save` writes every writable setting and curve, including the field
@@ -372,8 +393,9 @@ itself fails (for example, a full disk), it exits with an error and removes
 the partial file; the previous contents are not kept.
 
 `config load` restores every writable setting in the file, including the
-`Throttle_Type_Name` string and all curves. Field-map entries are skipped
-unless `--field-map` is given; the rest of the file is still written. Writes
+`Throttle_Type_Name` string and all curves. A file with throttle or field-map
+settings needs `--throttle` or `--field-map` (see
+[Throttle and field-map settings](#throttle-and-field-map-settings)). Writes
 everything in one batch: one CAL/RUN bracket and one settings page erase.
 Read-only and unknown entries are skipped. Any invalid value rejects the load
 before the controller is opened: a number that is not a whole integer, a
@@ -403,7 +425,8 @@ text of `config save` and `config load` shows whether a key is built in.
 |--------|-----------|--------|
 | `--key auto\|<key>:<iv>\|none` | save, load | Encryption key, or plain XML with `none` |
 | `--allow-unvalidated-firmware` | load | Allow writes on unvalidated firmware within V0.001-V5.999 |
-| `--field-map` | load | Also write the file's field-map entries |
+| `--throttle` | load | Confirm writing the file's throttle settings |
+| `--field-map` | load | Confirm writing the file's field-map settings |
 
 ### Curve tables
 
@@ -477,12 +500,12 @@ alltrax curve diff all
 alltrax curve reset linearization
 
 # Reset all curves to factory defaults (includes the field map)
-alltrax curve reset all --field-map
+alltrax curve reset all --throttle --field-map
 ```
 
 `curve reset` reads every selected factory curve first, then writes them all
 in one batch (one settings page erase), so a failed read changes nothing.
-Writing the `field` or `genfield` curve requires `--field-map`.
+`curve reset all` needs `--throttle --field-map`.
 Writing the `speed` or `torque` curve reboots the controller once afterwards;
 writing only the `linearization`, `field` or `genfield` curves does not.
 
@@ -514,7 +537,7 @@ cause the import to fail.
 | `--preset <name>` | set | Use a built-in preset curve |
 | `--plot` | get | ASCII chart instead of table |
 | `--allow-unvalidated-firmware` | set, reset | Allow writes on unvalidated firmware within V0.001-V5.999 |
-| `--field-map` | set, reset | Allow writing the `field` and `genfield` curves |
+| `--throttle`, `--field-map` | reset all | Confirm resetting the throttle curves and the field map |
 
 ### Debug and development options
 
@@ -524,7 +547,7 @@ tool, not for normal use, and are listed separately in every usage message.
 | Option | Applies to | Bypasses |
 |--------|-----------|----------|
 | `--debug-ignore-fw-bounds` | global (before the command) | Firmware bounds for reads (firmware outside V0.001-V5.999); never widens writes |
-| `--debug-no-rules` | `write`, `curve set`, `config load`, `field-map install`, `field-map upgrade`, `restore-defaults` | [Value rules](#value-rules) |
+| `--debug-no-rules` | `write`, `curve set`, `config load`, `field-map install`, `field-map upgrade` | [Value rules](#value-rules) |
 | `--debug-no-cal` | write commands | CAL/RUN mode bracket |
 | `--debug-no-verify` | write commands | FLASH read-back verification |
 | `--debug-no-post-write` | write commands | Automatic calibration clear, date stamp and reset |

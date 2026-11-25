@@ -2,8 +2,8 @@
 
 int cmd_restore_defaults(int argc, char** argv)
 {
-    const cli_option_mask allowed = CLI_OPT_KEEP_THROTTLE | CLI_OPT_KEEP_FIELD_MAP |
-                                    CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_DEBUG_NO_RULES;
+    const cli_option_mask allowed = CLI_OPT_THROTTLE | CLI_OPT_FIELD_MAP |
+                                    CLI_OPT_ALLOW_UNVALIDATED;
     cli_flags flags;
     if (cli_parse_args(argc, argv, "restore-defaults", allowed, 0, 0, &flags) < 0) {
         fprintf(stderr, "Usage: alltrax restore-defaults [options]\n");
@@ -11,19 +11,16 @@ int cmd_restore_defaults(int argc, char** argv)
         return 1;
     }
 
+    /* A restore replaces the throttle settings and the field map. */
+    if (cli_require_groups("restore-defaults", true, true, &flags)) return 1;
+
     alltrax_controller* ctrl = NULL;
     if (cli_open(&ctrl, true)) return 1;
-    if (flags.keep_throttle && cli_rules_check_kept_throttle(ctrl, &flags)) {
-        alltrax_close(ctrl);
-        return 1;
-    }
-    if (!flags.keep_field_map)
-        fprintf(stderr, "Warning: restoring the factory field map. Verify it matches the installed motor.\n");
+    fprintf(stderr, "Warning: restoring the factory field map. Verify it matches the installed motor.\n");
 
     alltrax_write_report report;
     alltrax_write_opts opts = cli_write_opts(&flags, &report);
-    alltrax_error err = alltrax_restore_defaults(ctrl, flags.keep_throttle,
-                                                flags.keep_field_map, &opts);
+    alltrax_error err = alltrax_restore_defaults(ctrl, &opts);
     if (err) {
         cli_error(ctrl, err, "restoring factory defaults");
         if (report.factory_restored)

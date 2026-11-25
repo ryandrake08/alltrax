@@ -18,8 +18,10 @@ static const struct {
 } options[] = {
     { "--allow-unvalidated-firmware", CLI_OPT_ALLOW_UNVALIDATED, NULL,
       "Write to firmware V0.001-V5.999 not yet validated for writes" },
+    { "--throttle", CLI_OPT_THROTTLE, NULL,
+      "Let a bulk write include throttle settings (must match the installed throttle)" },
     { "--field-map", CLI_OPT_FIELD_MAP, NULL,
-      "Allow writing field-map data (must match the installed motor)" },
+      "Let a bulk write include field-map data (must match the installed motor)" },
     { "--key", CLI_OPT_KEY, "<key>",
       "File key: auto (default), none for an unencrypted file, or <48 hex>:<16 hex>" },
     { "--factory", CLI_OPT_FACTORY, NULL,
@@ -30,10 +32,6 @@ static const struct {
       "Use a built-in preset curve" },
     { "--plot", CLI_OPT_PLOT, NULL,
       "Show an ASCII plot instead of a table" },
-    { "--keep-throttle", CLI_OPT_KEEP_THROTTLE, NULL,
-      "Preserve the throttle type, name, linearization and ABS calibration" },
-    { "--keep-field-map", CLI_OPT_KEEP_FIELD_MAP, NULL,
-      "Preserve the field-map name, curves and settings" },
     { "--default-curve", CLI_OPT_DEFAULT_CURVE, NULL,
       "Install the default linearization even when the throttle type is unchanged" },
     { "--no-hpd", CLI_OPT_NO_HPD, NULL,
@@ -42,8 +40,6 @@ static const struct {
       "Full monitor polling interval: 100, 1000, or 3000 (default 100)" },
     { "--log", CLI_OPT_MONITOR_LOG, "<file.csv>",
       "Append full monitor samples to a CSV file" },
-    { "--throttle", CLI_OPT_MONITOR_THROTTLE, NULL,
-      "Show the live throttle view at 100 ms" },
     { "--debug-no-rules", CLI_OPT_DEBUG_NO_RULES, NULL,
       "Skip the value rules for settings and curves" },
     { "--debug-no-cal", CLI_OPT_DEBUG_NO_CAL, NULL,
@@ -175,14 +171,12 @@ int cli_parse_args(int argc, char** argv, const char* command,
 
         switch (bit) {
         case CLI_OPT_ALLOW_UNVALIDATED: flags->allow_unvalidated_firmware = true; break;
+        case CLI_OPT_THROTTLE:          flags->throttle = true; break;
         case CLI_OPT_FIELD_MAP:         flags->field_map = true; break;
         case CLI_OPT_FACTORY:           flags->factory = true; break;
         case CLI_OPT_PLOT:              flags->plot = true; break;
-        case CLI_OPT_KEEP_THROTTLE:     flags->keep_throttle = true; break;
-        case CLI_OPT_KEEP_FIELD_MAP:    flags->keep_field_map = true; break;
         case CLI_OPT_DEFAULT_CURVE:     flags->default_curve = true; break;
         case CLI_OPT_NO_HPD:            flags->no_hpd = true; break;
-        case CLI_OPT_MONITOR_THROTTLE:  flags->monitor_throttle = true; break;
         case CLI_OPT_DEBUG_NO_RULES:    flags->debug_no_rules = true; break;
         case CLI_OPT_DEBUG_NO_CAL:      flags->debug_no_cal = true; break;
         case CLI_OPT_DEBUG_NO_VERIFY:   flags->debug_no_verify = true; break;

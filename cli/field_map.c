@@ -1,9 +1,12 @@
 /*
- * field_map.c — Field-map write guard
+ * field_map.c — Throttle and field-map write guard
  *
- * A field map must match the installed motor; a wrong map can damage it.
- * Writes that touch field-map data require --field-map, print the warning,
- * and always include F_Table_Name.
+ * Throttle settings must match the installed throttle, and the field map the
+ * installed motor; a wrong map can damage it. Commands that name what they
+ * write need no confirmation. Bulk commands (config load, curve reset all,
+ * restore-defaults) write these groups only with --throttle and --field-map.
+ * Field-map writes print the motor-match warning and always include
+ * F_Table_Name.
  */
 
 #include <stdio.h>
@@ -28,6 +31,18 @@ bool cli_assignment_is_field_map(const alltrax_assignment* item)
     return cli_is_field_map_var(item->var) || cli_is_field_map_curve(item->curve);
 }
 
+bool cli_assignment_is_throttle(const alltrax_assignment* item)
+{
+    if (item->curve)
+        return item->curve == alltrax_find_curve("linearization") ||
+               item->curve == alltrax_find_curve("speed") ||
+               item->curve == alltrax_find_curve("torque");
+    size_t count;
+    const alltrax_var_def* defs = alltrax_get_var_defs(ALLTRAX_VARS_THROTTLE, &count);
+    return item->var && item->var->writable && defs && item->var >= defs &&
+           item->var < defs + count;
+}
+
 static bool touches_field_map(const alltrax_assignment* items, size_t count)
 {
     for (size_t i = 0; i < count; i++) {
@@ -37,22 +52,42 @@ static bool touches_field_map(const alltrax_assignment* items, size_t count)
     return false;
 }
 
-int cli_check_field_map(const alltrax_assignment* items, size_t count,
-    bool allowed)
+int cli_require_groups(const char* what, bool throttle, bool field_map,
+    const cli_flags* flags)
 {
-    if (!touches_field_map(items, count))
+    bool need_throttle = throttle && !flags->throttle;
+    bool need_field_map = field_map && !flags->field_map;
+    if (!need_throttle && !need_field_map)
         return 0;
-    if (!allowed) {
+    if (need_throttle && need_field_map)
+        fprintf(stderr, "Error: %s includes throttle and field-map settings, which must "
+                "match the installed\nthrottle and motor (a wrong field map can damage "
+                "the motor). Add --throttle --field-map\nto write them.\n", what);
+    else if (need_throttle)
+        fprintf(stderr, "Error: %s includes throttle settings, which must match the "
+                "installed throttle.\nAdd --throttle to write them.\n", what);
+    else
+        fprintf(stderr, "Error: %s includes field-map settings, which must match the "
+                "installed motor;\na wrong map can damage it. Add --field-map to "
+                "write them.\n", what);
+    return 1;
+}
+
+int cli_check_bulk(const char* what, const alltrax_assignment* items, size_t count,
+    const cli_flags* flags)
+{
+    bool throttle = false;
+    for (size_t i = 0; i < count; i++)
+        throttle |= cli_assignment_is_throttle(&items[i]);
+    return cli_require_groups(what, throttle, touches_field_map(items, count), flags);
+}
+
+void cli_warn_field_map(const alltrax_assignment* items, size_t count)
+{
+    if (touches_field_map(items, count))
         fprintf(stderr,
-            "Error: this writes field-map data. The field map must match the "
-            "installed motor;\na wrong map can damage it. Add --field-map to "
-            "write it.\n");
-        return 1;
-    }
-    fprintf(stderr,
-        "Warning: writing field-map data. It must match the installed motor "
-        "(also check\nthe speed sensor pole count, Tach_4_8).\n");
-    return 0;
+            "Warning: writing field-map data. It must match the installed motor "
+            "(also check\nthe speed sensor pole count, Tach_4_8).\n");
 }
 
 alltrax_error cli_add_field_map_name(alltrax_controller* ctrl,

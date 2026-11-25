@@ -1309,25 +1309,8 @@ restore_run:
     return rc ? rc : post_write(ctrl, items, count, opts, report);
 }
 
-static void copy_restore_var(uint8_t page[VARSET_SIZE],
-    const uint8_t saved[VARSET_SIZE], const alltrax_var_def* var)
-{
-    size_t off = var->address - VARSET_ADDR;
-    memcpy(page + off, saved + off, alltrax_var_byte_size(var));
-}
-
-static void copy_restore_curve(uint8_t page[VARSET_SIZE],
-    const uint8_t saved[VARSET_SIZE], const char* name)
-{
-    const alltrax_curve_def* curve = alltrax_find_curve(name);
-    size_t x = curve->x_address - VARSET_ADDR;
-    size_t y = curve->y_address - VARSET_ADDR;
-    memcpy(page + x, saved + x, 2 * ALLTRAX_CURVE_POINTS);
-    memcpy(page + y, saved + y, 2 * ALLTRAX_CURVE_POINTS);
-}
-
 alltrax_error alltrax_restore_defaults(alltrax_controller* ctrl,
-    bool keep_throttle, bool keep_field_map, const alltrax_write_opts* opts)
+    const alltrax_write_opts* opts)
 {
     const alltrax_write_opts defaults = {0};
     if (!opts) opts = &defaults;
@@ -1351,8 +1334,8 @@ alltrax_error alltrax_restore_defaults(alltrax_controller* ctrl,
     rc = read_memory(ctrl, original->address, sizeof(rev), rev);
     if (rc) return rc;
 
-    /* Build the final page: factory values, fixes for older controllers
-     * (an unprogrammed revision reads as -1), then any kept settings. */
+    /* Build the final page: factory values with fixes for older controllers
+     * (an unprogrammed revision reads as -1). */
     memcpy(page, factory, sizeof(page));
     if ((int32_t)get_le32(rev) < 1007) {
         const alltrax_var_def* rate = alltrax_find_var("N_Throttle_Rate");
@@ -1371,42 +1354,6 @@ alltrax_error alltrax_restore_defaults(alltrax_controller* ctrl,
             const alltrax_var_def* var = alltrax_find_var(names[i]);
             memcpy(page + (var->address - VARSET_ADDR), values[i], 2);
         }
-    }
-
-    /* Kept settings are copied as raw spans from the user page so strings,
-     * calibration and curves retain their original bytes. */
-    if ((keep_throttle || keep_field_map) && get_le16(saved) != 0) {
-        set_error_detail(ctrl, "Cannot keep invalid user settings (V_GoodSet=0x%04X)",
-                         (unsigned)get_le16(saved));
-        return ALLTRAX_ERR_FLASH;
-    }
-    if (keep_throttle) {
-        const alltrax_var_def* type = alltrax_find_var("Throttle_Type");
-        uint8_t selected = saved[type->address - VARSET_ADDR];
-        rc = alltrax_validate_var_value(type, selected);
-        if (rc) {
-            set_error_detail(ctrl, "Cannot keep unknown throttle type %u", (unsigned)selected);
-            return rc;
-        }
-        copy_restore_var(page, saved, type);
-        copy_restore_var(page, saved, alltrax_find_var("Throttle_Type_Name"));
-        copy_restore_curve(page, saved, "linearization");
-        if (selected == 11) {
-            size_t count;
-            const alltrax_var_def* defs = alltrax_get_var_defs(ALLTRAX_VARS_THROTTLE, &count);
-            for (size_t i = 0; i < count; i++)
-                if (strncmp(defs[i].name, "ABS_", 4) == 0 && defs[i].writable)
-                    copy_restore_var(page, saved, &defs[i]);
-        }
-    }
-    if (keep_field_map) {
-        size_t count;
-        const alltrax_var_def* defs = alltrax_get_var_defs(ALLTRAX_VARS_FIELD, &count);
-        for (size_t i = 0; i < count; i++)
-            if (defs[i].writable)
-                copy_restore_var(page, saved, &defs[i]);
-        copy_restore_curve(page, saved, "field");
-        copy_restore_curve(page, saved, "genfield");
     }
 
     /* The firmware runs on factory values while the user page is invalid.
@@ -1431,7 +1378,7 @@ alltrax_error alltrax_restore_defaults(alltrax_controller* ctrl,
     rc = stamp_field_map_date(ctrl);
     if (rc) return rc;
     report->date_stamped = true;
-    if (keep_throttle || throttle_changed) {
+    if (throttle_changed) {
         rc = clear_backup_ram(ctrl);
         if (rc) return rc;
         report->autocal_cleared = true;

@@ -21,27 +21,24 @@ extern bool cli_ignore_fw_bounds;
 typedef uint64_t cli_option_mask;
 
 /* Bits 0–31 are reserved for user options. */
-/* Writes: firmware policy and field-map confirmation */
+/* Writes: firmware policy and bulk-write confirmations */
 #define CLI_OPT_ALLOW_UNVALIDATED   (UINT64_C(1) << 0)
-#define CLI_OPT_FIELD_MAP           (UINT64_C(1) << 1)
+#define CLI_OPT_THROTTLE            (UINT64_C(1) << 1)
+#define CLI_OPT_FIELD_MAP           (UINT64_C(1) << 2)
 /* File encryption keys */
-#define CLI_OPT_KEY                 (UINT64_C(1) << 2)  /* takes a value */
+#define CLI_OPT_KEY                 (UINT64_C(1) << 3)  /* takes a value */
 /* get */
-#define CLI_OPT_FACTORY             (UINT64_C(1) << 3)
+#define CLI_OPT_FACTORY             (UINT64_C(1) << 4)
 /* curve */
-#define CLI_OPT_FILE                (UINT64_C(1) << 4)  /* takes a value */
-#define CLI_OPT_PRESET              (UINT64_C(1) << 5)  /* takes a value */
-#define CLI_OPT_PLOT                (UINT64_C(1) << 6)
-/* restore-defaults */
-#define CLI_OPT_KEEP_THROTTLE       (UINT64_C(1) << 7)
-#define CLI_OPT_KEEP_FIELD_MAP      (UINT64_C(1) << 8)
+#define CLI_OPT_FILE                (UINT64_C(1) << 5)  /* takes a value */
+#define CLI_OPT_PRESET              (UINT64_C(1) << 6)  /* takes a value */
+#define CLI_OPT_PLOT                (UINT64_C(1) << 7)
 /* throttle set */
-#define CLI_OPT_DEFAULT_CURVE       (UINT64_C(1) << 9)
-#define CLI_OPT_NO_HPD              (UINT64_C(1) << 10)
+#define CLI_OPT_DEFAULT_CURVE       (UINT64_C(1) << 8)
+#define CLI_OPT_NO_HPD              (UINT64_C(1) << 9)
 /* monitor */
-#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 11) /* takes a value */
-#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 12) /* takes a value */
-#define CLI_OPT_MONITOR_THROTTLE    (UINT64_C(1) << 13)
+#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 10) /* takes a value */
+#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 11) /* takes a value */
 
 /* Bits 32–63 are reserved for debug and development bypasses, in write
  * sequence order. */
@@ -58,14 +55,12 @@ typedef uint64_t cli_option_mask;
 /* Options parsed from argv */
 typedef struct {
     bool allow_unvalidated_firmware;
+    bool throttle;
     bool field_map;
     bool plot;
     bool factory;
-    bool keep_throttle;
-    bool keep_field_map;
     bool default_curve;
     bool no_hpd;
-    bool monitor_throttle;
     bool debug_no_rules;
     bool debug_no_cal;
     bool debug_no_verify;
@@ -166,16 +161,24 @@ alltrax_error cli_open(alltrax_controller** ctrl, bool writes);
 /* Print error with context to stderr */
 void cli_error(alltrax_controller* ctrl, alltrax_error err, const char* action);
 
-/* Field-map data: the writable Field variables and the field and genfield
- * curves. Writing it requires --field-map. */
+/* Settings that must match installed hardware. Field-map data: the writable
+ * Field variables and the field and genfield curves. Throttle settings: the
+ * writable Throttle variables and the linearization, speed and torque curves. */
 bool cli_is_field_map_var(const alltrax_var_def* var);
 bool cli_is_field_map_curve(const alltrax_curve_def* def);
 bool cli_assignment_is_field_map(const alltrax_assignment* item);
+bool cli_assignment_is_throttle(const alltrax_assignment* item);
 
-/* Refuse field-map assignments without --field-map; with it, print the
- * motor-match warning. Returns 0 to proceed, 1 after printing an error. */
-int cli_check_field_map(const alltrax_assignment* items, size_t count,
-    bool allowed);
+/* Bulk commands write throttle settings only with --throttle and field-map
+ * data only with --field-map. `what` names the command or file in the error.
+ * Return 0 to proceed, 1 after printing which options are missing. */
+int cli_require_groups(const char* what, bool throttle, bool field_map,
+    const cli_flags* flags);
+int cli_check_bulk(const char* what, const alltrax_assignment* items, size_t count,
+    const cli_flags* flags);
+
+/* Print the motor-match warning when the batch writes field-map data. */
+void cli_warn_field_map(const alltrax_assignment* items, size_t count);
 
 /* When the batch writes field-map data without F_Table_Name, append the
  * name from the page the write will use (items needs room for one more).
@@ -207,9 +210,6 @@ int cli_convert_profile_currents(alltrax_controller* ctrl,
 int cli_rules_check_curve(const alltrax_curve_data* curve, const cli_flags* flags);
 int cli_rules_check(alltrax_controller* ctrl, const alltrax_assignment* items,
     size_t count, const alltrax_info* info, const cli_flags* flags);
-/* restore-defaults --keep-throttle: the installed throttle type must be one
- * the hardware allows. */
-int cli_rules_check_kept_throttle(alltrax_controller* ctrl, const cli_flags* flags);
 
 /* Subcommand handlers — each returns 0 on success, 1 on error */
 int cmd_info(int argc, char** argv);

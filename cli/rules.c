@@ -269,22 +269,3 @@ int cli_rules_check(alltrax_controller* ctrl, const alltrax_assignment* items,
     }
     return check_voltage_order(ctrl, items, count);
 }
-
-int cli_rules_check_kept_throttle(alltrax_controller* ctrl, const cli_flags* flags)
-{
-    if (skip_rules(flags)) return 0;
-    const alltrax_var_def* vars[] = {
-        alltrax_find_var("Var_GoodSet"), alltrax_find_var("Throttle_Type"),
-    };
-    alltrax_var_value values[2];
-    alltrax_error err = alltrax_read_vars(ctrl, vars, 2, values);
-    if (err) {
-        cli_error(ctrl, err, "reading the throttle type");
-        return 1;
-    }
-    if (values[0].raw.u16 != 0) return 0;  /* Invalid settings cannot be kept. */
-    alltrax_info info;
-    bool have_info = false;
-    if (need_info(ctrl, &info, &have_info)) return 1;
-    return check_throttle_type(values[1].raw.u8, &info);
-}

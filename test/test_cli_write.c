@@ -243,9 +243,9 @@ static int test_valid_strings_reach_open(void)
         for (size_t j = 0; j < sizeof(values) / sizeof(values[0]); j++) {
             char arg[80];
             snprintf(arg, sizeof(arg), "%s=%s", names[i], values[j]);
-            char* argv[] = { "write", arg, "--field-map" };
+            char* argv[] = { "write", arg };
             open_calls = unexpected_calls = 0;
-            ASSERT_EQ(cmd_write(3, argv), 1); /* The fake open always fails. */
+            ASSERT_EQ(cmd_write(2, argv), 1); /* The fake open always fails. */
             ASSERT_EQ(open_calls, 1);
             ASSERT_EQ(unexpected_calls, 0);
         }
@@ -404,8 +404,8 @@ static int run_curve_file(const char* contents, bool config)
     int rc;
     if (config) {
 #ifdef ALLTRAX_HAVE_XML
-        char* argv[] = { "config", "load", "--key", "none", path };
-        rc = cmd_config(5, argv);
+        char* argv[] = { "config", "load", "--key", "none", path, "--throttle", "--field-map" };
+        rc = cmd_config(7, argv);
 #else
         rc = -1;
 #endif
@@ -1173,8 +1173,8 @@ static int test_config_round_trip_restores_strings_in_one_erase(void)
         set_page_string("F_Table_Name", "CHANGED");
         set_page_string("Throttle_Type_Name", "CHANGED");
         device.erases = device.mutations = 0;
-        char* argv[] = { "config", "load", "--key", "none", path, "--field-map" };
-        int rc = run_writable(cmd_config, 6, argv);
+        char* argv[] = { "config", "load", "--key", "none", path, "--throttle", "--field-map" };
+        int rc = run_writable(cmd_config, 7, argv);
         remove(path);
         ASSERT_EQ(rc, 0);
         ASSERT_EQ(device.erases, 1);
@@ -1194,8 +1194,8 @@ static int test_config_load_sends_one_reset_after_success(void)
         if (fail)
             device.fact_goodset = 0xFFFF;
         device.erases = device.resets = 0;
-        char* argv[] = { "config", "load", "--key", "none", path };
-        int rc = run_writable(cmd_config, 5, argv);
+        char* argv[] = { "config", "load", "--key", "none", path, "--throttle", "--field-map" };
+        int rc = run_writable(cmd_config, 7, argv);
         remove(path);
         ASSERT_EQ(rc, fail ? 1 : 0);
         ASSERT_EQ(device.erases, fail ? 0u : 1u);
@@ -1242,15 +1242,15 @@ static int test_write_command_writes_strings_and_numbers_in_one_batch(void)
     expected[hpd->address - VARSET_ADDR] = 1;
 
     char text[] = "F_Table_Name=NEW MAP", number[] = "HPD=1";
-    char* argv[] = { "write", text, number, "--field-map" };
-    ASSERT_EQ(run_writable(cmd_write, 4, argv), 0);
+    char* argv[] = { "write", text, number };
+    ASSERT_EQ(run_writable(cmd_write, 3, argv), 0);
     ASSERT_EQ(device.erases, 1);
     ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
 
     /* An empty value clears the field to spaces. */
     char clear[] = "F_Table_Name=";
-    char* argv2[] = { "write", clear, "--field-map" };
-    ASSERT_EQ(run_writable(cmd_write, 3, argv2), 0);
+    char* argv2[] = { "write", clear };
+    ASSERT_EQ(run_writable(cmd_write, 2, argv2), 0);
     alltrax_encode_string(name, "", expected + (name->address - VARSET_ADDR));
     ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
     return 0;
@@ -1290,8 +1290,8 @@ static int test_curve_reset_restores_in_one_erase(void)
         prepare_factory_curves(strcmp(types[t], "all") ? types[t] : NULL, expected);
         char type[16];
         snprintf(type, sizeof(type), "%s", types[t]);
-        char* argv[] = { "curve", "reset", type, "--field-map" };
-        ASSERT_EQ(run_writable(cmd_curve, 4, argv), 0);
+        char* argv[] = { "curve", "reset", type, "--throttle", "--field-map" };
+        ASSERT_EQ(run_writable(cmd_curve, 5, argv), 0);
         ASSERT_EQ(device.erases, 1);
         ASSERT_EQ(device.mode, RUN_MODE_RUN);
         ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
@@ -1310,8 +1310,8 @@ static int test_curve_reset_read_failure_writes_nothing(void)
         uint8_t original[VARSET_SIZE];
         memcpy(original, device.page, sizeof(original));
         device.fail_read_at = n;
-        char* argv[] = { "curve", "reset", "all", "--field-map" };
-        ASSERT_EQ(run_writable(cmd_curve, 4, argv), 1);
+        char* argv[] = { "curve", "reset", "all", "--throttle", "--field-map" };
+        ASSERT_EQ(run_writable(cmd_curve, 5, argv), 1);
         ASSERT_EQ(device.reads, n);
         ASSERT_EQ(device.mutations, 0);
         ASSERT_MEM_EQ(device.page, original, sizeof(original));
@@ -1329,12 +1329,12 @@ static int run_reset_case(int which)
     char* write_hpd[] = { "write", hpd };
     char* write_low[] = { "write", low };
     char* curve_set[] = { "curve", "set", "speed", "--preset", "standard" };
-    char* curve_reset[] = { "curve", "reset", "all", "--field-map" };
+    char* curve_reset[] = { "curve", "reset", "all", "--throttle", "--field-map" };
     switch (which) {
     case 0: return run_writable(cmd_write, 2, write_hpd);
     case 1: return run_writable(cmd_write, 2, write_low);
     case 2: return run_writable(cmd_curve, 5, curve_set);
-    default: return run_writable(cmd_curve, 4, curve_reset);
+    default: return run_writable(cmd_curve, 5, curve_reset);
     }
 }
 
@@ -1368,13 +1368,13 @@ static int test_linearization_and_field_map_curves_do_not_reset(void)
 {
     char* lin[] = { "curve", "set", "linearization", "--preset", "linear" };
     char a[] = "0,10", b[] = "375,5", c[] = "750,1";
-    char* field[] = { "curve", "set", "field", a, b, c, "--field-map" };
+    char* field[] = { "curve", "set", "field", a, b, c };
     writable_device_reset();
     ASSERT_EQ(run_writable(cmd_curve, 5, lin), 0);
     ASSERT_EQ(device.erases, 1);
     ASSERT_EQ(device.resets, 0);
     writable_device_reset();
-    ASSERT_EQ(run_writable(cmd_curve, 7, field), 0);
+    ASSERT_EQ(run_writable(cmd_curve, 6, field), 0);
     ASSERT_EQ(device.erases, 1);
     ASSERT_EQ(device.resets, 0);
     return 0;
@@ -1688,7 +1688,7 @@ static int test_monitor_display_gates_live_samples(void)
 static int test_monitor_throttle_reads_three_blocks_and_blanks_with_ksi_off(void)
 {
     char out[512];
-    char* argv[] = { "monitor", "--throttle" };
+    char* argv[] = { "monitor", "throttle" };
     for (int on = 0; on <= 1; on++) {
         monitor_fixture(0, on != 0);
         device.monitor_stop_addr = 0x2000F090;
@@ -2000,25 +2000,38 @@ static int test_throttle_set_disables_hpd_for_pump_and_usb(void)
     return 0;
 }
 
-static int test_restore_defaults_cli_keep_flags(void)
+static int test_restore_defaults_cli_restores_everything(void)
 {
-    char* argv[] = { "restore-defaults", "--keep-field-map", "--keep-throttle" };
+    /* A restore replaces the throttle settings and the field map, so it needs
+     * both confirmations. */
+    char* plain[] = { "restore-defaults" };
+    char* throttle_only[] = { "restore-defaults", "--throttle" };
+    char* map_only[] = { "restore-defaults", "--field-map" };
+    writable_device_reset();
+    open_calls = 0;
+    ASSERT_EQ(run_writable(cmd_restore_defaults, 1, plain), 1);
+    ASSERT_EQ(run_writable(cmd_restore_defaults, 2, throttle_only), 1);
+    ASSERT_EQ(run_writable(cmd_restore_defaults, 2, map_only), 1);
+    ASSERT_EQ(open_calls, 0);
+
+    char* argv[] = { "restore-defaults", "--field-map", "--throttle" };
     writable_device_reset();
     set_page_bytes("Throttle_Type", "\3", 1);
-    set_page_bytes("F_Table_Name", "KEPT", 4);
-    set_page_bytes("HPD", "\1", 1);
+    set_page_bytes("F_Table_Name", "MINE", 4);
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, device.factory, sizeof(expected));
+    expected[0] = expected[1] = 0;
     reconnect_waits = 0;
     ASSERT_EQ(run_writable(cmd_restore_defaults, 3, argv), 0);
-    ASSERT_EQ(device.page[0xA0], 3);
-    ASSERT_MEM_EQ(device.page + 0x200, "KEPT", 4);
-    ASSERT_EQ(device.page[0xA4], 0);
+    ASSERT_MEM_EQ(device.page, expected, VARSET_SIZE);
     ASSERT_EQ(device.erases, 1);
-    ASSERT_EQ(device.backup_clears, 1);
+    ASSERT_EQ(device.backup_clears, 1);  /* The throttle type changed. */
     ASSERT_EQ(device.resets, 1);
     ASSERT_EQ(reconnect_waits, 1);
 
-    char* extra[] = { "restore-defaults", "unexpected", "--keep-throttle" };
-    ASSERT_EQ(run_writable(cmd_restore_defaults, 3, extra), 1);
+    char* extra[] = { "restore-defaults", "unexpected", "--throttle", "--field-map" };
+    open_calls = 0;
+    ASSERT_EQ(run_writable(cmd_restore_defaults, 4, extra), 1);
     ASSERT_EQ(open_calls, 0);
     return 0;
 }
@@ -2061,25 +2074,40 @@ static int test_write_amp_suffix(void)
     return 0;
 }
 
-static int test_field_map_writes_require_flag(void)
+static int test_named_writes_need_no_confirmation(void)
 {
-    char turbo[] = "Turbo_Start_RPM=2000", name[] = "F_Table_Name=MAP";
+    char turbo[] = "Turbo_Start_RPM=2000", type[] = "Throttle_Type=1";
     char point0[] = "0,0", point1[] = "750,50";
     char* write_scalar[] = { "write", turbo };
-    char* write_name[] = { "write", name };
+    char* write_type[] = { "write", type };
     char* set_field[] = { "curve", "set", "field", point0, point1 };
     char* reset_gen[] = { "curve", "reset", "genfield" };
-    char* reset_all[] = { "curve", "reset", "all" };
+    char* reset_lin[] = { "curve", "reset", "linearization" };
     struct { int (*cmd)(int, char**); int argc; char** argv; } cases[] = {
-        { cmd_write, 2, write_scalar }, { cmd_write, 2, write_name },
+        { cmd_write, 2, write_scalar }, { cmd_write, 2, write_type },
         { cmd_curve, 5, set_field }, { cmd_curve, 3, reset_gen },
-        { cmd_curve, 3, reset_all },
+        { cmd_curve, 3, reset_lin },
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         writable_device_reset();
-        ASSERT_EQ(run_writable(cases[i].cmd, cases[i].argc, cases[i].argv), 1);
+        ASSERT_EQ(run_writable(cases[i].cmd, cases[i].argc, cases[i].argv), 0);
+        ASSERT_EQ(device.erases, 1);
+    }
+    return 0;
+}
+
+/* curve reset all writes both groups, so it needs both confirmations. */
+static int test_curve_reset_all_requires_both_confirmations(void)
+{
+    char* none[] = { "curve", "reset", "all" };
+    char* throttle[] = { "curve", "reset", "all", "--throttle" };
+    char* field_map[] = { "curve", "reset", "all", "--field-map" };
+    char** refused[] = { none, throttle, field_map };
+    const int argc[] = { 3, 4, 4 };
+    for (size_t i = 0; i < 3; i++) {
+        writable_device_reset();
+        ASSERT_EQ(run_writable(cmd_curve, argc[i], refused[i]), 1);
         ASSERT_EQ(open_calls, 0);
-        ASSERT_EQ(device.mutations, 0);
     }
     return 0;
 }
@@ -2097,8 +2125,8 @@ static int test_field_map_writes_include_current_name(void)
     alltrax_encode_var(turbo, 2000, expected + (turbo->address - VARSET_ADDR));
 
     char arg[] = "Turbo_Start_RPM=2000";
-    char* argv[] = { "write", arg, "--field-map" };
-    ASSERT_EQ(run_writable(cmd_write, 3, argv), 0);
+    char* argv[] = { "write", arg };
+    ASSERT_EQ(run_writable(cmd_write, 2, argv), 0);
     ASSERT_EQ(device.erases, 1);
     ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
     return 0;
@@ -2114,8 +2142,8 @@ static int test_field_map_recovery_uses_factory_name(void)
     memcpy(device.factory + offset, "FACTORY", 7);
 
     char arg[] = "Turbo_Start_RPM=2000";
-    char* argv[] = { "write", arg, "--field-map" };
-    ASSERT_EQ(run_writable(cmd_write, 3, argv), 0);
+    char* argv[] = { "write", arg };
+    ASSERT_EQ(run_writable(cmd_write, 2, argv), 0);
     ASSERT_EQ(device.erases, 2);
     uint8_t expected[32];
     ASSERT_EQ(alltrax_encode_string(name, "FACTORY", expected), 32);
@@ -2301,13 +2329,12 @@ static int test_field_map_upgrade_selects_newer_version(void)
 static int test_field_map_install_writes_named_map_and_pole_count(void)
 {
     static char out[4096];
-    const char* no_flag[] = { "install", "MAPB" };
-    const char* hidden[] = { "install", "HIDE", "--field-map" };
-    const char* unknown[] = { "install", "NOPE", "--field-map" };
-    const char* const* refused[] = { no_flag, hidden, unknown };
-    for (size_t i = 0; i < 3; i++) {
+    const char* hidden[] = { "install", "HIDE" };
+    const char* unknown[] = { "install", "NOPE" };
+    const char* const* refused[] = { hidden, unknown };
+    for (size_t i = 0; i < 2; i++) {
         writable_device_reset();
-        ASSERT_EQ(run_map_command(map_file_text, refused[i], i ? 3 : 2, NULL, 0), 1);
+        ASSERT_EQ(run_map_command(map_file_text, refused[i], 2, NULL, 0), 1);
         ASSERT_EQ(open_calls, 0);
     }
 
@@ -2321,8 +2348,8 @@ static int test_field_map_install_writes_named_map_and_pole_count(void)
         uint8_t expected[VARSET_SIZE];
         memcpy(expected, device.page, sizeof(expected));
         expected_map_page(expected, cases[i].map, cases[i].turbo, 1);
-        const char* args[] = { "install", cases[i].name, "--field-map" };
-        ASSERT_EQ(run_map_command(map_file_text, args, 3, out, sizeof(out)), 0);
+        const char* args[] = { "install", cases[i].name };
+        ASSERT_EQ(run_map_command(map_file_text, args, 2, out, sizeof(out)), 0);
         ASSERT_EQ(device.erases, 1);
         ASSERT_EQ(device.resets, 1);  /* Tach_4_8 reboots the controller */
         ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
@@ -2397,14 +2424,14 @@ static int test_config_key_load_round_trip(void)
     ASSERT_EQ(make_temp_path(path), 0);
     ASSERT_EQ(run_config_save_as(path, 5005, TEST_KEY_A), 0);
 
-    char* wrong[] = { "config", "load", path, "--key", TEST_KEY_B };
-    char* plain[] = { "config", "load", path, "--key", "none" };
-    char* right[] = { "config", "load", path, "--key", TEST_KEY_A };
+    char* wrong[] = { "config", "load", path, "--key", TEST_KEY_B, "--throttle", "--field-map" };
+    char* plain[] = { "config", "load", path, "--key", "none", "--throttle", "--field-map" };
+    char* right[] = { "config", "load", path, "--key", TEST_KEY_A, "--throttle", "--field-map" };
     device.erases = device.mutations = 0;
-    ASSERT_EQ(run_cli_output(cmd_config, 5, wrong, out, sizeof(out)), 1);
-    ASSERT_EQ(run_cli_output(cmd_config, 5, plain, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_config, 7, wrong, out, sizeof(out)), 1);
+    ASSERT_EQ(run_cli_output(cmd_config, 7, plain, out, sizeof(out)), 1);
     ASSERT_EQ(device.mutations, 0);
-    ASSERT_EQ(run_cli_output(cmd_config, 5, right, out, sizeof(out)), 0);
+    ASSERT_EQ(run_cli_output(cmd_config, 7, right, out, sizeof(out)), 0);
     ASSERT_EQ(device.erases, 1);
 
     /* A plain file given a key gets a hint. */
@@ -2416,40 +2443,47 @@ static int test_config_key_load_round_trip(void)
 }
 #endif
 
-/* Load a plain XML file into the writable device. */
-static int run_config_load(const char* xml, bool field_map)
+/* Load a plain XML file into the writable device, confirming throttle and
+ * field-map settings as asked. */
+static int run_config_load(const char* xml, bool throttle, bool field_map)
 {
     char path[64];
     if (make_temp_path(path) || write_file(path, xml)) return -1;
-    char* argv[] = { "config", "load", "--key", "none", path, "--field-map" };
-    int rc = run_writable(cmd_config, field_map ? 6 : 5, argv);
+    char* argv[7] = { "config", "load", "--key", "none", path };
+    int argc = 5;
+    if (throttle) argv[argc++] = "--throttle";
+    if (field_map) argv[argc++] = "--field-map";
+    int rc = run_writable(cmd_config, argc, argv);
     remove(path);
     return rc;
 }
 
-static int test_config_load_skips_field_map_without_flag(void)
+/* A file with throttle or field-map settings loads only with the matching
+ * confirmations; a file without them needs none. */
+static int test_config_load_requires_group_confirmations(void)
 {
     const char* xml = "<XCT><Node-Throttle><HPD>1</HPD></Node-Throttle>"
                       "<Node-Field><Turbo_Start_RPM>2000</Turbo_Start_RPM>"
                       "</Node-Field></XCT>";
+    for (int flags = 0; flags < 3; flags++) {
+        writable_device_reset();
+        ASSERT_EQ(run_config_load(xml, flags == 1, flags == 2), 1);
+        ASSERT_EQ(open_calls, 0);
+    }
+    writable_device_reset();
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, device.page, sizeof(expected));
     const alltrax_var_def* hpd = alltrax_find_var("HPD");
     const alltrax_var_def* turbo = alltrax_find_var("Turbo_Start_RPM");
-    for (int field_map = 0; field_map <= 1; field_map++) {
-        writable_device_reset();
-        uint8_t expected[VARSET_SIZE];
-        memcpy(expected, device.page, sizeof(expected));
-        expected[hpd->address - VARSET_ADDR] = 1;
-        if (field_map)
-            alltrax_encode_var(turbo, 2000, expected + (turbo->address - VARSET_ADDR));
-        ASSERT_EQ(run_config_load(xml, field_map), 0);
-        ASSERT_EQ(device.erases, 1);
-        ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
-    }
-    /* A file with only field-map data has nothing to write without the flag. */
+    expected[hpd->address - VARSET_ADDR] = 1;
+    alltrax_encode_var(turbo, 2000, expected + (turbo->address - VARSET_ADDR));
+    ASSERT_EQ(run_config_load(xml, true, true), 0);
+    ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+
     writable_device_reset();
-    ASSERT_EQ(run_config_load("<XCT><Node-Field><Turbo_Start_RPM>2000"
-                              "</Turbo_Start_RPM></Node-Field></XCT>", false), 1);
-    ASSERT_EQ(open_calls, 0);
+    ASSERT_EQ(run_config_load("<XCT><Node-Voltage><LoBat_Vlim>210</LoBat_Vlim>"
+                              "</Node-Voltage></XCT>", false, false), 0);
+    ASSERT_EQ(device.erases, 1);
     return 0;
 }
 
@@ -2465,12 +2499,12 @@ static int test_config_load_fails_closed_on_bad_values(void)
         snprintf(xml, sizeof(xml), "<XCT><Node-Throttle>%s<Speed_Limit_On>1"
                  "</Speed_Limit_On></Node-Throttle></XCT>", bad[i]);
         writable_device_reset();
-        ASSERT_EQ(run_config_load(xml, false), 1);
+        ASSERT_EQ(run_config_load(xml, true, false), 1);
         ASSERT_EQ(open_calls, 0);
     }
     writable_device_reset();
     ASSERT_EQ(run_config_load("<XCT><Node-Throttle><HPD> 1 </HPD></Node-Throttle></XCT>",
-                              false), 0);
+                              true, false), 0);
     ASSERT_EQ(device.page[alltrax_find_var("HPD")->address - VARSET_ADDR], 1);
     return 0;
 }
@@ -2765,8 +2799,8 @@ static int test_restore_defaults_wire_sequence(void)
     memcpy(expected, device.factory, sizeof(expected));
 
     /* The throttle type and HPD do not change, so calibration is kept. */
-    char* argv[] = { "restore-defaults" };
-    ASSERT_EQ(run_writable(cmd_restore_defaults, 1, argv), 0);
+    char* argv[] = { "restore-defaults", "--throttle", "--field-map" };
+    ASSERT_EQ(run_writable(cmd_restore_defaults, 3, argv), 0);
     ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
     begin_script();
     expect_page_cycle(expected);
@@ -2822,7 +2856,7 @@ static int test_monitor_throttle_view_read_blocks(void)
         { 0x2000F090, 1 }, { 0x2000F116, 20 }, { 0x2000F15E, 2 }, { 0x2000F090, 1 },
     };
     char out[512];
-    char* argv[] = { "monitor", "--throttle" };
+    char* argv[] = { "monitor", "throttle" };
     monitor_fixture(0, true);
     device.monitor_stop_addr = 0x2000F090;
     ASSERT_EQ(run_cli_output(cmd_monitor, 2, argv, out, sizeof(out)), 0);
@@ -2833,8 +2867,8 @@ static int test_monitor_throttle_view_read_blocks(void)
 static int run_config_load_file(const char* path)
 {
     device.wire_count = 0;
-    char* argv[] = { "config", "load", "--key", "none", (char*)path };
-    return run_writable(cmd_config, 5, argv);
+    char* argv[] = { "config", "load", "--key", "none", (char*)path, "--throttle", "--field-map" };
+    return run_writable(cmd_config, 7, argv);
 }
 
 static int test_config_load_wire_sequence(void)
@@ -2857,6 +2891,7 @@ static int test_config_load_wire_sequence(void)
     ASSERT_MEM_EQ(device.page, saved, sizeof(saved));
     begin_script();
     expect_settings_write(saved);
+    expect_date();  /* The file includes the field map. */
     expect_backup_clear();
     expect_reset();
     return check_wire(true);
@@ -2942,8 +2977,8 @@ static int test_throttle_only_config_files_wire_sequences(void)
 static int run_curve_points(char* type, const char* const* points, size_t n, bool bypass)
 {
     char text[8][24];
-    char* argv[12] = { "curve", "set", type, "--field-map" };
-    int argc = 4;
+    char* argv[12] = { "curve", "set", type };
+    int argc = 3;
     for (size_t i = 0; i < n && i < 8; i++) {
         snprintf(text[i], sizeof(text[i]), "%s", points[i]);
         argv[argc++] = text[i];
@@ -3153,18 +3188,6 @@ static int test_throttle_type_rules_use_hardware_mask(void)
             ASSERT_EQ(device.erases, ok ? 1u : 0u);
         }
     }
-
-    /* restore-defaults --keep-throttle keeps only a supported type. */
-    for (int bypass = 0; bypass <= 1; bypass++) {
-        writable_device_reset();
-        memcpy(device.factory, device.page, VARSET_SIZE);
-        device.page[0xA0] = 4;
-        device.filter_throttles = true;
-        device.throttle_mask = 0x7FF & ~(1u << 3);
-        char* argv[] = { "restore-defaults", "--keep-throttle", "--debug-no-rules" };
-        ASSERT_EQ(run_writable(cmd_restore_defaults, bypass ? 3 : 2, argv), bypass ? 0 : 1);
-        ASSERT_EQ(device.mutations ? 1 : 0, bypass ? 1 : 0);
-    }
     return 0;
 }
 
@@ -3193,12 +3216,13 @@ static int test_config_load_applies_rules(void)
         writable_device_reset();
         device.filter_throttles = true;
         device.throttle_mask = 0x001;
-        char* checked[] = { "config", "load", "--key", "none", path };
-        int refused = run_writable(cmd_config, 5, checked);
+        char* checked[] = { "config", "load", "--key", "none", path, "--throttle" };
+        int refused = run_writable(cmd_config, 6, checked);
         unsigned mutations = device.mutations;
         writable_device_reset();
-        char* bypass[] = { "config", "load", "--key", "none", path, "--debug-no-rules" };
-        int bypassed = run_writable(cmd_config, 6, bypass);
+        char* bypass[] = { "config", "load", "--key", "none", path, "--throttle",
+                           "--debug-no-rules" };
+        int bypassed = run_writable(cmd_config, 7, bypass);
         remove(path);
         ASSERT_EQ(refused, 1);
         ASSERT_EQ(mutations, 0);
@@ -3235,7 +3259,7 @@ int main(void)
     RUN_TEST(test_fan_test_requires_keyswitch_and_writes_once);
     RUN_TEST(test_clear_autocal_sends_one_reset_after_clear);
     RUN_TEST(test_reset_wait_timeout_does_not_resend_reset);
-    RUN_TEST(test_restore_defaults_cli_keep_flags);
+    RUN_TEST(test_restore_defaults_cli_restores_everything);
     RUN_TEST(test_throttle_list_filters_by_model_and_mask);
     RUN_TEST(test_field_map_history_command);
     RUN_TEST(test_monitor_display_gates_live_samples);
@@ -3263,7 +3287,8 @@ int main(void)
     RUN_TEST(test_voltage_rules_use_rated_voltage);
     RUN_TEST(test_voltage_order_rules);
     RUN_TEST(test_throttle_type_rules_use_hardware_mask);
-    RUN_TEST(test_field_map_writes_require_flag);
+    RUN_TEST(test_named_writes_need_no_confirmation);
+    RUN_TEST(test_curve_reset_all_requires_both_confirmations);
     RUN_TEST(test_field_map_writes_include_current_name);
     RUN_TEST(test_field_map_recovery_uses_factory_name);
     RUN_TEST(test_write_amp_suffix);
@@ -3294,7 +3319,7 @@ int main(void)
     RUN_TEST(test_config_round_trip_restores_strings_in_one_erase);
     RUN_TEST(test_config_load_rejects_invalid_strings_before_open);
     RUN_TEST(test_config_load_sends_one_reset_after_success);
-    RUN_TEST(test_config_load_skips_field_map_without_flag);
+    RUN_TEST(test_config_load_requires_group_confirmations);
     RUN_TEST(test_config_load_fails_closed_on_bad_values);
     RUN_TEST(test_config_save_writes_only_settings_in_toolkit_nodes);
     RUN_TEST(test_config_load_wire_sequence);

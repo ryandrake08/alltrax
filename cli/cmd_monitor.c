@@ -333,15 +333,18 @@ static void wait_for_tick(const struct timespec* start, int rate)
 int cmd_monitor(int argc, char** argv)
 {
     cli_flags flags;
-    const cli_option_mask allowed = CLI_OPT_MONITOR_RATE | CLI_OPT_MONITOR_LOG |
-                                    CLI_OPT_MONITOR_THROTTLE;
-    if (cli_parse_args(argc, argv, "monitor", allowed, 0, 0, &flags) < 0) {
-        fprintf(stderr, "Usage: alltrax monitor [--rate <ms>] [--log <file.csv>] | monitor --throttle\n");
+    const cli_option_mask allowed = CLI_OPT_MONITOR_RATE | CLI_OPT_MONITOR_LOG;
+    int nargs = cli_parse_args(argc, argv, "monitor", allowed, 0, 1, &flags);
+    bool throttle_view = nargs == 1 && strcmp(argv[1], "throttle") == 0;
+    if (nargs < 0 || (nargs == 1 && !throttle_view)) {
+        if (nargs == 1)
+            fprintf(stderr, "Error: monitor: unknown mode %s\n", argv[1]);
+        fprintf(stderr, "Usage: alltrax monitor [--rate <ms>] [--log <file.csv>] | monitor throttle\n");
         cli_print_options(stderr, allowed);
         return 1;
     }
-    if (flags.monitor_throttle && (flags.monitor_rate || flags.monitor_log)) {
-        fprintf(stderr, "Error: --throttle uses a fixed interval and does not accept --rate or --log\n");
+    if (throttle_view && (flags.monitor_rate || flags.monitor_log)) {
+        fprintf(stderr, "Error: monitor throttle uses a fixed interval and does not accept --rate or --log\n");
         return 1;
     }
     int rate = MONITOR_FAST_MS;
@@ -372,7 +375,7 @@ int cmd_monitor(int argc, char** argv)
     if (cli_open(&ctrl, false)) goto done;
     monitor_config config = {0};
     alltrax_error err;
-    if (!flags.monitor_throttle && (err = read_config(ctrl, &config))) {
+    if (!throttle_view && (err = read_config(ctrl, &config))) {
         cli_error(ctrl, err, "reading monitor settings");
         goto done;
     }
@@ -399,7 +402,7 @@ int cmd_monitor(int argc, char** argv)
             perror("Error: reading polling clock");
             break;
         }
-        if (flags.monitor_throttle) {
+        if (throttle_view) {
             err = print_throttle(ctrl, interactive);
         } else {
             alltrax_monitor_data data;

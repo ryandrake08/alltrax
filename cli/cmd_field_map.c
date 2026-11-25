@@ -468,8 +468,10 @@ static int do_upgrade(int argc, char** argv)
 
     size_t count;
     items = record_items(rec, false, &config, &count);
-    if (!items || cli_check_field_map(items, count, true) ||
-        cli_config_write(ctrl, items, count, &flags))
+    if (!items)
+        goto done;
+    cli_warn_field_map(items, count);
+    if (cli_config_write(ctrl, items, count, &flags))
         goto done;
     const char* name = item_text(items, count, "F_Table_Name");
     if (strstr(name ? name : cur.name, "UNIMAP"))
@@ -485,8 +487,7 @@ done:
     return ret;
 }
 
-#define INSTALL_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_FIELD_MAP | \
-                         CLI_OPT_DEBUG_NO_RULES)
+#define INSTALL_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_DEBUG_NO_RULES)
 
 static const char* pole_count(bool eight)
 {
@@ -499,7 +500,7 @@ static int do_install(int argc, char** argv)
     if (cli_parse_args(argc, argv, "field-map install", INSTALL_OPTIONS, 2, 2,
                        &flags) < 0) {
         fprintf(stderr,
-            "Usage: alltrax field-map install --field-map [options] <file> <name>\n"
+            "Usage: alltrax field-map install [options] <file> <name>\n"
             "\n"
             "Installs the named field map from <file>, including its speed sensor\n"
             "pole count (Tach_4_8). <name> may be a map name or one of its aliases.\n");
@@ -522,8 +523,10 @@ static int do_install(int argc, char** argv)
     }
     size_t count;
     items = record_items(rec, true, &config, &count);
-    if (!items || cli_check_field_map(items, count, flags.field_map) ||
-        cli_open(&ctrl, true))
+    if (!items)
+        goto done;
+    cli_warn_field_map(items, count);
+    if (cli_open(&ctrl, true))
         goto done;
 
     const alltrax_var_def* tach = alltrax_find_var("Tach_4_8");

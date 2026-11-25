@@ -598,13 +598,11 @@ alltrax_error alltrax_clear_autocal(alltrax_controller* ctrl,
 
 /* Replace the user settings with the factory settings in one verified page
  * write, applying fixes for older controllers (original program revision
- * below V1.007) and keeping the selected user settings. Keeping settings
- * requires a valid user page. Afterwards, stamp FieldMap_Date, clear throttle
- * auto-calibration if keep_throttle or if the throttle type or HPD changes,
- * and send one reset. Only skip_fw_check and report are used from opts,
+ * below V1.007). Afterwards, stamp FieldMap_Date, clear throttle
+ * auto-calibration if the throttle type or HPD changes, and send one reset. Only skip_fw_check and report are used from opts,
  * which may be NULL. */
 alltrax_error alltrax_restore_defaults(alltrax_controller* ctrl,
-    bool keep_throttle, bool keep_field_map, const alltrax_write_opts* opts);
+    const alltrax_write_opts* opts);
 
 #ifdef __cplusplus
 }
