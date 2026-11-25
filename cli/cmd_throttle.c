@@ -139,7 +139,7 @@ static int set_throttle(alltrax_controller* ctrl, const throttle_entry* entry,
     else
         printf("Set throttle to %s (%u), HPD %s\n", entry->label,
                (unsigned)entry->type, hpd ? "on" : "off");
-    cli_report_write(ctrl, &report, flags);
+    cli_report_write(ctrl, &report);
     return err != ALLTRAX_OK;
 }
 

@@ -3,8 +3,7 @@
 int cmd_restore_defaults(int argc, char** argv)
 {
     const cli_option_mask allowed = CLI_OPT_KEEP_THROTTLE | CLI_OPT_KEEP_FIELD_MAP |
-                                    CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_NO_WAIT |
-                                    CLI_OPT_DEBUG_NO_RULES;
+                                    CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_DEBUG_NO_RULES;
     cli_flags flags;
     if (cli_parse_args(argc, argv, "restore-defaults", allowed, 0, 0, &flags) < 0) {
         fprintf(stderr, "Usage: alltrax restore-defaults [options]\n");
@@ -36,7 +35,7 @@ int cmd_restore_defaults(int argc, char** argv)
     }
     /* A restore is explicit, so omit the automatic recovery notice. */
     report.factory_restored = false;
-    cli_report_write(ctrl, &report, &flags);
+    cli_report_write(ctrl, &report);
     alltrax_close(ctrl);
     return err != ALLTRAX_OK;
 }

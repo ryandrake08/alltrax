@@ -600,7 +600,7 @@ int cli_config_write(alltrax_controller* ctrl, alltrax_assignment* items,
     alltrax_error err = alltrax_write_assignments(ctrl, items, count, &write_opts);
     if (err) {
         cli_error(ctrl, err, "writing settings");
-        cli_report_write(ctrl, &report, flags);
+        cli_report_write(ctrl, &report);
         return 1;
     }
     for (size_t i = 0; i < count; i++) {
@@ -611,7 +611,7 @@ int cli_config_write(alltrax_controller* ctrl, alltrax_assignment* items,
             printf("  Wrote %s\n", items[i].var->name);
     }
     cli_field_map_written(items, count);
-    cli_report_write(ctrl, &report, flags);
+    cli_report_write(ctrl, &report);
     return 0;
 }
 

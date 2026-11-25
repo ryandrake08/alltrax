@@ -141,7 +141,7 @@ int cmd_write(int argc, char** argv)
     err = alltrax_write_assignments(ctrl, assigns, count, &write_opts);
     if (err) {
         cli_error(ctrl, err, "writing variables");
-        cli_report_write(ctrl, &report, &flags);
+        cli_report_write(ctrl, &report);
         goto done;
     }
 
@@ -150,7 +150,7 @@ int cmd_write(int argc, char** argv)
                assigns[i].var->is_flash ? "FLASH" : "RAM");
     cli_field_map_written(assigns, count);
 
-    cli_report_write(ctrl, &report, &flags);
+    cli_report_write(ctrl, &report);
     ret = 0;
 
 done:

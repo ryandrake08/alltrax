@@ -526,9 +526,9 @@ static int test_invalid_throttle_config_rejected_before_transport(void)
 static int test_options_accepted_before_and_after_positionals(void)
 {
     const cli_option_mask allowed = CLI_OPT_DEBUG_NO_CAL | CLI_OPT_ALLOW_UNVALIDATED |
-                                    CLI_OPT_NO_WAIT | CLI_OPT_FILE;
+                                    CLI_OPT_PLOT | CLI_OPT_FILE;
     char* argv[] = {
-        "set", "--no-wait", "linearization", "--debug-no-cal", "-1,0",
+        "set", "--plot", "linearization", "--debug-no-cal", "-1,0",
         "--file", "lin.csv", "-", "--allow-unvalidated-firmware",
     };
     cli_flags flags;
@@ -536,7 +536,7 @@ static int test_options_accepted_before_and_after_positionals(void)
     ASSERT_STR_EQ(argv[1], "linearization");
     ASSERT_STR_EQ(argv[2], "-1,0");
     ASSERT_STR_EQ(argv[3], "-");
-    ASSERT_TRUE(flags.no_wait);
+    ASSERT_TRUE(flags.plot);
     ASSERT_TRUE(flags.debug_no_cal);
     ASSERT_TRUE(flags.allow_unvalidated_firmware);
     ASSERT_FALSE(flags.debug_no_verify);
@@ -547,15 +547,15 @@ static int test_options_accepted_before_and_after_positionals(void)
 
 static int test_invalid_options_and_argument_counts_rejected(void)
 {
-    const cli_option_mask allowed = CLI_OPT_NO_WAIT | CLI_OPT_FILE;
+    const cli_option_mask allowed = CLI_OPT_PLOT | CLI_OPT_FILE;
     struct { int argc; char* argv[5]; int min, max; } bad[] = {
         { 2, { "cmd", "--bogus" }, 0, -1 },            /* unknown */
         { 2, { "cmd", "--debug-no-cal" }, 0, -1 },     /* not accepted */
         { 2, { "cmd", "--file" }, 0, -1 },             /* missing value */
-        { 3, { "cmd", "--file", "--no-wait" }, 0, -1 }, /* option as value */
+        { 3, { "cmd", "--file", "--plot" }, 0, -1 },   /* option as value */
         { 5, { "cmd", "--file", "a", "--file", "b" }, 0, -1 }, /* repeated */
         { 3, { "cmd", "one", "two" }, 1, 1 },          /* extra */
-        { 2, { "cmd", "--no-wait" }, 1, 1 },           /* missing */
+        { 2, { "cmd", "--plot" }, 1, 1 },              /* missing */
         { 2, { "cmd", "--" }, 0, -1 },                 /* bare -- */
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -599,7 +599,7 @@ static int test_bad_command_options_rejected_before_open(void)
         { 4, { "curve", "reset", "linearization", "--bogus" } },
         { 4, { "curve", "reset", "linearization", "--plot" } },
         { 4, { "curve", "get", "linearization", "extra" } },
-        { 4, { "curve", "diff", "linearization", "--no-wait" } },
+        { 4, { "curve", "diff", "linearization", "--plot" } },
         { 3, { "curve", "list", "extra" } },
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -664,10 +664,10 @@ static int test_fw_flag_reaches_write_options_in_any_position(void)
                           after ? "--allow-unvalidated-firmware" : assign };
         ASSERT_EQ(run_on_unvalidated_firmware(cmd_write, 3, write), ALLTRAX_ERR_USB);
     }
-    char* reset[] = { "reset", "--no-wait", "--allow-unvalidated-firmware" };
-    ASSERT_EQ(run_on_unvalidated_firmware(cmd_reset, 3, reset), ALLTRAX_ERR_USB);
-    char* reset_default[] = { "reset", "--no-wait" };
-    ASSERT_EQ(run_on_unvalidated_firmware(cmd_reset, 2, reset_default),
+    char* reset[] = { "reset", "--allow-unvalidated-firmware" };
+    ASSERT_EQ(run_on_unvalidated_firmware(cmd_reset, 2, reset), ALLTRAX_ERR_USB);
+    char* reset_default[] = { "reset" };
+    ASSERT_EQ(run_on_unvalidated_firmware(cmd_reset, 1, reset_default),
               ALLTRAX_ERR_FIRMWARE);
     ASSERT_EQ(transport_calls, 0);
     return 0;
@@ -1194,8 +1194,8 @@ static int test_config_load_sends_one_reset_after_success(void)
         if (fail)
             device.fact_goodset = 0xFFFF;
         device.erases = device.resets = 0;
-        char* argv[] = { "config", "load", "--key", "none", path, "--no-wait" };
-        int rc = run_writable(cmd_config, 6, argv);
+        char* argv[] = { "config", "load", "--key", "none", path };
+        int rc = run_writable(cmd_config, 5, argv);
         remove(path);
         ASSERT_EQ(rc, fail ? 1 : 0);
         ASSERT_EQ(device.erases, fail ? 0u : 1u);
@@ -1326,15 +1326,15 @@ static int test_curve_reset_read_failure_writes_nothing(void)
 static int run_reset_case(int which)
 {
     char hpd[] = "HPD=1", low[] = "LoBat_Vlim=20.5";
-    char* write_hpd[] = { "write", hpd, "--no-wait" };
-    char* write_low[] = { "write", low, "--no-wait" };
-    char* curve_set[] = { "curve", "set", "speed", "--preset", "standard", "--no-wait" };
-    char* curve_reset[] = { "curve", "reset", "all", "--field-map", "--no-wait" };
+    char* write_hpd[] = { "write", hpd };
+    char* write_low[] = { "write", low };
+    char* curve_set[] = { "curve", "set", "speed", "--preset", "standard" };
+    char* curve_reset[] = { "curve", "reset", "all", "--field-map" };
     switch (which) {
-    case 0: return run_writable(cmd_write, 3, write_hpd);
-    case 1: return run_writable(cmd_write, 3, write_low);
-    case 2: return run_writable(cmd_curve, 6, curve_set);
-    default: return run_writable(cmd_curve, 5, curve_reset);
+    case 0: return run_writable(cmd_write, 2, write_hpd);
+    case 1: return run_writable(cmd_write, 2, write_low);
+    case 2: return run_writable(cmd_curve, 5, curve_set);
+    default: return run_writable(cmd_curve, 4, curve_reset);
     }
 }
 
@@ -1366,15 +1366,15 @@ static int test_settings_writes_send_no_reset_after_failure(void)
 
 static int test_linearization_and_field_map_curves_do_not_reset(void)
 {
-    char* lin[] = { "curve", "set", "linearization", "--preset", "linear", "--no-wait" };
+    char* lin[] = { "curve", "set", "linearization", "--preset", "linear" };
     char a[] = "0,10", b[] = "375,5", c[] = "750,1";
-    char* field[] = { "curve", "set", "field", a, b, c, "--field-map", "--no-wait" };
+    char* field[] = { "curve", "set", "field", a, b, c, "--field-map" };
     writable_device_reset();
-    ASSERT_EQ(run_writable(cmd_curve, 6, lin), 0);
+    ASSERT_EQ(run_writable(cmd_curve, 5, lin), 0);
     ASSERT_EQ(device.erases, 1);
     ASSERT_EQ(device.resets, 0);
     writable_device_reset();
-    ASSERT_EQ(run_writable(cmd_curve, 8, field), 0);
+    ASSERT_EQ(run_writable(cmd_curve, 7, field), 0);
     ASSERT_EQ(device.erases, 1);
     ASSERT_EQ(device.resets, 0);
     return 0;
@@ -1522,15 +1522,15 @@ static int test_fan_test_requires_keyswitch_and_writes_once(void)
 
 static int test_clear_autocal_sends_one_reset_after_clear(void)
 {
-    char* argv[] = { "clear-autocal", "--no-wait" };
+    char* argv[] = { "clear-autocal" };
     writable_device_reset();
-    ASSERT_EQ(run_writable(cmd_clear_autocal, 2, argv), 0);
+    ASSERT_EQ(run_writable(cmd_clear_autocal, 1, argv), 0);
     ASSERT_EQ(device.backup_clears, 1);
     ASSERT_EQ(device.resets, 1);
     ASSERT_EQ(device.mutations, 2);
     writable_device_reset();
     device.fail_read_at = 1; /* Backup write acknowledgement fails. */
-    ASSERT_EQ(run_writable(cmd_clear_autocal, 2, argv), 1);
+    ASSERT_EQ(run_writable(cmd_clear_autocal, 1, argv), 1);
     ASSERT_EQ(device.backup_clears, 1);
     ASSERT_EQ(device.resets, 0);
     return 0;
@@ -1539,17 +1539,14 @@ static int test_clear_autocal_sends_one_reset_after_clear(void)
 static int test_reset_wait_timeout_does_not_resend_reset(void)
 {
     char* argv[] = { "reset" };
-    char* quick[] = { "reset", "--no-wait" };
-    for (int wait = 0; wait <= 1; wait++) {
-        writable_device_reset();
-        reconnect_waits = 0;
-        reconnect_succeeds = false;
-        ASSERT_EQ(run_writable(cmd_reset, wait ? 1 : 2, wait ? argv : quick), 0);
-        ASSERT_EQ(reconnect_waits, wait);
-        if (wait) ASSERT_EQ(reconnect_timeout, 7500);
-        ASSERT_EQ(device.resets, 1);
-        ASSERT_EQ(device.mutations, 1);
-    }
+    writable_device_reset();
+    reconnect_waits = 0;
+    reconnect_succeeds = false;
+    ASSERT_EQ(run_writable(cmd_reset, 1, argv), 0);
+    ASSERT_EQ(reconnect_waits, 1);
+    ASSERT_EQ(reconnect_timeout, 7500);
+    ASSERT_EQ(device.resets, 1);
+    ASSERT_EQ(device.mutations, 1);
     return 0;
 }
 
@@ -1889,8 +1886,8 @@ static int test_throttle_set_curve_and_label_in_one_batch(void)
 {
     writable_device_reset();
     set_page_bytes("Throttle_Type", "\3", 1);
-    char* select[] = { "throttle", "set", "club car iq/i2 (mcor)", "--no-wait" };
-    ASSERT_EQ(run_writable(cmd_throttle, 4, select), 0);
+    char* select[] = { "throttle", "set", "club car iq/i2 (mcor)" };
+    ASSERT_EQ(run_writable(cmd_throttle, 3, select), 0);
     ASSERT_EQ(device.erases, 1);
     ASSERT_EQ(device.backup_clears, 1);
     ASSERT_EQ(device.resets, 1);
@@ -1901,15 +1898,15 @@ static int test_throttle_set_curve_and_label_in_one_batch(void)
     ASSERT_EQ(get_le16(device.page + 0x104), 3276); /* Type 5: 80% */
     ASSERT_EQ(get_le16(device.page + 0x124), 4095);
 
-    char* same[] = { "throttle", "set", "--no-wait", "Yamaha G19" };
+    char* same[] = { "throttle", "set", "Yamaha G19" };
     device.page[0x104] = 123;
     device.page[0x105] = 0;
-    ASSERT_EQ(run_writable(cmd_throttle, 4, same), 0);
+    ASSERT_EQ(run_writable(cmd_throttle, 3, same), 0);
     ASSERT_MEM_EQ(device.page + 0xC0, "Yamaha G19/G22  ", 16);
     ASSERT_EQ(get_le16(device.page + 0x104), 123);
 
-    char* force[] = { "throttle", "set", "--default-curve", "Yamaha G19/G22", "--no-wait" };
-    ASSERT_EQ(run_writable(cmd_throttle, 5, force), 0);
+    char* force[] = { "throttle", "set", "--default-curve", "Yamaha G19/G22" };
+    ASSERT_EQ(run_writable(cmd_throttle, 4, force), 0);
     ASSERT_EQ(get_le16(device.page + 0x104), 3276);
     return 0;
 }
@@ -1921,8 +1918,8 @@ static int test_throttle_set_preserves_factory_curve_on_recovery(void)
     device.page[0xA0] = 3;
     device.factory[0xA0] = 5;
     device.factory[0x104] = 123;
-    char* argv[] = { "throttle", "set", "Yamaha G19/G22", "--no-wait" };
-    ASSERT_EQ(run_writable(cmd_throttle, 4, argv), 0);
+    char* argv[] = { "throttle", "set", "Yamaha G19/G22" };
+    ASSERT_EQ(run_writable(cmd_throttle, 3, argv), 0);
     ASSERT_EQ(device.erases, 2);
     ASSERT_EQ(get_le16(device.page + 0x104), 123);
     ASSERT_EQ(device.resets, 1);
@@ -1938,8 +1935,8 @@ static int test_throttle_set_uses_type_specific_preset(void)
     };
     for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
         writable_device_reset();
-        char* argv[] = { "throttle", "set", cases[i].label, "--no-wait" };
-        ASSERT_EQ(run_writable(cmd_throttle, 4, argv), 0);
+        char* argv[] = { "throttle", "set", cases[i].label };
+        ASSERT_EQ(run_writable(cmd_throttle, 3, argv), 0);
         ASSERT_EQ(get_le16(device.page + 0x102), cases[i].x1);
         ASSERT_EQ(get_le16(device.page + 0x104), cases[i].x2);
         ASSERT_EQ(get_le16(device.page + 0x124), cases[i].y2);
@@ -1952,8 +1949,8 @@ static int test_throttle_set_no_hpd_turns_hpd_off(void)
     char out[256];
     writable_device_reset();
     set_page_bytes("HPD", "\1", 1);
-    char* argv[] = { "throttle", "set", "0-5V", "--no-hpd", "--no-wait" };
-    ASSERT_EQ(run_writable(cmd_throttle, 5, argv), 0);
+    char* argv[] = { "throttle", "set", "0-5V", "--no-hpd" };
+    ASSERT_EQ(run_writable(cmd_throttle, 4, argv), 0);
     ASSERT_EQ(device.page[0xA0], 3);
     ASSERT_EQ(device.page[0xA4], 0);
 
@@ -1972,13 +1969,13 @@ static int test_throttle_set_keeps_absolute_curve(void)
     set_page_bytes("Throttle_Type", "\13", 1);
     device.page[0x104] = 123;
     device.page[0x105] = 0;
-    char* force[] = { "throttle", "set", "Absolute", "--default-curve", "--no-wait" };
-    ASSERT_EQ(run_cli_output(cmd_throttle, 5, force, out, sizeof(out)), 1);
+    char* force[] = { "throttle", "set", "Absolute", "--default-curve" };
+    ASSERT_EQ(run_cli_output(cmd_throttle, 4, force, out, sizeof(out)), 1);
     ASSERT_TRUE(strstr(out, "--default-curve is not available") != NULL);
     ASSERT_EQ(device.mutations, 0);
 
-    char* same[] = { "throttle", "set", "Absolute", "--no-wait" };
-    ASSERT_EQ(run_cli_output(cmd_throttle, 4, same, out, sizeof(out)), 0);
+    char* same[] = { "throttle", "set", "Absolute" };
+    ASSERT_EQ(run_cli_output(cmd_throttle, 3, same, out, sizeof(out)), 0);
     ASSERT_TRUE(strstr(out, "Set throttle to Absolute (11), HPD on") != NULL);
     ASSERT_EQ(get_le16(device.page + 0x104), 123);
     return 0;
@@ -1992,8 +1989,8 @@ static int test_throttle_set_disables_hpd_for_pump_and_usb(void)
         set_page_bytes("Throttle_Type", "\3", 1);
         set_page_bytes("HPD", "\1", 1);
         set_page_bytes("ABS_Lo_Throt_Min", "\x34\x02", 2);
-        char* argv[] = { "throttle", "set", labels[i], "--no-wait" };
-        ASSERT_EQ(run_writable(cmd_throttle, 4, argv), 0);
+        char* argv[] = { "throttle", "set", labels[i] };
+        ASSERT_EQ(run_writable(cmd_throttle, 3, argv), 0);
         ASSERT_EQ(device.page[0xA0], 9 + i);
         ASSERT_EQ(device.page[0xA4], i == 2);
         ASSERT_EQ(get_le16(device.page + 0xAA), 0x0234);
@@ -2003,22 +2000,22 @@ static int test_throttle_set_disables_hpd_for_pump_and_usb(void)
     return 0;
 }
 
-static int test_restore_defaults_cli_keep_flags_and_no_wait(void)
+static int test_restore_defaults_cli_keep_flags(void)
 {
-    char* argv[] = { "restore-defaults", "--keep-field-map", "--no-wait", "--keep-throttle" };
+    char* argv[] = { "restore-defaults", "--keep-field-map", "--keep-throttle" };
     writable_device_reset();
     set_page_bytes("Throttle_Type", "\3", 1);
     set_page_bytes("F_Table_Name", "KEPT", 4);
     set_page_bytes("HPD", "\1", 1);
     reconnect_waits = 0;
-    ASSERT_EQ(run_writable(cmd_restore_defaults, 4, argv), 0);
+    ASSERT_EQ(run_writable(cmd_restore_defaults, 3, argv), 0);
     ASSERT_EQ(device.page[0xA0], 3);
     ASSERT_MEM_EQ(device.page + 0x200, "KEPT", 4);
     ASSERT_EQ(device.page[0xA4], 0);
     ASSERT_EQ(device.erases, 1);
     ASSERT_EQ(device.backup_clears, 1);
     ASSERT_EQ(device.resets, 1);
-    ASSERT_EQ(reconnect_waits, 0);
+    ASSERT_EQ(reconnect_waits, 1);
 
     char* extra[] = { "restore-defaults", "unexpected", "--keep-throttle" };
     ASSERT_EQ(run_writable(cmd_restore_defaults, 3, extra), 1);
@@ -2324,8 +2321,8 @@ static int test_field_map_install_writes_named_map_and_pole_count(void)
         uint8_t expected[VARSET_SIZE];
         memcpy(expected, device.page, sizeof(expected));
         expected_map_page(expected, cases[i].map, cases[i].turbo, 1);
-        const char* args[] = { "install", cases[i].name, "--field-map", "--no-wait" };
-        ASSERT_EQ(run_map_command(map_file_text, args, 4, out, sizeof(out)), 0);
+        const char* args[] = { "install", cases[i].name, "--field-map" };
+        ASSERT_EQ(run_map_command(map_file_text, args, 3, out, sizeof(out)), 0);
         ASSERT_EQ(device.erases, 1);
         ASSERT_EQ(device.resets, 1);  /* Tach_4_8 reboots the controller */
         ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
@@ -2676,8 +2673,8 @@ static int test_setting_write_wire_sequence(void)
     ASSERT_EQ(alltrax_encode_var(var, 20.1, expected + (var->address - VARSET_ADDR)), 2);
 
     char setting[] = "LoBat_Vlim=20.1";
-    char* argv[] = { "write", setting, "--no-wait" };
-    ASSERT_EQ(run_writable(cmd_write, 3, argv), 0);
+    char* argv[] = { "write", setting };
+    ASSERT_EQ(run_writable(cmd_write, 2, argv), 0);
     ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
     begin_script();
     expect_settings_write(expected);
@@ -2692,8 +2689,8 @@ static int test_reset_trigger_write_wire_sequence(void)
     memcpy(expected, device.page, sizeof(expected));
 
     char speed[] = "Speed_Limit_On=0", tach[] = "Tach_4_8=0";
-    char* argv[] = { "write", speed, tach, "--no-wait" };
-    ASSERT_EQ(run_writable(cmd_write, 4, argv), 0);
+    char* argv[] = { "write", speed, tach };
+    ASSERT_EQ(run_writable(cmd_write, 3, argv), 0);
     ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
     begin_script();
     expect_settings_write(expected);
@@ -2704,8 +2701,8 @@ static int test_reset_trigger_write_wire_sequence(void)
 static int run_throttle_select(char* label, const uint8_t expected[VARSET_SIZE])
 {
     device.wire_count = 0;
-    char* argv[] = { "throttle", "set", label, "--no-wait" };
-    ASSERT_EQ(run_writable(cmd_throttle, 4, argv), 0);
+    char* argv[] = { "throttle", "set", label };
+    ASSERT_EQ(run_writable(cmd_throttle, 3, argv), 0);
     ASSERT_MEM_EQ(device.page, expected, VARSET_SIZE);
     begin_script();
     expect_settings_write(expected);
@@ -2747,8 +2744,8 @@ static int test_throttle_default_curve_without_hpd_wire_sequence(void)
     memcpy(expected + 0xC0, "EZGO ITS", 8);
     put_curve(expected, "linearization", linear_x, linear_y, 4);
 
-    char* argv[] = { "throttle", "set", "EZGO ITS", "--no-hpd", "--default-curve", "--no-wait" };
-    ASSERT_EQ(run_writable(cmd_throttle, 6, argv), 0);
+    char* argv[] = { "throttle", "set", "EZGO ITS", "--no-hpd", "--default-curve" };
+    ASSERT_EQ(run_writable(cmd_throttle, 5, argv), 0);
     ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
     begin_script();
     expect_settings_write(expected);
@@ -2768,8 +2765,8 @@ static int test_restore_defaults_wire_sequence(void)
     memcpy(expected, device.factory, sizeof(expected));
 
     /* The throttle type and HPD do not change, so calibration is kept. */
-    char* argv[] = { "restore-defaults", "--no-wait" };
-    ASSERT_EQ(run_writable(cmd_restore_defaults, 2, argv), 0);
+    char* argv[] = { "restore-defaults" };
+    ASSERT_EQ(run_writable(cmd_restore_defaults, 1, argv), 0);
     ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
     begin_script();
     expect_page_cycle(expected);
@@ -2836,8 +2833,8 @@ static int test_monitor_throttle_view_read_blocks(void)
 static int run_config_load_file(const char* path)
 {
     device.wire_count = 0;
-    char* argv[] = { "config", "load", "--key", "none", (char*)path, "--no-wait" };
-    return run_writable(cmd_config, 6, argv);
+    char* argv[] = { "config", "load", "--key", "none", (char*)path };
+    return run_writable(cmd_config, 5, argv);
 }
 
 static int test_config_load_wire_sequence(void)
@@ -2952,7 +2949,6 @@ static int run_curve_points(char* type, const char* const* points, size_t n, boo
         argv[argc++] = text[i];
     }
     if (bypass) argv[argc++] = "--debug-no-rules";
-    argv[argc++] = "--no-wait";
     writable_device_reset();
     return run_writable(cmd_curve, argc, argv);
 }
@@ -2997,7 +2993,6 @@ static int run_rule_write(const char* a, const char* b, bool bypass)
         argv[argc++] = text[i];
     }
     if (bypass) argv[argc++] = "--debug-no-rules";
-    argv[argc++] = "--no-wait";
     return run_writable(cmd_write, argc, argv);
 }
 
@@ -3046,7 +3041,6 @@ static int run_write_args(const char* const* args, size_t n, bool bypass)
         argv[argc++] = text[i];
     }
     if (bypass) argv[argc++] = "--debug-no-rules";
-    argv[argc++] = "--no-wait";
     return run_writable(cmd_write, argc, argv);
 }
 
@@ -3167,8 +3161,8 @@ static int test_throttle_type_rules_use_hardware_mask(void)
         device.page[0xA0] = 4;
         device.filter_throttles = true;
         device.throttle_mask = 0x7FF & ~(1u << 3);
-        char* argv[] = { "restore-defaults", "--keep-throttle", "--no-wait", "--debug-no-rules" };
-        ASSERT_EQ(run_writable(cmd_restore_defaults, bypass ? 4 : 3, argv), bypass ? 0 : 1);
+        char* argv[] = { "restore-defaults", "--keep-throttle", "--debug-no-rules" };
+        ASSERT_EQ(run_writable(cmd_restore_defaults, bypass ? 3 : 2, argv), bypass ? 0 : 1);
         ASSERT_EQ(device.mutations ? 1 : 0, bypass ? 1 : 0);
     }
     return 0;
@@ -3241,7 +3235,7 @@ int main(void)
     RUN_TEST(test_fan_test_requires_keyswitch_and_writes_once);
     RUN_TEST(test_clear_autocal_sends_one_reset_after_clear);
     RUN_TEST(test_reset_wait_timeout_does_not_resend_reset);
-    RUN_TEST(test_restore_defaults_cli_keep_flags_and_no_wait);
+    RUN_TEST(test_restore_defaults_cli_keep_flags);
     RUN_TEST(test_throttle_list_filters_by_model_and_mask);
     RUN_TEST(test_field_map_history_command);
     RUN_TEST(test_monitor_display_gates_live_samples);

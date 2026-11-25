@@ -20,8 +20,6 @@ static const struct {
       "Write to firmware V0.001-V5.999 not yet validated for writes" },
     { "--field-map", CLI_OPT_FIELD_MAP, NULL,
       "Allow writing field-map data (must match the installed motor)" },
-    { "--no-wait", CLI_OPT_NO_WAIT, NULL,
-      "Return after sending the reset command" },
     { "--key", CLI_OPT_KEY, "<key>",
       "File key: auto (default), none for an unencrypted file, or <48 hex>:<16 hex>" },
     { "--factory", CLI_OPT_FACTORY, NULL,
@@ -106,8 +104,7 @@ void cli_wait_for_reconnect(alltrax_controller* ctrl)
                 RECONNECT_TIMEOUT_MS / 1000.0);
 }
 
-void cli_report_write(alltrax_controller* ctrl, const alltrax_write_report* report,
-    const cli_flags* flags)
+void cli_report_write(alltrax_controller* ctrl, const alltrax_write_report* report)
 {
     if (report->factory_restored)
         fprintf(stderr, "User settings were invalid; factory settings were "
@@ -116,8 +113,7 @@ void cli_report_write(alltrax_controller* ctrl, const alltrax_write_report* repo
         printf("Cleared throttle auto-calibration\n");
     if (report->reset_sent) {
         printf("Device reset sent (controller will reboot)\n");
-        if (!flags->no_wait)
-            cli_wait_for_reconnect(ctrl);
+        cli_wait_for_reconnect(ctrl);
     }
 }
 
@@ -180,7 +176,6 @@ int cli_parse_args(int argc, char** argv, const char* command,
         switch (bit) {
         case CLI_OPT_ALLOW_UNVALIDATED: flags->allow_unvalidated_firmware = true; break;
         case CLI_OPT_FIELD_MAP:         flags->field_map = true; break;
-        case CLI_OPT_NO_WAIT:           flags->no_wait = true; break;
         case CLI_OPT_FACTORY:           flags->factory = true; break;
         case CLI_OPT_PLOT:              flags->plot = true; break;
         case CLI_OPT_KEEP_THROTTLE:     flags->keep_throttle = true; break;

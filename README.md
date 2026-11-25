@@ -64,9 +64,9 @@ Alltrax Controller Monitor
 | `alltrax devices` | List responsive controllers by HID path, model, and serial number |
 | `alltrax get [--factory] [var...]` | Read settings (all or by name) |
 | `alltrax write var=value [...]` | Write settings |
-| `alltrax reset [--no-wait]` | Reboot controller and wait for it to reconnect |
-| `alltrax clear-autocal [--no-wait]` | Clear learned throttle calibration and reboot |
-| `alltrax restore-defaults [--keep-throttle] [--keep-field-map] [--no-wait]` | Restore factory settings and reboot |
+| `alltrax reset` | Reboot controller and wait for it to reconnect |
+| `alltrax clear-autocal` | Clear learned throttle calibration and reboot |
+| `alltrax restore-defaults [--keep-throttle] [--keep-field-map]` | Restore factory settings and reboot |
 | `alltrax fan-test` | Start a timed fan test with the keyswitch on |
 | `alltrax monitor [--rate <ms>] [--log <file.csv>]` | Live controller readings (Ctrl+C to stop) |
 | `alltrax monitor --throttle` | Live throttle readings (Ctrl+C to stop) |
@@ -113,7 +113,7 @@ alltrax get LoBat_Vlim
 alltrax get --factory LoBat_Vlim
 alltrax fan-test
 alltrax clear-autocal
-alltrax reset --no-wait
+alltrax reset
 ```
 
 Use the HID path from `devices` with the global `--device` option to select
@@ -124,8 +124,8 @@ fails if the factory page is invalid.
 `fan-test` requires the keyswitch (KSI) to be on. The firmware ends the
 test automatically. `clear-autocal` clears learned throttle calibration
 and sends one reset. `clear-autocal`, `reset`, and any write command that
-resets the controller wait up to 7.5 seconds for it to reconnect. Use
-`--no-wait` to return after sending the reset. If USB passthrough leaves the device node stale, the command
+resets the controller wait up to 7.5 seconds for it to reconnect, so a
+following command finds it ready. If USB passthrough leaves the device node stale, the command
 reports a warning and exits successfully after the reset was sent. Unplug
 and reconnect the USB cable to restore access in that case.
 
@@ -147,7 +147,7 @@ one verified page write. Throttle auto-calibration is cleared when the throttle
 type or HPD changes, and with `--keep-throttle`.
 
 The command updates the field-map date and sends one reset on success.
-Use `--no-wait` to return after sending it. Before using the controller,
+Before using the controller,
 check that the field map matches the installed motor and that the speed
 sensor pole count is correct.
 
@@ -189,7 +189,7 @@ throttle that is already selected always keeps its curve, so
 
 The command turns high pedal disable (HPD) on unless you pass `--no-hpd`.
 HPD is always off for Pump and USB, and `--no-hpd` is refused for them.
-The command clears learned throttle calibration and sends one reset. Use `--no-wait` to return after the reset is sent. For an absolute
+The command clears learned throttle calibration and sends one reset. For an absolute
 throttle, verify its calibration before operating the controller.
 
 ### Write examples
@@ -271,7 +271,6 @@ requested changes, and reports the recovery.
 |--------|--------|
 | `--allow-unvalidated-firmware` | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | Allow writing field-map data (see [Field maps](#field-maps)) |
-| `--no-wait` | Return after a reset instead of waiting for the controller to reconnect |
 
 Debug bypasses are listed under [Debug and development options](#debug-and-development-options).
 
@@ -405,7 +404,6 @@ text of `config save` and `config load` shows whether a key is built in.
 | `--key auto\|<key>:<iv>\|none` | save, load | Encryption key, or plain XML with `none` |
 | `--allow-unvalidated-firmware` | load | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | load | Also write the file's field-map entries |
-| `--no-wait` | load | Return after a reset without waiting for reconnect |
 
 ### Curve tables
 
@@ -517,7 +515,6 @@ cause the import to fail.
 | `--plot` | get | ASCII chart instead of table |
 | `--allow-unvalidated-firmware` | set, reset | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | set, reset | Allow writing the `field` and `genfield` curves |
-| `--no-wait` | set, reset | Return after a reset without waiting for reconnect |
 
 ### Debug and development options
 

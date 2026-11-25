@@ -24,26 +24,24 @@ typedef uint64_t cli_option_mask;
 /* Writes: firmware policy and field-map confirmation */
 #define CLI_OPT_ALLOW_UNVALIDATED   (UINT64_C(1) << 0)
 #define CLI_OPT_FIELD_MAP           (UINT64_C(1) << 1)
-/* After a write or reset command reboots the controller */
-#define CLI_OPT_NO_WAIT             (UINT64_C(1) << 2)
 /* File encryption keys */
-#define CLI_OPT_KEY                 (UINT64_C(1) << 3)  /* takes a value */
+#define CLI_OPT_KEY                 (UINT64_C(1) << 2)  /* takes a value */
 /* get */
-#define CLI_OPT_FACTORY             (UINT64_C(1) << 4)
+#define CLI_OPT_FACTORY             (UINT64_C(1) << 3)
 /* curve */
-#define CLI_OPT_FILE                (UINT64_C(1) << 5)  /* takes a value */
-#define CLI_OPT_PRESET              (UINT64_C(1) << 6)  /* takes a value */
-#define CLI_OPT_PLOT                (UINT64_C(1) << 7)
+#define CLI_OPT_FILE                (UINT64_C(1) << 4)  /* takes a value */
+#define CLI_OPT_PRESET              (UINT64_C(1) << 5)  /* takes a value */
+#define CLI_OPT_PLOT                (UINT64_C(1) << 6)
 /* restore-defaults */
-#define CLI_OPT_KEEP_THROTTLE       (UINT64_C(1) << 8)
-#define CLI_OPT_KEEP_FIELD_MAP      (UINT64_C(1) << 9)
+#define CLI_OPT_KEEP_THROTTLE       (UINT64_C(1) << 7)
+#define CLI_OPT_KEEP_FIELD_MAP      (UINT64_C(1) << 8)
 /* throttle set */
-#define CLI_OPT_DEFAULT_CURVE       (UINT64_C(1) << 10)
-#define CLI_OPT_NO_HPD              (UINT64_C(1) << 11)
+#define CLI_OPT_DEFAULT_CURVE       (UINT64_C(1) << 9)
+#define CLI_OPT_NO_HPD              (UINT64_C(1) << 10)
 /* monitor */
-#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 12) /* takes a value */
-#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 13) /* takes a value */
-#define CLI_OPT_MONITOR_THROTTLE    (UINT64_C(1) << 14)
+#define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 11) /* takes a value */
+#define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 12) /* takes a value */
+#define CLI_OPT_MONITOR_THROTTLE    (UINT64_C(1) << 13)
 
 /* Bits 32–63 are reserved for debug and development bypasses, in write
  * sequence order. */
@@ -53,7 +51,7 @@ typedef uint64_t cli_option_mask;
 #define CLI_OPT_DEBUG_NO_POST_WRITE (UINT64_C(1) << 35)
 
 /* Options accepted by every command that writes settings */
-#define CLI_OPTS_WRITE (CLI_OPT_ALLOW_UNVALIDATED | CLI_OPT_NO_WAIT | \
+#define CLI_OPTS_WRITE (CLI_OPT_ALLOW_UNVALIDATED | \
     CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | \
     CLI_OPT_DEBUG_NO_POST_WRITE)
 
@@ -62,7 +60,6 @@ typedef struct {
     bool allow_unvalidated_firmware;
     bool field_map;
     bool plot;
-    bool no_wait;
     bool factory;
     bool keep_throttle;
     bool keep_field_map;
@@ -157,9 +154,8 @@ alltrax_write_opts cli_write_opts(const cli_flags* flags,
     alltrax_write_report* report);
 
 /* Print the actions a write performed besides writing its batch, and wait
- * for the controller to reconnect after a reset unless --no-wait. */
-void cli_report_write(alltrax_controller* ctrl, const alltrax_write_report* report,
-    const cli_flags* flags);
+ * for the controller to reconnect after a reset. */
+void cli_report_write(alltrax_controller* ctrl, const alltrax_write_report* report);
 
 /* Wait for the controller to reconnect after a reset, printing the outcome. */
 void cli_wait_for_reconnect(alltrax_controller* ctrl);
