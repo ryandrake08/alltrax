@@ -20,8 +20,6 @@ static const struct {
       "Write to firmware V0.001-V5.999 not yet validated for writes" },
     { "--field-map", CLI_OPT_FIELD_MAP, NULL,
       "Allow writing field-map data (must match the installed motor)" },
-    { "--reset", CLI_OPT_RESET, NULL,
-      "Reboot the controller after writing" },
     { "--no-wait", CLI_OPT_NO_WAIT, NULL,
       "Return after sending the reset command" },
     { "--key", CLI_OPT_KEY, "<key>",
@@ -131,7 +129,6 @@ alltrax_write_opts cli_write_opts(const cli_flags* flags,
         .skip_verify = flags->debug_no_verify,
         .skip_post_write = flags->debug_no_post_write,
         .skip_fw_check = flags->allow_unvalidated_firmware,
-        .reset_after_write = flags->reset,
         .report = report,
     };
 }
@@ -183,7 +180,6 @@ int cli_parse_args(int argc, char** argv, const char* command,
         switch (bit) {
         case CLI_OPT_ALLOW_UNVALIDATED: flags->allow_unvalidated_firmware = true; break;
         case CLI_OPT_FIELD_MAP:         flags->field_map = true; break;
-        case CLI_OPT_RESET:             flags->reset = true; break;
         case CLI_OPT_NO_WAIT:           flags->no_wait = true; break;
         case CLI_OPT_FACTORY:           flags->factory = true; break;
         case CLI_OPT_PLOT:              flags->plot = true; break;

@@ -854,20 +854,33 @@ static alltrax_error stamp_field_map_date(alltrax_controller* ctrl)
     return write_memory(ctrl, ADDR_FIELD_MAP_DATE, payload, sizeof(payload));
 }
 
+/* Settings-page items other than the linearization curve and field-map data
+ * (the Field variables and the field and genfield curves). */
+static bool requests_reset(const alltrax_assignment* item)
+{
+    if (item->curve)
+        return strcmp(item->curve->name, "linearization") != 0 &&
+               strcmp(item->curve->name, "field") != 0 &&
+               strcmp(item->curve->name, "genfield") != 0;
+    size_t count;
+    const alltrax_var_def* field = alltrax_get_var_defs(ALLTRAX_VARS_FIELD, &count);
+    bool field_var = item->var >= field && item->var < field + count;
+    return item->var->is_flash && !field_var;
+}
+
 static alltrax_error post_write(alltrax_controller* ctrl,
     const alltrax_assignment* items, size_t count, const alltrax_write_opts* opts,
     alltrax_write_report* report)
 {
-    bool clear_autocal = false, stamp_date = false;
-    bool reset = opts->reset_after_write;
+    bool clear_autocal = false, stamp_date = false, reset = false;
     if (!opts->skip_post_write) {
+        reset = report->factory_restored;
         for (size_t i = 0; i < count; i++) {
+            reset |= requests_reset(&items[i]);
             if (!items[i].var) continue;
             const char* name = items[i].var->name;
             if (!strcmp(name, "Throttle_Type") || !strcmp(name, "HPD"))
                 clear_autocal = true;
-            if (!strcmp(name, "Speed_Limit_On") || !strcmp(name, "Tach_4_8"))
-                reset = true;
             if (!strcmp(name, "F_Table_Name"))
                 stamp_date = true;
         }
@@ -882,7 +895,6 @@ static alltrax_error post_write(alltrax_controller* ctrl,
         alltrax_error rc = clear_backup_ram(ctrl);
         if (rc) return post_write_error(ctrl, rc, "clearing throttle auto-calibration");
         report->autocal_cleared = true;
-        reset = true;
     }
     if (!reset)
         return ALLTRAX_OK;

@@ -368,7 +368,6 @@ typedef struct {
     /* User options */
     bool skip_fw_check;      /* Allow unvalidated firmware within V0.001-V5.999 */
     bool skip_post_write;    /* Debug bypass: skip automatic calibration clear, date stamp and reset */
-    bool reset_after_write;  /* Send one reset after success, even with skip_post_write */
     alltrax_write_report* report;  /* Optional; cleared, then filled by writes */
 } alltrax_write_opts;
 
@@ -466,10 +465,12 @@ typedef struct {
  * are checked against the catalog only: callers apply any limits based on
  * the controller's rating, hardware or other settings.
  * After successful writes and RUN cleanup, F_Table_Name stamps FieldMap_Date,
- * Throttle_Type or HPD clears throttle auto-calibration and requests a reset,
- * and Speed_Limit_On or Tach_4_8 requests a reset. Triggering depends on
- * presence in the batch. Automatic and explicit reset requests share one
- * reset command. A post-write failure is reported after settings were written. */
+ * Throttle_Type or HPD clears throttle auto-calibration, and one reset is
+ * sent after any settings-page write except a batch that writes only the
+ * linearization curve and field-map data (Field variables, field and genfield
+ * curves). A factory recovery always resets. Triggering depends on presence
+ * in the batch, not on changed values. A post-write failure is reported after
+ * settings were written. */
 alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
     const alltrax_assignment* items, size_t count,
     const alltrax_write_opts* opts);

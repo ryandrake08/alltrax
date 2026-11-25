@@ -526,9 +526,9 @@ static int test_invalid_throttle_config_rejected_before_transport(void)
 static int test_options_accepted_before_and_after_positionals(void)
 {
     const cli_option_mask allowed = CLI_OPT_DEBUG_NO_CAL | CLI_OPT_ALLOW_UNVALIDATED |
-                                    CLI_OPT_RESET | CLI_OPT_FILE;
+                                    CLI_OPT_NO_WAIT | CLI_OPT_FILE;
     char* argv[] = {
-        "set", "--reset", "linearization", "--debug-no-cal", "-1,0",
+        "set", "--no-wait", "linearization", "--debug-no-cal", "-1,0",
         "--file", "lin.csv", "-", "--allow-unvalidated-firmware",
     };
     cli_flags flags;
@@ -536,7 +536,7 @@ static int test_options_accepted_before_and_after_positionals(void)
     ASSERT_STR_EQ(argv[1], "linearization");
     ASSERT_STR_EQ(argv[2], "-1,0");
     ASSERT_STR_EQ(argv[3], "-");
-    ASSERT_TRUE(flags.reset);
+    ASSERT_TRUE(flags.no_wait);
     ASSERT_TRUE(flags.debug_no_cal);
     ASSERT_TRUE(flags.allow_unvalidated_firmware);
     ASSERT_FALSE(flags.debug_no_verify);
@@ -547,15 +547,15 @@ static int test_options_accepted_before_and_after_positionals(void)
 
 static int test_invalid_options_and_argument_counts_rejected(void)
 {
-    const cli_option_mask allowed = CLI_OPT_RESET | CLI_OPT_FILE;
+    const cli_option_mask allowed = CLI_OPT_NO_WAIT | CLI_OPT_FILE;
     struct { int argc; char* argv[5]; int min, max; } bad[] = {
         { 2, { "cmd", "--bogus" }, 0, -1 },            /* unknown */
         { 2, { "cmd", "--debug-no-cal" }, 0, -1 },     /* not accepted */
         { 2, { "cmd", "--file" }, 0, -1 },             /* missing value */
-        { 3, { "cmd", "--file", "--reset" }, 0, -1 },  /* option as value */
+        { 3, { "cmd", "--file", "--no-wait" }, 0, -1 }, /* option as value */
         { 5, { "cmd", "--file", "a", "--file", "b" }, 0, -1 }, /* repeated */
         { 3, { "cmd", "one", "two" }, 1, 1 },          /* extra */
-        { 2, { "cmd", "--reset" }, 1, 1 },             /* missing */
+        { 2, { "cmd", "--no-wait" }, 1, 1 },           /* missing */
         { 2, { "cmd", "--" }, 0, -1 },                 /* bare -- */
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -599,7 +599,7 @@ static int test_bad_command_options_rejected_before_open(void)
         { 4, { "curve", "reset", "linearization", "--bogus" } },
         { 4, { "curve", "reset", "linearization", "--plot" } },
         { 4, { "curve", "get", "linearization", "extra" } },
-        { 4, { "curve", "diff", "linearization", "--reset" } },
+        { 4, { "curve", "diff", "linearization", "--no-wait" } },
         { 3, { "curve", "list", "extra" } },
     };
     for (size_t i = 0; i < sizeof(bad) / sizeof(bad[0]); i++) {
@@ -609,7 +609,7 @@ static int test_bad_command_options_rejected_before_open(void)
         ASSERT_EQ(transport_calls, 0);
     }
     char* reset_extra[] = { "reset", "extra" };
-    char* reset_bogus[] = { "reset", "--reset" };
+    char* reset_bogus[] = { "reset", "--plot" };
     char assign[] = "HPD=1";
     char* write_bogus[] = { "write", assign, "--plot" };
     open_calls = 0;
@@ -1184,7 +1184,7 @@ static int test_config_round_trip_restores_strings_in_one_erase(void)
     return 0;
 }
 
-static int test_config_load_reset_flag_sends_one_reset(void)
+static int test_config_load_sends_one_reset_after_success(void)
 {
     for (int fail = 0; fail <= 1; fail++) {
         writable_device_reset();
@@ -1194,7 +1194,7 @@ static int test_config_load_reset_flag_sends_one_reset(void)
         if (fail)
             device.fact_goodset = 0xFFFF;
         device.erases = device.resets = 0;
-        char* argv[] = { "config", "load", "--key", "none", path, "--reset" };
+        char* argv[] = { "config", "load", "--key", "none", path, "--no-wait" };
         int rc = run_writable(cmd_config, 6, argv);
         remove(path);
         ASSERT_EQ(rc, fail ? 1 : 0);
@@ -1322,23 +1322,23 @@ static int test_curve_reset_read_failure_writes_nothing(void)
     return 0;
 }
 
-/* Run one of the --reset command lines below against the writable device. */
+/* Run one of the settings writes below against the writable device. */
 static int run_reset_case(int which)
 {
-    char hpd[] = "HPD=1";
-    char* write_before[] = { "write", "--reset", hpd };
-    char* write_after[] = { "write", hpd, "--reset" };
-    char* curve_set[] = { "curve", "set", "linearization", "--preset", "linear", "--reset" };
-    char* curve_reset[] = { "curve", "reset", "all", "--reset", "--field-map" };
+    char hpd[] = "HPD=1", low[] = "LoBat_Vlim=20.5";
+    char* write_hpd[] = { "write", hpd, "--no-wait" };
+    char* write_low[] = { "write", low, "--no-wait" };
+    char* curve_set[] = { "curve", "set", "speed", "--preset", "standard", "--no-wait" };
+    char* curve_reset[] = { "curve", "reset", "all", "--field-map", "--no-wait" };
     switch (which) {
-    case 0: return run_writable(cmd_write, 3, write_before);
-    case 1: return run_writable(cmd_write, 3, write_after);
+    case 0: return run_writable(cmd_write, 3, write_hpd);
+    case 1: return run_writable(cmd_write, 3, write_low);
     case 2: return run_writable(cmd_curve, 6, curve_set);
     default: return run_writable(cmd_curve, 5, curve_reset);
     }
 }
 
-static int test_reset_flag_sends_one_reset_after_success(void)
+static int test_settings_writes_send_one_reset_after_success(void)
 {
     for (int which = 0; which < 4; which++) {
         writable_device_reset();
@@ -1350,7 +1350,7 @@ static int test_reset_flag_sends_one_reset_after_success(void)
     return 0;
 }
 
-static int test_reset_flag_sends_no_reset_after_failure(void)
+static int test_settings_writes_send_no_reset_after_failure(void)
 {
     for (int which = 0; which < 4; which++) {
         /* Invalid factory settings fail writes; a failed read fails curve reset. */
@@ -1361,6 +1361,22 @@ static int test_reset_flag_sends_no_reset_after_failure(void)
         ASSERT_EQ(device.erases, 0);
         ASSERT_EQ(device.resets, 0);
     }
+    return 0;
+}
+
+static int test_linearization_and_field_map_curves_do_not_reset(void)
+{
+    char* lin[] = { "curve", "set", "linearization", "--preset", "linear", "--no-wait" };
+    char a[] = "0,10", b[] = "375,5", c[] = "750,1";
+    char* field[] = { "curve", "set", "field", a, b, c, "--field-map", "--no-wait" };
+    writable_device_reset();
+    ASSERT_EQ(run_writable(cmd_curve, 6, lin), 0);
+    ASSERT_EQ(device.erases, 1);
+    ASSERT_EQ(device.resets, 0);
+    writable_device_reset();
+    ASSERT_EQ(run_writable(cmd_curve, 8, field), 0);
+    ASSERT_EQ(device.erases, 1);
+    ASSERT_EQ(device.resets, 0);
     return 0;
 }
 
@@ -1873,8 +1889,8 @@ static int test_throttle_set_curve_and_label_in_one_batch(void)
 {
     writable_device_reset();
     set_page_bytes("Throttle_Type", "\3", 1);
-    char* select[] = { "throttle", "set", "club car iq/i2 (mcor)", "--reset", "--no-wait" };
-    ASSERT_EQ(run_writable(cmd_throttle, 5, select), 0);
+    char* select[] = { "throttle", "set", "club car iq/i2 (mcor)", "--no-wait" };
+    ASSERT_EQ(run_writable(cmd_throttle, 4, select), 0);
     ASSERT_EQ(device.erases, 1);
     ASSERT_EQ(device.backup_clears, 1);
     ASSERT_EQ(device.resets, 1);
@@ -2660,11 +2676,12 @@ static int test_setting_write_wire_sequence(void)
     ASSERT_EQ(alltrax_encode_var(var, 20.1, expected + (var->address - VARSET_ADDR)), 2);
 
     char setting[] = "LoBat_Vlim=20.1";
-    char* argv[] = { "write", setting };
-    ASSERT_EQ(run_writable(cmd_write, 2, argv), 0);
+    char* argv[] = { "write", setting, "--no-wait" };
+    ASSERT_EQ(run_writable(cmd_write, 3, argv), 0);
     ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
     begin_script();
     expect_settings_write(expected);
+    expect_reset();
     return check_wire(true);
 }
 
@@ -2875,7 +2892,8 @@ static const char throttle_node_linearization[] =
     "  </Node-Throttle>\n</XCT>\n";
 
 /* Files holding only throttle entries write just those entries. Only the
- * file with the throttle type and HPD clears calibration and resets. */
+ * file with the throttle type and HPD clears calibration; a linearization-only
+ * file does not reset. */
 static int test_throttle_only_config_files_wire_sequences(void)
 {
     const uint16_t speed_x[] = { 0, 100, 2000, 4095 }, speed_y[] = { 0, 0, 2048, 4095 };
@@ -2910,10 +2928,10 @@ static int test_throttle_only_config_files_wire_sequences(void)
         ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
         begin_script();
         expect_settings_write(expected);
-        if (cases[i].selection) {
+        if (cases[i].selection)
             expect_backup_clear();
+        if (cases[i].selection || cases[i].curves)
             expect_reset();
-        }
         if (check_wire(true)) return 1;
     }
     return 0;
@@ -3212,8 +3230,9 @@ int main(void)
     RUN_TEST(test_write_command_writes_strings_and_numbers_in_one_batch);
     RUN_TEST(test_curve_reset_restores_in_one_erase);
     RUN_TEST(test_curve_reset_read_failure_writes_nothing);
-    RUN_TEST(test_reset_flag_sends_one_reset_after_success);
-    RUN_TEST(test_reset_flag_sends_no_reset_after_failure);
+    RUN_TEST(test_settings_writes_send_one_reset_after_success);
+    RUN_TEST(test_settings_writes_send_no_reset_after_failure);
+    RUN_TEST(test_linearization_and_field_map_curves_do_not_reset);
     RUN_TEST(test_get_prints_full_integer_range);
     RUN_TEST(test_get_keeps_scaled_formatting);
     RUN_TEST(test_get_profile_current_shows_amps_and_signed_percent);
@@ -3280,7 +3299,7 @@ int main(void)
     RUN_TEST(test_config_save_write_failure_keeps_device_paths);
     RUN_TEST(test_config_round_trip_restores_strings_in_one_erase);
     RUN_TEST(test_config_load_rejects_invalid_strings_before_open);
-    RUN_TEST(test_config_load_reset_flag_sends_one_reset);
+    RUN_TEST(test_config_load_sends_one_reset_after_success);
     RUN_TEST(test_config_load_skips_field_map_without_flag);
     RUN_TEST(test_config_load_fails_closed_on_bad_values);
     RUN_TEST(test_config_save_writes_only_settings_in_toolkit_nodes);

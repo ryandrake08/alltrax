@@ -1739,18 +1739,51 @@ static int test_post_write_actions_and_single_reset(void)
         }
     }
     for (int bypass = 0; bypass <= 1; bypass++) {
-        for (int explicit_reset = 0; explicit_reset <= 1; explicit_reset++) {
-            mock_reset();
-            const alltrax_write_opts opts = {
-                .reset_after_write = explicit_reset != 0,
-                .skip_post_write = bypass != 0,
-            };
-            ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items,
-                sizeof(items) / sizeof(items[0]), &opts), ALLTRAX_OK);
-            ASSERT_EQ(mock.resets, !bypass || explicit_reset);
-            ASSERT_STR_EQ(mock.post_order, !bypass ? "RDCX" :
-                          explicit_reset ? "RX" : "R");
-        }
+        mock_reset();
+        const alltrax_write_opts opts = { .skip_post_write = bypass != 0 };
+        ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items,
+            sizeof(items) / sizeof(items[0]), &opts), ALLTRAX_OK);
+        ASSERT_EQ(mock.resets, !bypass);
+        ASSERT_STR_EQ(mock.post_order, bypass ? "R" : "RDCX");
+    }
+    return 0;
+}
+
+/* Settings-page writes reset, except batches of only the linearization curve
+ * and field-map data. RAM writes do not reset; a factory recovery does. */
+static int test_reset_follows_settings_page_writes(void)
+{
+    const alltrax_curve_def* lin = alltrax_find_curve("linearization");
+    const alltrax_curve_def* speed = alltrax_find_curve("speed");
+    const alltrax_curve_def* field = alltrax_find_curve("field");
+    alltrax_curve_data lin_data = { .def = lin }, speed_data = { .def = speed };
+    alltrax_curve_data field_data = { .def = field };
+    const alltrax_assignment low = { .var = alltrax_find_var("LoBat_Vlim"), .number = 28 };
+    const alltrax_assignment fan = { .var = alltrax_find_var("Fan_On"), .number = 1 };
+    const alltrax_assignment weaken = {
+        .var = alltrax_find_var("Reverse_Field_Weaken_Percent"), .number = 90,
+    };
+    const alltrax_assignment lin_item = { .curve = lin, .curve_data = &lin_data };
+    const alltrax_assignment speed_item = { .curve = speed, .curve_data = &speed_data };
+    const alltrax_assignment field_item = { .curve = field, .curve_data = &field_data };
+    const struct { alltrax_assignment items[3]; size_t count; bool invalid; bool reset; } cases[] = {
+        { { low }, 1, false, true },
+        { { speed_item }, 1, false, true },
+        { { lin_item }, 1, false, false },
+        { { lin_item, field_item, weaken }, 3, false, false },
+        { { lin_item, low }, 2, false, true },
+        { { fan }, 1, false, false },
+        { { lin_item }, 1, true, true },  /* Factory recovery */
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        mock_reset();
+        if (cases[i].invalid) mock.page[0] = mock.page[1] = 0xFF;
+        alltrax_write_report report;
+        const alltrax_write_opts opts = { .report = &report };
+        ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, cases[i].items, cases[i].count, &opts),
+                  ALLTRAX_OK);
+        ASSERT_EQ(report.reset_sent, cases[i].reset);
+        ASSERT_EQ(mock.resets, cases[i].reset ? 1u : 0u);
     }
     return 0;
 }
@@ -1930,6 +1963,7 @@ int main(void)
     RUN_TEST(test_goodset_recovery_copies_factory_before_patching);
     RUN_TEST(test_invalid_factory_blocks_flash_writes_before_cal);
     RUN_TEST(test_post_write_actions_and_single_reset);
+    RUN_TEST(test_reset_follows_settings_page_writes);
     RUN_TEST(test_restore_defaults_copies_factory_page_and_resets);
     RUN_TEST(test_restore_defaults_preserves_selected_settings);
     RUN_TEST(test_restore_defaults_uses_original_revision_for_legacy_fixups);

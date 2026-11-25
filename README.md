@@ -198,11 +198,8 @@ throttle, verify its calibration before operating the controller.
 variable may appear once per batch.
 
 ```sh
-# Write a single FLASH setting
+# Write a single FLASH setting (the controller reboots to apply it)
 alltrax write LoBat_Vlim=28.1
-
-# Write and reboot so firmware reloads from FLASH immediately
-alltrax write --reset LoBat_Vlim=28.1
 
 # Batch write — multiple settings in one FLASH page cycle
 alltrax write LoBat_Vlim=28.1 HiBat_Vlim=61.0
@@ -227,8 +224,15 @@ Quote string values that contain spaces. Strings accept printable ASCII up
 to the field size and ignore trailing spaces.
 
 `write` validates the batch against the controller's hardware, firmware, and
-batch values before making changes. Some settings trigger a reset automatically, even when the
-assigned value is unchanged. Adding `--reset` still sends only one reset.
+batch values before making changes.
+
+After writing to the settings page, the command reboots the controller once
+so the firmware loads the new settings. A batch that writes only the
+linearization curve and field-map data (the Field settings and the `field`
+and `genfield` curves) does not reboot. RAM writes (such as `Fan_On`) take
+effect immediately and do not reboot. The rule depends on which settings are
+in the batch, not on whether their values change. Use `alltrax reset` to
+reboot at another time.
 See the [variable reference](#variable-reference) for units, limits, and
 side effects.
 The command prints each action it performed, such as "Cleared throttle
@@ -267,7 +271,6 @@ requested changes, and reports the recovery.
 |--------|--------|
 | `--allow-unvalidated-firmware` | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | Allow writing field-map data (see [Field maps](#field-maps)) |
-| `--reset` | Reboot controller after a successful write |
 | `--no-wait` | Return after a reset instead of waiting for the controller to reconnect |
 
 Debug bypasses are listed under [Debug and development options](#debug-and-development-options).
@@ -355,8 +358,8 @@ alltrax config save --key none settings.xml
 # Load settings from file and write to controller
 alltrax config load settings.txt
 
-# Load plain XML and reboot controller after writing
-alltrax config load --key none --reset settings.xml
+# Load plain XML
+alltrax config load --key none settings.xml
 ```
 
 `config save` writes every writable setting and curve, including the field
@@ -402,7 +405,6 @@ text of `config save` and `config load` shows whether a key is built in.
 | `--key auto\|<key>:<iv>\|none` | save, load | Encryption key, or plain XML with `none` |
 | `--allow-unvalidated-firmware` | load | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | load | Also write the file's field-map entries |
-| `--reset` | load | Reboot controller after write |
 | `--no-wait` | load | Return after a reset without waiting for reconnect |
 
 ### Curve tables
@@ -464,8 +466,8 @@ alltrax curve set linearization --file lin.csv
 alltrax curve set linearization --preset 0-5k-2wire
 alltrax curve set torque --preset standard
 
-# Write with device reboot
-alltrax curve set linearization --reset --file lin.csv
+# Write from a CSV file
+alltrax curve set linearization --file lin.csv
 
 # Compare user curve to factory defaults (differences marked with *)
 alltrax curve diff linearization
@@ -477,12 +479,14 @@ alltrax curve diff all
 alltrax curve reset linearization
 
 # Reset all curves to factory defaults (includes the field map)
-alltrax curve reset all --reset --field-map
+alltrax curve reset all --field-map
 ```
 
 `curve reset` reads every selected factory curve first, then writes them all
 in one batch (one settings page erase), so a failed read changes nothing.
 Writing the `field` or `genfield` curve requires `--field-map`.
+Writing the `speed` or `torque` curve reboots the controller once afterwards;
+writing only the `linearization`, `field` or `genfield` curves does not.
 
 **CSV format:** One `x, y` pair per line. Lines starting with `#` are comments.
 Blank lines are ignored. Up to 16 points; if fewer are provided, the remaining
@@ -513,7 +517,6 @@ cause the import to fail.
 | `--plot` | get | ASCII chart instead of table |
 | `--allow-unvalidated-firmware` | set, reset | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--field-map` | set, reset | Allow writing the `field` and `genfield` curves |
-| `--reset` | set, reset | Reboot controller after write |
 | `--no-wait` | set, reset | Return after a reset without waiting for reconnect |
 
 ### Debug and development options
@@ -527,7 +530,7 @@ tool, not for normal use, and are listed separately in every usage message.
 | `--debug-no-rules` | `write`, `curve set`, `config load`, `field-map install`, `field-map upgrade`, `restore-defaults` | [Value rules](#value-rules) |
 | `--debug-no-cal` | write commands | CAL/RUN mode bracket |
 | `--debug-no-verify` | write commands | FLASH read-back verification |
-| `--debug-no-post-write` | write commands | Automatic calibration clear, date stamp and reset. An explicit `--reset` still applies. |
+| `--debug-no-post-write` | write commands | Automatic calibration clear, date stamp and reset |
 
 The write commands are `write`, `config load`, `curve set`, and `curve reset`.
 
@@ -955,7 +958,6 @@ Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
 | `skip_cal` | Debug bypass: skip the CAL/RUN bracket |
 | `skip_verify` | Debug bypass: skip read-back verification (FLASH only) |
 | `skip_post_write` | Debug bypass: skip automatic calibration clear, date stamp and reset |
-| `reset_after_write` | Request one reset after a successful write |
 | `report` | Optional `alltrax_write_report*`, cleared and then filled with the actions the write performed: `factory_restored`, `autocal_cleared`, `date_stamped`, `reset_sent`. Each flag is set once its action succeeded, so a failed write still reports what ran. |
 
 Each variable or curve may appear once per batch; repeated or overlapping
@@ -964,6 +966,12 @@ checks values against the catalog only. Limits that depend on the
 controller's rating, hardware or other settings (rated-voltage ranges, voltage
 order, the throttle types the hardware allows) are applied by the CLI's
 [value rules](#value-rules).
+
+After a successful write, the library stamps FieldMap_Date when the batch
+contains `F_Table_Name`, clears throttle auto-calibration when it contains
+`Throttle_Type` or `HPD`, and sends one reset after any settings-page write
+except a batch of only the linearization curve and field-map data. A factory
+recovery always resets. `skip_post_write` skips all three.
 
 **RAM variables** (`is_flash=false`) take effect immediately but are not
 persistent across power cycles.
@@ -1202,8 +1210,9 @@ alltrax_error alltrax_clear_autocal(alltrax_controller* ctrl,
 Sends a reset command. Reset follows the write firmware policy; `opts` may be
 `NULL`, and only `skip_fw_check` is used. The controller reboots immediately (USB disconnects).
 The handle can no longer communicate with it; close it after an optional
-`alltrax_wait_for_reconnect()`. Use a reset after FLASH writes to make new
-settings take effect without a power cycle. `alltrax_clear_autocal()` clears
+`alltrax_wait_for_reconnect()`. Settings writes reset automatically (see
+`alltrax_write_assignments()`); a separate reset reloads settings at another
+time. `alltrax_clear_autocal()` clears
 the throttle backup registers before issuing the reset. If the reset fails
 after the clear, the learned values may already be gone. Both calls read the
 controller's model and serial number, send the reset report, and return.
@@ -1328,8 +1337,7 @@ nonzero type to be allowed by the controller's hardware mask. On older
 hardware without a programmed mask, the fallback allows every type except
 EZGO ITS. Type 0 (None) is always allowed and does not require a mask read.
 
-Writing `Throttle_Type` or `HPD` clears the learned throttle calibration
-and reboots the controller.
+Writing `Throttle_Type` or `HPD` clears the learned throttle calibration.
 
 | Value | Type |
 |-------|------|
@@ -1384,8 +1392,6 @@ Speed sensor settings and their read-only factory copies.
 | `Tach_4_8` | Speed sensor type: No = 4-pole, Yes = 8-pole | bool |
 | `F_Speed_Limit_On` | Speed limiting enabled (factory) | bool |
 | `F_Tach_4_8` | Speed sensor type (factory) | bool |
-
-Writing `Speed_Limit_On` or `Tach_4_8` reboots the controller.
 
 #### Field
 
