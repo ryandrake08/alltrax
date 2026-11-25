@@ -1,10 +1,12 @@
 /*
  * args.c — Shared command-line option parsing
  */
+#define _POSIX_C_SOURCE 200809L
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include "cli.h"
 
 bool cli_ignore_fw_bounds = false;
@@ -36,6 +38,8 @@ static const struct {
       "Full monitor polling interval: 100, 1000, or 3000 (default 100)" },
     { "--log", CLI_OPT_MONITOR_LOG, "<file.csv>",
       "Append full monitor samples to a CSV file" },
+    { "--watch", CLI_OPT_WATCH, "<ms>",
+      "Read again every <ms> milliseconds until Ctrl+C" },
     { "--debug-no-rules", CLI_OPT_DEBUG_NO_RULES, NULL,
       "Skip the value rules for settings and curves" },
     { "--debug-no-cal", CLI_OPT_DEBUG_NO_CAL, NULL,
@@ -151,6 +155,7 @@ int cli_parse_args(int argc, char** argv, const char* command,
                            : bit == CLI_OPT_PRESET ? &flags->preset
                            : bit == CLI_OPT_MONITOR_RATE ? &flags->monitor_rate
                            : bit == CLI_OPT_MONITOR_LOG ? &flags->monitor_log
+                           : bit == CLI_OPT_WATCH ? &flags->watch
                            : NULL;
         if (value) {
             if (i + 1 >= argc || strncmp(argv[i + 1], "--", 2) == 0) {
@@ -271,4 +276,16 @@ void cli_print_key_status(FILE* out, const char* what, const char* env,
     fprintf(out, "\nEncrypted %s files: unavailable (built without libcrypto). "
             "Use --key none.\n", what);
 #endif
+}
+
+void cli_wait_interval(const struct timespec* start, int interval_ms)
+{
+    struct timespec now;
+    if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) return;
+    int64_t elapsed = (int64_t)(now.tv_sec - start->tv_sec) * 1000000000 +
+                      now.tv_nsec - start->tv_nsec;
+    int64_t remaining = (int64_t)interval_ms * 1000000 - elapsed;
+    if (remaining > 0)
+        nanosleep(&(struct timespec){ (time_t)(remaining / 1000000000),
+                                      (long)(remaining % 1000000000) }, NULL);
 }

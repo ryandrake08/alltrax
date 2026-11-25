@@ -554,6 +554,28 @@ tool, not for normal use, and are listed separately in every usage message.
 
 The write commands are `write`, `config load`, `curve set`, and `curve reset`.
 
+`alltrax debug-read <address> [length]` prints a hex dump of controller
+memory. It opens the controller read-only and never writes. Reads are limited
+to RAM (0x20000000-0x2000FFFF), FLASH (0x08000000-0x0801FFFF) and the backup
+registers (0x40006C00-0x40006C13); other addresses are refused before the
+device is opened, because reading some peripheral registers changes their
+state and reading an unmapped address faults the controller. The length
+defaults to 4 bytes, at most 2048. Numbers are decimal or 0x-prefixed
+hexadecimal. A 2- or 4-byte read also prints its little-endian value.
+`--watch <ms>` (100-60000) keeps the device open and reads again at that
+interval until Ctrl+C, starting each line with the seconds since the first
+read.
+
+```sh
+alltrax debug-read 0x40006C00 20
+alltrax debug-read 0x40006C10 --watch 1000
+```
+
+```
+0x40006C00  00 00 00 00 00 00 00 00 78 05 00 00 d6 06 00 00
+0x40006C10  23 08 00 00
+```
+
 ## Building
 
 ### Dependencies
@@ -929,6 +951,23 @@ for (size_t i = 0; i < count; i++)
 alltrax_var_value vals[64];
 alltrax_read_vars(ctrl, ptrs, count, vals);
 ```
+
+### Raw memory reads
+
+```c
+#define ALLTRAX_READ_MEMORY_MAX 2048
+bool alltrax_memory_readable(uint32_t address, size_t length);
+alltrax_error alltrax_read_memory(alltrax_controller* ctrl, uint32_t address,
+    size_t length, uint8_t* out);
+```
+
+For debugging. `alltrax_memory_readable()` performs no I/O and is true when
+`length` bytes (1 to `ALLTRAX_READ_MEMORY_MAX`) at `address` lie within RAM
+0x20000000-0x2000FFFF, FLASH 0x08000000-0x0801FFFF, or the backup registers
+0x40006C00-0x40006C13. `alltrax_read_memory()` reads such a span into `out`,
+subject to the normal firmware read bounds, and returns
+`ALLTRAX_ERR_INVALID_ARG` before any I/O for any other span or a NULL `out`.
+There is no raw write.
 
 ### Writing variables
 

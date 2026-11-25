@@ -1470,6 +1470,28 @@ alltrax_error alltrax_read_field_map_history(alltrax_controller* ctrl,
     return ALLTRAX_OK;
 }
 
+bool alltrax_memory_readable(uint32_t address, size_t length)
+{
+    return length <= ALLTRAX_READ_MEMORY_MAX &&
+           (address_span_fits(address, length, RAM_BASE, RAM_END - RAM_BASE) ||
+            address_span_fits(address, length, FLASH_BASE, FLASH_END - FLASH_BASE) ||
+            address_span_fits(address, length, ADDR_BACKUP_RAM, BACKUP_RAM_SIZE));
+}
+
+alltrax_error alltrax_read_memory(alltrax_controller* ctrl, uint32_t address,
+    size_t length, uint8_t* out)
+{
+    if (!out) return ALLTRAX_ERR_INVALID_ARG;
+    alltrax_error rc = require_readable_firmware(ctrl);
+    if (rc) return rc;
+    if (!alltrax_memory_readable(address, length)) {
+        set_error_detail(ctrl, "Cannot read %zu bytes at 0x%08X: reads are limited "
+                         "to RAM, FLASH and the backup registers", length, address);
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+    return read_memory_range(ctrl, address, length, out);
+}
+
 /* ------------------------------------------------------------------ */
 /* Monitoring                                                          */
 /* ------------------------------------------------------------------ */

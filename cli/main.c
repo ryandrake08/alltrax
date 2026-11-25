@@ -48,6 +48,7 @@ static void print_usage(void)
         "\n"
         "Debug and development (bypasses safety checks):\n"
         "  --debug-ignore-fw-bounds  Read firmware outside V0.001-V5.999\n"
+        "  debug-read <addr> [len]   Hex dump of RAM, FLASH or backup registers (--watch <ms>)\n"
         "\n"
         "Commands:\n"
         "  info              Controller identity and firmware\n"
@@ -138,6 +139,8 @@ int main(int argc, char** argv)
     }
     else if (strcmp(cmd, "curve") == 0)
         rc = cmd_curve(sub_argc, sub_argv);
+    else if (strcmp(cmd, "debug-read") == 0)
+        rc = cmd_debug_read(sub_argc, sub_argv);
     else if (strcmp(cmd, "throttle") == 0)
         rc = cmd_throttle(sub_argc, sub_argv);
     else if (strcmp(cmd, "field-map") == 0)

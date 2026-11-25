@@ -520,6 +520,26 @@ alltrax_error alltrax_read_field_map_history(alltrax_controller* ctrl,
     alltrax_field_map_history* out);
 
 /* ------------------------------------------------------------------ */
+/* Raw memory reads (debugging)                                        */
+/* ------------------------------------------------------------------ */
+
+#define ALLTRAX_READ_MEMORY_MAX 2048
+
+/* True when length bytes at address (1 to ALLTRAX_READ_MEMORY_MAX) lie
+ * within one region alltrax_read_memory() reads: RAM 0x20000000-0x2000FFFF,
+ * FLASH 0x08000000-0x0801FFFF, or the backup registers 0x40006C00-0x40006C13.
+ * Other addresses are refused because reading some peripheral registers
+ * changes their state and reading an unmapped address faults the
+ * controller. Performs no I/O. */
+bool alltrax_memory_readable(uint32_t address, size_t length);
+
+/* Read length bytes at address into out, subject to the normal firmware
+ * read bounds. Returns ALLTRAX_ERR_INVALID_ARG before any I/O when
+ * alltrax_memory_readable() is false or out is NULL. */
+alltrax_error alltrax_read_memory(alltrax_controller* ctrl, uint32_t address,
+    size_t length, uint8_t* out);
+
+/* ------------------------------------------------------------------ */
 /* Monitoring                                                          */
 /* ------------------------------------------------------------------ */
 

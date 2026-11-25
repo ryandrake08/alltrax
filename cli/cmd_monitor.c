@@ -318,17 +318,6 @@ static alltrax_error print_throttle(alltrax_controller* ctrl, bool interactive)
     return ALLTRAX_OK;
 }
 
-static void wait_for_tick(const struct timespec* start, int rate)
-{
-    struct timespec now;
-    if (!running || clock_gettime(CLOCK_MONOTONIC, &now) != 0) return;
-    int64_t elapsed = (int64_t)(now.tv_sec - start->tv_sec) * 1000000000 +
-                      now.tv_nsec - start->tv_nsec;
-    int64_t remaining = (int64_t)rate * 1000000 - elapsed;
-    if (remaining > 0)
-        nanosleep(&(struct timespec){ (time_t)(remaining / 1000000000),
-                                      (long)(remaining % 1000000000) }, NULL);
-}
 
 int cmd_monitor(int argc, char** argv)
 {
@@ -429,7 +418,7 @@ int cmd_monitor(int argc, char** argv)
             break;
         }
         fflush(stdout);
-        wait_for_tick(&start, rate);
+        cli_wait_interval(&start, rate);
     }
 
     if (!running) {

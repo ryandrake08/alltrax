@@ -1248,6 +1248,51 @@ static int test_field_map_history_refuses_unsupported_controllers(void)
     return 0;
 }
 
+static int test_read_memory_reads_ram_flash_and_backup_registers(void)
+{
+    mock_reset();
+    for (size_t i = 0; i < sizeof(mock.factory); i++)
+        mock.factory[i] = (uint8_t)(i * 7);
+    static uint8_t page[FLASH_PAGE_SIZE];
+    ASSERT_EQ(alltrax_read_memory(&mock.ctrl, FACTSET_ADDR, sizeof(page), page), ALLTRAX_OK);
+    ASSERT_MEM_EQ(page, mock.factory, sizeof(page));
+
+    memcpy(mock.ram_tail, "\x01\x02\x03\x04", 4);
+    uint8_t word[4];
+    ASSERT_EQ(alltrax_read_memory(&mock.ctrl, RAM_END - 4, 4, word), ALLTRAX_OK);
+    ASSERT_MEM_EQ(word, mock.ram_tail, 4);
+
+    uint8_t backup[20];
+    ASSERT_EQ(alltrax_read_memory(&mock.ctrl, 0x40006C00, sizeof(backup), backup), ALLTRAX_OK);
+    return 0;
+}
+
+static int test_read_memory_refuses_other_addresses_before_io(void)
+{
+    const struct { uint32_t address; size_t length; } cases[] = {
+        { 0x40006C00, 21 }, { 0x40006C14, 1 },   /* Past the backup registers */
+        { 0x40013804, 1 }, { 0x40012400, 4 },    /* Other peripheral registers */
+        { RAM_END - 2, 4 }, { FLASH_END - 1, 2 }, /* Spans that leave a region */
+        { 0x1FFFF000, 1 }, { 0, 1 }, { 0xFFFFFFFF, 1 },
+        { RAM_BASE, 0 }, { RAM_BASE, 2049 },
+    };
+    uint8_t buf[2049];
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        mock_reset();
+        ASSERT_FALSE(alltrax_memory_readable(cases[i].address, cases[i].length));
+        unsigned requests = mock.requests;
+        ASSERT_EQ(alltrax_read_memory(&mock.ctrl, cases[i].address, cases[i].length, buf),
+                  ALLTRAX_ERR_INVALID_ARG);
+        ASSERT_EQ(mock.requests, requests);
+    }
+    ASSERT_TRUE(alltrax_memory_readable(RAM_BASE, 2048));
+    ASSERT_TRUE(alltrax_memory_readable(FLASH_END - 2048, 2048));
+    ASSERT_TRUE(alltrax_memory_readable(0x40006C10, 4));
+    mock_reset();
+    ASSERT_EQ(alltrax_read_memory(&mock.ctrl, RAM_BASE, 4, NULL), ALLTRAX_ERR_INVALID_ARG);
+    return 0;
+}
+
 static int test_field_map_history_read_failure_leaves_output_unchanged(void)
 {
     mock_reset();
@@ -1930,6 +1975,8 @@ int main(void)
     RUN_TEST(test_info_reports_policy_and_refreshes_revisions);
     RUN_TEST(test_field_map_history_parses_data_page);
     RUN_TEST(test_field_map_history_refuses_unsupported_controllers);
+    RUN_TEST(test_read_memory_reads_ram_flash_and_backup_registers);
+    RUN_TEST(test_read_memory_refuses_other_addresses_before_io);
     RUN_TEST(test_field_map_history_read_failure_leaves_output_unchanged);
     RUN_TEST(test_monitor_reads_user_profile_and_inputs);
     RUN_TEST(test_string_writes_are_space_padded);

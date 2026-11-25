@@ -1480,6 +1480,68 @@ static int test_write_reports_field_map_date_stamp(void)
     return 0;
 }
 
+static int test_debug_read_rejects_bad_arguments_before_open(void)
+{
+    char* cases[][5] = {
+        { "debug-read" },
+        { "debug-read", "0x40013804" },       /* Peripheral register */
+        { "debug-read", "0x2000FFFE", "4" },  /* Leaves RAM */
+        { "debug-read", "0x20000000", "0" },
+        { "debug-read", "0x20000000", "2049" },
+        { "debug-read", "0x20000000", "4x" },
+        { "debug-read", "zz" },
+        { "debug-read", "-1" },
+        { "debug-read", "0x120000000" },
+        { "debug-read", "0x20000000", "4", "--watch", "50" },
+        { "debug-read", "0x20000000", "4", "--watch", "fast" },
+    };
+    for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
+        int argc = 0;
+        while (argc < 5 && cases[i][argc]) argc++;
+        writable_device_reset();
+        ASSERT_EQ(run_writable(cmd_debug_read, argc, cases[i]), 1);
+        ASSERT_EQ(open_calls, 0);
+    }
+    return 0;
+}
+
+static int test_debug_read_prints_bytes_and_value(void)
+{
+    static char out[4096];
+    char* word[] = { "debug-read", "0x20000100" };
+    writable_device_reset();
+    device.value_addr = 0x20000100;
+    device.value = 0x12345678;
+    ASSERT_EQ(run_cli_output(cmd_debug_read, 2, word, out, sizeof(out)), 0);
+    ASSERT_STR_EQ(out, "0x20000100  78 56 34 12  (u32 305419896)\n");
+
+    char* backup[] = { "debug-read", "0x40006C00", "20" };
+    writable_device_reset();
+    ASSERT_EQ(run_cli_output(cmd_debug_read, 3, backup, out, sizeof(out)), 0);
+    ASSERT_STR_EQ(out,
+        "0x40006C00  00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00\n"
+        "0x40006C10  00 00 00 00\n");
+    return 0;
+}
+
+static int test_debug_read_watch_repeats_until_stopped(void)
+{
+    static char out[4096];
+    char* argv[] = { "debug-read", "0x20000100", "2", "--watch", "100" };
+    writable_device_reset();
+    device.monitor_stop_addr = 0x20000100;
+    device.samples_left = 2;
+    ASSERT_EQ(run_cli_output(cmd_debug_read, 5, argv, out, sizeof(out)), 0);
+    size_t samples = 0;
+    for (const char* p = out; (p = strstr(p, "0x20000100  00 00  (u16 0)\n")); p++)
+        samples++;
+    ASSERT_EQ(samples, 2);
+    ASSERT_TRUE(strstr(out, " s  0x20000100") != NULL);
+    ASSERT_TRUE(strstr(out, "Stopped.\n") != NULL);
+    ASSERT_EQ(device.mutations, 0);
+    return 0;
+}
+
 static int test_get_rejects_unknown_names_before_open(void)
 {
     char* argv[] = { "get", "LoBat_Vlim", "NoSuchVar", "HiBat_Vlim" };
@@ -3257,6 +3319,9 @@ int main(void)
     RUN_TEST(test_get_profile_current_shows_amps_and_signed_percent);
     RUN_TEST(test_write_reports_field_map_date_stamp);
     RUN_TEST(test_get_rejects_unknown_names_before_open);
+    RUN_TEST(test_debug_read_rejects_bad_arguments_before_open);
+    RUN_TEST(test_debug_read_prints_bytes_and_value);
+    RUN_TEST(test_debug_read_watch_repeats_until_stopped);
     RUN_TEST(test_get_lists_settings_without_factory_copies);
     RUN_TEST(test_get_reports_goodset_and_reads_factory);
     RUN_TEST(test_fan_test_requires_keyswitch_and_writes_once);

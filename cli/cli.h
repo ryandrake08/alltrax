@@ -9,6 +9,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <time.h>
 
 /* Global --device path (NULL = auto-detect) */
 extern const char* cli_device_path;
@@ -36,6 +37,7 @@ typedef uint64_t cli_option_mask;
 /* monitor */
 #define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 8) /* takes a value */
 #define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 9) /* takes a value */
+#define CLI_OPT_WATCH               (UINT64_C(1) << 10) /* takes a value */
 
 /* Bits 32–63 are reserved for debug and development bypasses, in write
  * sequence order. */
@@ -65,6 +67,7 @@ typedef struct {
     const char* key;     /* --key value, or NULL */
     const char* monitor_rate;
     const char* monitor_log;
+    const char* watch;   /* --watch value, or NULL */
 } cli_flags;
 
 /* A 3DES-CBC key and IV. encrypt is false when files are read and
@@ -138,6 +141,10 @@ int cli_parse_args(int argc, char** argv, const char* command,
 /* Print the options in `allowed`: user options, then debug bypasses under
  * their own heading. */
 void cli_print_options(FILE* out, cli_option_mask allowed);
+
+/* Sleep until interval_ms after start (CLOCK_MONOTONIC); a signal ends the
+ * sleep early. */
+void cli_wait_interval(const struct timespec* start, int interval_ms);
 
 /* Library write options for the parsed flags. report may be NULL. */
 alltrax_write_opts cli_write_opts(const cli_flags* flags,
@@ -221,5 +228,6 @@ int cmd_errors(int argc, char** argv);
 int cmd_config(int argc, char** argv);
 int cmd_curve(int argc, char** argv);
 int cmd_throttle(int argc, char** argv);
+int cmd_debug_read(int argc, char** argv);
 
 #endif /* ALLTRAX_CLI_H */
