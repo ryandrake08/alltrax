@@ -56,6 +56,7 @@ static struct {
     uint8_t read_lens[16];
     size_t read_count;
     size_t stuck_offset;         /* 1-based VARSET offset that stays 0xFF */
+    uint8_t backup_echo_xor[BACKUP_RAM_SIZE];  /* Applied to the backup clear's echo */
 } mock;
 
 static uint32_t request_address(void)
@@ -280,6 +281,9 @@ alltrax_error transport_read(alltrax_controller* ctrl, uint8_t buf[PACKET_SIZE])
     buf[4] = 0x01;
     if (mock.request[0] == 0x02) {
         memcpy(buf + 8, mock.request + 8, buf[1]);
+        if (request_address() == ADDR_BACKUP_RAM && buf[1] == BACKUP_RAM_SIZE)
+            for (size_t i = 0; i < BACKUP_RAM_SIZE; i++)
+                buf[8 + i] ^= mock.backup_echo_xor[i];
         if (request_address() >= VARSET_ADDR &&
             request_address() < VARSET_ADDR + VARSET_SIZE && mock.program_failures) {
             mock.program_failures--;
@@ -1667,6 +1671,22 @@ static int test_restore_defaults_clears_calibration_on_throttle_change(void)
     return 0;
 }
 
+static int test_backup_clear_ignores_the_firmware_updated_word(void)
+{
+    mock_reset();
+    mock.backup_echo_xor[16] = 0xF7;  /* The firmware rewrote 0x40006C10. */
+    mock.backup_echo_xor[17] = 0x07;
+    ASSERT_EQ(alltrax_clear_autocal(&mock.ctrl, NULL), ALLTRAX_OK);
+    ASSERT_EQ(mock.autocal_clears, 1);
+    ASSERT_EQ(mock.resets, 1);
+
+    mock_reset();
+    mock.backup_echo_xor[8] = 1;  /* Throttle minima did not clear. */
+    ASSERT_EQ(alltrax_clear_autocal(&mock.ctrl, NULL), ALLTRAX_ERR_VERIFY);
+    ASSERT_EQ(mock.resets, 0);
+    return 0;
+}
+
 static int test_post_write_actions_and_single_reset(void)
 {
     const alltrax_assignment items[] = {
@@ -1928,6 +1948,7 @@ int main(void)
     RUN_TEST(test_restore_defaults_stops_if_factory_copy_does_not_verify);
     RUN_TEST(test_restore_defaults_cal_failure_leaves_user_page);
     RUN_TEST(test_restore_defaults_clears_calibration_on_throttle_change);
+    RUN_TEST(test_backup_clear_ignores_the_firmware_updated_word);
     RUN_TEST(test_flash_recovery_checks_and_clears_flags);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;

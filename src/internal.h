@@ -111,6 +111,7 @@ struct alltrax_controller {
 #define ADDR_FIELD_MAP_DATE 0x2000F210
 #define ADDR_BACKUP_RAM     0x40006C00
 #define BACKUP_RAM_SIZE     20
+#define BACKUP_RAM_ECHO_CHECKED 16  /* See clear_backup_ram() */
 #define RUN_MODE_RUN   0x00
 #define RUN_MODE_CAL   0xFF
 #define RAM_BASE       0x20000000

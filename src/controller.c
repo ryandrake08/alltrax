@@ -95,8 +95,9 @@ static alltrax_error read_memory_range(alltrax_controller* ctrl, uint32_t addr,
     return ALLTRAX_OK;
 }
 
-static alltrax_error write_memory(alltrax_controller* ctrl, uint32_t addr,
-    const uint8_t* data, size_t len)
+/* Write len bytes and require the echo of the first echo_len to match. */
+static alltrax_error write_memory_echo(alltrax_controller* ctrl, uint32_t addr,
+    const uint8_t* data, size_t len, size_t echo_len)
 {
     if (len < 1 || len > MAX_PAYLOAD) {
         set_error_detail(ctrl, "Write length must be 1-%d, got %zu",
@@ -130,12 +131,18 @@ static alltrax_error write_memory(alltrax_controller* ctrl, uint32_t addr,
         return ALLTRAX_ERR_DEVICE_FAIL;
     }
 
-    if (n != (uint8_t)len || memcmp(echo, data, len) != 0) {
+    if (n != (uint8_t)len || memcmp(echo, data, echo_len) != 0) {
         set_error_detail(ctrl, "Write echo mismatch at 0x%08X", addr);
         return ALLTRAX_ERR_VERIFY;
     }
 
     return ALLTRAX_OK;
+}
+
+static alltrax_error write_memory(alltrax_controller* ctrl, uint32_t addr,
+    const uint8_t* data, size_t len)
+{
+    return write_memory_echo(ctrl, addr, data, len, len);
 }
 
 /* ------------------------------------------------------------------ */
@@ -736,10 +743,18 @@ alltrax_error alltrax_reset_device(alltrax_controller* ctrl,
     return rc;
 }
 
+/* Zero the 20 bytes at 0x40006C00, which include the throttle calibration
+ * registers at 0x40006C08 (minima) and 0x40006C0C (maxima). A write echo is
+ * the controller reading the memory back after the write. The running
+ * firmware keeps rewriting the word at 0x40006C10 (values of 2039-2083 were
+ * seen with the keyswitch on), so its echo can differ from the zeros
+ * written even though the write succeeded. Only the first 16 bytes, which
+ * end with the calibration registers, are compared. */
 static alltrax_error clear_backup_ram(alltrax_controller* ctrl)
 {
     const uint8_t zeros[BACKUP_RAM_SIZE] = {0};
-    return write_memory(ctrl, ADDR_BACKUP_RAM, zeros, sizeof(zeros));
+    return write_memory_echo(ctrl, ADDR_BACKUP_RAM, zeros, sizeof(zeros),
+                             BACKUP_RAM_ECHO_CHECKED);
 }
 
 alltrax_error alltrax_clear_autocal(alltrax_controller* ctrl,
