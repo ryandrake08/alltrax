@@ -1766,11 +1766,13 @@ static int test_monitor_csv_appends_toolkit_layout_with_timestamp(void)
 static int test_monitor_rejects_bad_options_before_open(void)
 {
     char* bad_rate[] = { "monitor", "--rate", "250" };
-    char* throttle_log[] = { "monitor", "--throttle", "--log", "unused.csv" };
+    char* throttle_log[] = { "monitor", "throttle", "--log", "unused.csv" };
     ASSERT_EQ(run_writable(cmd_monitor, 3, bad_rate), 1);
     ASSERT_EQ(open_calls, 0);
+    device.monitor_stop_addr = 0x2000F090;  /* Ends polling if the check is missing. */
     ASSERT_EQ(run_writable(cmd_monitor, 4, throttle_log), 1);
     ASSERT_EQ(open_calls, 0);
+    device.monitor_stop_addr = 0;
     return 0;
 }
 
@@ -2240,12 +2242,12 @@ static int test_field_map_file_errors_stop_before_open(void)
     char bad_key[] = "0123";
     char* no_file[] = { "field-map", "list", missing, "--key", "none" };
     char* key[] = { "field-map", "list", missing, "--key", bad_key };
-    char* usage[] = { "field-map", "install", missing, "--field-map" };
+    char* usage[] = { "field-map", "install", missing };
     ASSERT_EQ(run_writable(cmd_field_map, 5, no_file), 1);
     ASSERT_EQ(open_calls, 0);
     ASSERT_EQ(run_writable(cmd_field_map, 5, key), 1);
     ASSERT_EQ(open_calls, 0);
-    ASSERT_EQ(run_writable(cmd_field_map, 4, usage), 1);
+    ASSERT_EQ(run_writable(cmd_field_map, 3, usage), 1);
     ASSERT_EQ(open_calls, 0);
 
     /* Without "none", a plain file is never read as plain text. */

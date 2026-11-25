@@ -520,7 +520,6 @@ static int do_curve_reset(int argc, char** argv)
         free(items);
         return 1;
     }
-    cli_warn_field_map(items, n);
 
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, true);
@@ -552,6 +551,7 @@ static int do_curve_reset(int argc, char** argv)
         goto done;
     }
 
+    cli_warn_field_map(items, count);
     err = alltrax_write_assignments(ctrl, items, count, &opts);
     if (err) {
         cli_error(ctrl, err, "resetting curves");

@@ -765,7 +765,8 @@ static int do_load(int argc, char** argv)
         fprintf(stderr,
             "Usage: alltrax config load [options] <file>\n"
             "\n"
-            "Field-map entries are skipped unless --field-map is given.\n");
+            "A file with throttle or field-map settings needs --throttle or\n"
+            "--field-map to write them.\n");
         cli_print_options(stderr, LOAD_OPTIONS);
         print_key_status(stderr);
         return 1;
