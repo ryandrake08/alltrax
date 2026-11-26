@@ -2,8 +2,8 @@
  * cmd_config.c — alltrax config save/load: Backup and restore settings
  *
  * Reads/writes XML config files compatible with the Windows Alltrax
- * Toolkit, using libxml2. With OpenSSL libcrypto (ALLTRAX_HAVE_CRYPTO), files
- * can be 3DES-CBC encrypted; without it, only plain XML files are supported.
+ * Toolkit, using libxml2. Files are read and written through file_crypt.h,
+ * which encrypts them when a key is in use.
  */
 
 #define _POSIX_C_SOURCE 200112L
@@ -13,118 +13,11 @@
 #include <math.h>
 #include <inttypes.h>
 #include <errno.h>
-#include <sys/stat.h>
-#ifdef ALLTRAX_HAVE_CRYPTO
-#include <openssl/evp.h>
-#endif
 #include <libxml/parser.h>
 #include <libxml/tree.h>
 #include "cli.h"
-
-/* ------------------------------------------------------------------ */
-/* Built-in 3DES key and IV (make EMBEDDED_KEYS=0 omits them)         */
-/* ------------------------------------------------------------------ */
-
-#ifdef ALLTRAX_EMBEDDED_KEYS
-static const cli_key embedded_config_key = {
-    .encrypt = true,
-    .key = {
-        248, 184, 42, 77, 161, 89, 116, 236, 75, 162,
-        82, 159, 46, 236, 212, 89, 30, 199, 23, 166,
-        168, 153, 90, 182
-    },
-    .iv = {
-        250, 217, 74, 37, 158, 170, 24, 231
-    },
-};
-#define EMBEDDED_CONFIG_KEY (&embedded_config_key)
-#else
-#define EMBEDDED_CONFIG_KEY NULL
-#endif
-
-static int resolve_config_key(const char* command, const cli_flags* flags,
-    cli_key* key)
-{
-    return cli_resolve_key(command, flags->key, "ALLTRAX_CONFIG_KEY",
-                           EMBEDDED_CONFIG_KEY, key);
-}
-
-static void print_key_status(FILE* out)
-{
-    cli_print_key_status(out, "config", "ALLTRAX_CONFIG_KEY", EMBEDDED_CONFIG_KEY);
-}
-
-#ifdef ALLTRAX_HAVE_CRYPTO
-
-/* ------------------------------------------------------------------ */
-/* 3DES-CBC encrypt / decrypt                                          */
-/* ------------------------------------------------------------------ */
-
-static unsigned char* des3_encrypt(const cli_key* key, const char* plain,
-    size_t plain_len, size_t* out_len)
-{
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) return NULL;
-
-    unsigned char* out = malloc(plain_len + 8);  /* +block for padding */
-    if (!out) { EVP_CIPHER_CTX_free(ctx); return NULL; }
-
-    int len = 0, total = 0;
-
-    if (!EVP_EncryptInit_ex(ctx, EVP_des_ede3_cbc(), NULL, key->key, key->iv))
-        goto fail;
-    if (!EVP_EncryptUpdate(ctx, out, &len,
-                         (const unsigned char*)plain, (int)plain_len))
-        goto fail;
-    total = len;
-    if (!EVP_EncryptFinal_ex(ctx, out + total, &len))
-        goto fail;
-    total += len;
-
-    EVP_CIPHER_CTX_free(ctx);
-    *out_len = (size_t)total;
-    return out;
-
-/* OpenSSL failures release both the context and the partial ciphertext. */
-fail:
-    EVP_CIPHER_CTX_free(ctx);
-    free(out);
-    return NULL;
-}
-
-static char* des3_decrypt(const cli_key* key, const unsigned char* cipher,
-    size_t cipher_len, size_t* out_len)
-{
-    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    if (!ctx) return NULL;
-
-    char* out = malloc(cipher_len + 1);
-    if (!out) { EVP_CIPHER_CTX_free(ctx); return NULL; }
-
-    int len = 0, total = 0;
-
-    if (!EVP_DecryptInit_ex(ctx, EVP_des_ede3_cbc(), NULL, key->key, key->iv))
-        goto fail;
-    if (!EVP_DecryptUpdate(ctx, (unsigned char*)out, &len,
-                         cipher, (int)cipher_len))
-        goto fail;
-    total = len;
-    if (!EVP_DecryptFinal_ex(ctx, (unsigned char*)out + total, &len))
-        goto fail;
-    total += len;
-
-    EVP_CIPHER_CTX_free(ctx);
-    out[total] = '\0';
-    *out_len = (size_t)total;
-    return out;
-
-/* OpenSSL failures release both the context and the partial plaintext. */
-fail:
-    EVP_CIPHER_CTX_free(ctx);
-    free(out);
-    return NULL;
-}
-#endif /* ALLTRAX_HAVE_CRYPTO */
+#include "file_crypt.h"
+#include "file_io.h"
 
 /* ------------------------------------------------------------------ */
 /* Config save: groups to include                                     */
@@ -615,57 +508,6 @@ int cli_config_write(alltrax_controller* ctrl, alltrax_assignment* items,
     return 0;
 }
 
-char* cli_read_file(const char* path, const cli_key* key, size_t* len)
-{
-    FILE* f = fopen(path, "rb");
-    if (!f) {
-        fprintf(stderr, "Error: cannot open file: %s\n", path);
-        return NULL;
-    }
-
-    fseek(f, 0, SEEK_END);
-    long file_size = ftell(f);
-    fseek(f, 0, SEEK_SET);
-
-    if (file_size <= 0 || file_size > 1024 * 1024) {
-        fprintf(stderr, "Error: invalid file size\n");
-        fclose(f);
-        return NULL;
-    }
-
-    unsigned char* data = malloc((size_t)file_size + 1);
-    if (!data) {
-        fprintf(stderr, "Error: out of memory\n");
-        fclose(f);
-        return NULL;
-    }
-
-    size_t nread = fread(data, 1, (size_t)file_size, f);
-    fclose(f);
-    if (nread != (size_t)file_size) {
-        fprintf(stderr, "Error: short read from %s\n", path);
-        free(data);
-        return NULL;
-    }
-    data[nread] = '\0';
-    *len = nread;
-
-#ifdef ALLTRAX_HAVE_CRYPTO
-    if (key->encrypt) {
-        char* plain = des3_decrypt(key, data, nread, len);
-        bool looks_plain = data[0] == '<' || data[0] == 'F';
-        free(data);
-        if (!plain)
-            fprintf(stderr, "Error: 3DES decryption failed (wrong key or corrupt file)%s\n",
-                    looks_plain ? "; the file looks unencrypted, so use --key none" : "");
-        return plain;
-    }
-#else
-    (void)key;
-#endif
-    return (char*)data;
-}
-
 #define LOAD_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_THROTTLE | CLI_OPT_FIELD_MAP | \
                       CLI_OPT_SKIP_RULES)
 
@@ -678,14 +520,17 @@ static int do_save(int argc, char** argv)
     cli_flags flags;
     if (cli_parse_args(argc, argv, "config save", CLI_OPT_KEY, 1, 1,
                        &flags) < 0) {
-        fprintf(stderr, "Usage: alltrax config save [options] <file>\n");
+        fprintf(stderr, "Usage: alltrax config save [options] <file>\n"
+                        "\n"
+                        "With <file> -, the file goes to standard output.\n");
         cli_print_options(stderr, CLI_OPT_KEY);
-        print_key_status(stderr);
+        cli_print_key_status(stderr, &cli_config_key_source);
         return 1;
     }
     const char* filepath = argv[1];
     cli_key key;
-    if (resolve_config_key("config save", &flags, &key)) return 1;
+    if (cli_resolve_key("config save", flags.key, &cli_config_key_source, &key))
+        return 1;
 
     alltrax_controller* ctrl = NULL;
     alltrax_error err = cli_open(&ctrl, false);
@@ -702,54 +547,18 @@ static int do_save(int argc, char** argv)
         return 1;
     }
 
-    /* Encrypt before opening the destination so a failure leaves it intact. */
-    const void* data = xml;
-    size_t data_len = strlen(xml);
-    unsigned char* cipher = NULL;
-#ifdef ALLTRAX_HAVE_CRYPTO
-    if (key.encrypt) {
-        cipher = des3_encrypt(&key, xml, data_len, &data_len);
-        if (!cipher) {
-            free(xml);
-            fprintf(stderr, "Error: 3DES encryption failed; no file written\n");
-            return 1;
-        }
-        data = cipher;
-    }
-#endif
-
-    FILE* f = fopen(filepath, "wb");
-    if (!f) {
-        fprintf(stderr, "Error: cannot create file %s: %s\n",
-                filepath, strerror(errno));
-        free(xml);
-        free(cipher);
-        return 1;
-    }
-
-    /* Buffered write errors such as a full disk surface at fclose(). */
-    struct stat st;
-    bool regular = fstat(fileno(f), &st) == 0 && S_ISREG(st.st_mode);
-    bool failed = fwrite(data, 1, data_len, f) != data_len;
-    int write_errno = failed ? errno : 0;
-    if (fclose(f) != 0 && !failed) {
-        failed = true;
-        write_errno = errno;
-    }
+    /* Encryption completes before the destination is opened, so a failure
+     * leaves it intact. */
+    int rc = cli_write_file(filepath, &key, xml, strlen(xml));
     free(xml);
-    free(cipher);
-    if (failed) {
-        /* Only a regular file is removed; device and pipe paths are kept. */
-        bool removed = regular && remove(filepath) == 0;
-        fprintf(stderr, "Error: writing %s failed: %s%s\n", filepath,
-                write_errno ? strerror(write_errno) : "short write",
-                removed ? "; partial file removed" : "");
+    if (rc)
         return 1;
-    }
 
-    printf("Saved %zu variables + %zu curves to %s (%s)\n",
-           total_vars, total_curves, filepath,
-           key.encrypt ? "encrypted" : "plain XML");
+    /* With the document on standard output, the status goes to standard error. */
+    bool to_stdout = cli_is_stdio(filepath);
+    fprintf(to_stdout ? stderr : stdout, "Saved %zu variables + %zu curves to %s (%s)\n",
+            total_vars, total_curves, to_stdout ? "standard output" : filepath,
+            key.encrypt ? "encrypted" : "plain XML");
     return 0;
 }
 
@@ -765,15 +574,17 @@ static int do_load(int argc, char** argv)
         fprintf(stderr,
             "Usage: alltrax config load [options] <file>\n"
             "\n"
+            "With <file> -, the file is read from standard input.\n"
             "A file with throttle or field-map settings needs --throttle or\n"
             "--field-map to write them.\n");
         cli_print_options(stderr, LOAD_OPTIONS);
-        print_key_status(stderr);
+        cli_print_key_status(stderr, &cli_config_key_source);
         return 1;
     }
     const char* filepath = argv[1];
     cli_key key;
-    if (resolve_config_key("config load", &flags, &key)) return 1;
+    if (cli_resolve_key("config load", flags.key, &cli_config_key_source, &key))
+        return 1;
 
     size_t xml_len;
     char* xml = cli_read_file(filepath, &key, &xml_len);
@@ -792,7 +603,7 @@ static int do_load(int argc, char** argv)
     }
 
     printf("Read %zu writable variables + %zu curves from %s",
-           config.count, config.curve_count, filepath);
+           config.count, config.curve_count, cli_input_name(filepath));
     if (config.skipped > 0)
         printf(" (%zu skipped)", config.skipped);
     printf("\n");
@@ -808,7 +619,7 @@ static int do_load(int argc, char** argv)
     int ret = 1;
     if (n_items == 0) {
         fprintf(stderr, "Error: nothing to write\n");
-    } else if (!cli_check_bulk(filepath, items, n_items, &flags)) {
+    } else if (!cli_check_bulk(cli_input_name(filepath), items, n_items, &flags)) {
         cli_warn_field_map(items, n_items);
         if (!cli_open(&ctrl, true))
             ret = cli_config_write(ctrl, items, n_items, &flags);
@@ -834,7 +645,7 @@ int cmd_config(int argc, char** argv)
             "  load [options] <file>  Load config file, write settings to device\n"
             "\n"
             "Run 'alltrax config save' or 'alltrax config load' for options.\n");
-        print_key_status(stderr);
+        cli_print_key_status(stderr, &cli_config_key_source);
         return 1;
     }
 

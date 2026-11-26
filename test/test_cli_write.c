@@ -3,6 +3,7 @@
 #include "helpers.h"
 #include "internal.h"
 #include "../cli/cli.h"
+#include "../cli/file_crypt.h"
 #include <errno.h>
 #include <math.h>
 #include <signal.h>
@@ -671,6 +672,9 @@ static int test_fw_flag_reaches_write_options_in_any_position(void)
 
 #ifdef ALLTRAX_HAVE_XML
 /* Keys used only by these tests. */
+#ifdef ALLTRAX_HAVE_CRYPTO
+static const cli_key_source test_key_source = { "test", "ALLTRAX_TEST_UNSET", NULL };
+#endif
 #define TEST_KEY_A "0123456789abcdef0123456789ABCDEF0123456789abcdef:0011223344556677"
 #define TEST_KEY_B "fedcba9876543210fedcba9876543210fedcba9876543210:8899aabbccddeeff"
 
@@ -860,7 +864,7 @@ static int test_config_save_encrypts_before_writing(void)
 static bool saved_with(const char* path, const char* key_text)
 {
     cli_key key;
-    if (cli_resolve_key("test", key_text, "ALLTRAX_TEST_UNSET", NULL, &key))
+    if (cli_resolve_key("test", key_text, &test_key_source, &key))
         return false;
     FILE* f = fopen(path, "rb");
     if (!f) return false;
@@ -2453,7 +2457,7 @@ static int test_field_map_install_writes_named_map_and_pole_count(void)
 static int write_encrypted(const char* path, const char* text, const char* key_text)
 {
     cli_key key;
-    if (cli_resolve_key("test", key_text, "ALLTRAX_TEST_UNSET", NULL, &key))
+    if (cli_resolve_key("test", key_text, &test_key_source, &key))
         return -1;
     static unsigned char data[8192];
     int len = 0, total = 0;
@@ -2532,6 +2536,181 @@ static int test_config_key_load_round_trip(void)
     return 0;
 }
 #endif
+
+/* Standard streams for run_stdio(). */
+typedef struct {
+    const void* in;       /* standard input */
+    size_t in_len;
+    const char* out_path; /* file for standard output; NULL captures it */
+    char out[65536];      /* captured standard output */
+    size_t out_len;
+    char err[4096];       /* captured standard error */
+} stdio_run;
+
+/* Run a command on the writable device with the standard streams in `io`. */
+static int run_stdio(int (*cmd)(int, char**), int argc, char** argv, stdio_run* io)
+{
+    FILE* in = tmpfile();
+    FILE* out = io->out_path ? fopen(io->out_path, "wb") : tmpfile();
+    FILE* err = tmpfile();
+    int rc = -1;
+    if (in && out && err &&
+        (io->in_len == 0 || fwrite(io->in, 1, io->in_len, in) == io->in_len) &&
+        fflush(in) == 0) {
+        rewind(in);
+        fflush(NULL);
+        int saved[3] = { dup(STDIN_FILENO), dup(STDOUT_FILENO), dup(STDERR_FILENO) };
+        if (saved[0] >= 0 && saved[1] >= 0 && saved[2] >= 0 &&
+            dup2(fileno(in), STDIN_FILENO) >= 0 && dup2(fileno(out), STDOUT_FILENO) >= 0 &&
+            dup2(fileno(err), STDERR_FILENO) >= 0) {
+            clearerr(stdin);
+            rc = run_writable(cmd, argc, argv);
+        }
+        fflush(stdout);
+        fflush(stderr);
+        clearerr(stdin);
+        clearerr(stdout);
+        for (int fd = 0; fd < 3; fd++) {
+            if (saved[fd] >= 0) {
+                dup2(saved[fd], fd);
+                close(saved[fd]);
+            }
+        }
+    }
+    io->out_len = 0;
+    io->out[0] = io->err[0] = '\0';
+    if (out && !io->out_path) {
+        rewind(out);
+        io->out_len = fread(io->out, 1, sizeof(io->out) - 1, out);
+        io->out[io->out_len] = '\0';
+    }
+    if (err) {
+        rewind(err);
+        size_t n = fread(io->err, 1, sizeof(io->err) - 1, err);
+        io->err[n] = '\0';
+    }
+    if (in) fclose(in);
+    if (out) fclose(out);
+    if (err) fclose(err);
+    return rc;
+}
+
+/* config save - writes the same document as a file save, with its status on
+ * standard error; config load - reads it back. */
+static int test_config_save_and_load_through_standard_streams(void)
+{
+    static stdio_run io;
+    static char saved[65536];
+    writable_device_reset();
+    set_page_string("F_Table_Name", "STDIO MAP");
+    uint8_t original[VARSET_SIZE];
+    memcpy(original, device.page, sizeof(original));
+    char path[64];
+    ASSERT_EQ(make_temp_path(path), 0);
+    ASSERT_EQ(run_config_save(path, 5005), 0);
+    char* file = read_file(path);
+    remove(path);
+    ASSERT_TRUE(file != NULL);
+
+    memset(&io, 0, sizeof(io));
+    char* save[] = { "config", "save", "-", "--key", "none" };
+    ASSERT_EQ(run_stdio(cmd_config, 5, save, &io), 0);
+    ASSERT_STR_EQ(io.out, file);
+    free(file);
+    ASSERT_TRUE(strstr(io.err, "to standard output (plain XML)") != NULL);
+
+    memcpy(saved, io.out, io.out_len);
+    io.in = saved;
+    io.in_len = io.out_len;
+    set_page_string("F_Table_Name", "CHANGED");
+    char* load[] = { "config", "load", "-", "--key", "none", "--throttle", "--field-map" };
+    ASSERT_EQ(run_stdio(cmd_config, 7, load, &io), 0);
+    ASSERT_MEM_EQ(device.page, original, sizeof(original));
+    ASSERT_TRUE(strstr(io.out, "from standard input") != NULL);
+
+#ifdef ALLTRAX_HAVE_CRYPTO
+    memset(&io, 0, sizeof(io));
+    char key_a[] = TEST_KEY_A;
+    char* encrypted_save[] = { "config", "save", "-", "--key", key_a };
+    ASSERT_EQ(run_stdio(cmd_config, 5, encrypted_save, &io), 0);
+    ASSERT_TRUE(io.out_len > 0);
+    ASSERT_EQ(io.out_len % 8, 0); /* Whole 3DES blocks */
+    bool plain = false;
+    for (size_t i = 0; i + 4 <= io.out_len; i++)
+        plain |= memcmp(io.out + i, "<XCT", 4) == 0;
+    ASSERT_FALSE(plain);
+    ASSERT_TRUE(strstr(io.err, "to standard output (encrypted)") != NULL);
+
+    memcpy(saved, io.out, io.out_len);
+    io.in = saved;
+    io.in_len = io.out_len;
+    set_page_string("F_Table_Name", "CHANGED");
+    char* encrypted_load[] = { "config", "load", "-", "--key", key_a, "--throttle", "--field-map" };
+    ASSERT_EQ(run_stdio(cmd_config, 7, encrypted_load, &io), 0);
+    ASSERT_MEM_EQ(device.page, original, sizeof(original));
+#endif
+    return 0;
+}
+
+/* Empty standard input fails before the controller is opened. */
+static int test_config_load_rejects_empty_standard_input(void)
+{
+    static stdio_run io;
+    memset(&io, 0, sizeof(io));
+    writable_device_reset();
+    char* load[] = { "config", "load", "-", "--key", "none", "--throttle", "--field-map" };
+    ASSERT_EQ(run_stdio(cmd_config, 7, load, &io), 1);
+    ASSERT_EQ(open_calls, 0);
+    ASSERT_TRUE(strstr(io.err, "standard input is empty or larger than 1 MiB") != NULL);
+    return 0;
+}
+
+/* A failed write to standard output is an error, and no status is printed. */
+static int test_config_save_reports_standard_output_failure(void)
+{
+    if (access("/dev/full", W_OK) != 0)
+        return 0; /* /dev/full is Linux-specific. */
+    static stdio_run io;
+    memset(&io, 0, sizeof(io));
+    io.out_path = "/dev/full";
+    writable_device_reset();
+    char* save[] = { "config", "save", "-", "--key", "none" };
+    ASSERT_EQ(run_stdio(cmd_config, 5, save, &io), 1);
+    ASSERT_TRUE(strstr(io.err, "writing standard output failed") != NULL);
+    ASSERT_NULL(strstr(io.err, "Saved"));
+    return 0;
+}
+
+/* Field-map commands read the map file from standard input with -. */
+static int test_field_map_file_from_standard_input(void)
+{
+    static stdio_run io;
+    memset(&io, 0, sizeof(io));
+    io.in = map_file_text;
+    io.in_len = strlen(map_file_text);
+    writable_device_reset();
+    set_page_string("F_Table_Name", "MAPB");
+    char* list[] = { "field-map", "list", "-", "--key", "none" };
+    ASSERT_EQ(run_stdio(cmd_field_map, 5, list, &io), 0);
+    ASSERT_TRUE(strstr(io.out, "3 maps") != NULL);
+    char* upgrade[] = { "field-map", "upgrade", "-", "--key", "none" };
+    ASSERT_EQ(run_stdio(cmd_field_map, 5, upgrade, &io), 0);
+    ASSERT_TRUE(strstr(io.out, "No field-map upgrade for MAPB in standard input") != NULL);
+
+    uint8_t expected[VARSET_SIZE];
+    memcpy(expected, device.page, sizeof(expected));
+    expected_map_page(expected, "MAPA-V2", 2000, 1);
+    char* install[] = { "field-map", "install", "-", "MAPA", "--key", "none" };
+    ASSERT_EQ(run_stdio(cmd_field_map, 6, install, &io), 0);
+    ASSERT_MEM_EQ(device.page, expected, sizeof(expected));
+
+    io.in = "not a field-map file\n";
+    io.in_len = strlen(io.in);
+    ASSERT_EQ(run_stdio(cmd_field_map, 5, list, &io), 1);
+    ASSERT_EQ(open_calls, 0);
+    ASSERT_TRUE(strstr(io.err, "standard input is not a field-map file") != NULL);
+    return 0;
+}
 
 /* Load a plain XML file into the writable device, confirming throttle and
  * field-map settings as asked. */
@@ -3530,6 +3709,10 @@ int main(void)
 #endif
     RUN_TEST(test_config_save_write_failure_removes_partial_file);
     RUN_TEST(test_config_save_write_failure_keeps_device_paths);
+    RUN_TEST(test_config_save_and_load_through_standard_streams);
+    RUN_TEST(test_config_load_rejects_empty_standard_input);
+    RUN_TEST(test_config_save_reports_standard_output_failure);
+    RUN_TEST(test_field_map_file_from_standard_input);
     RUN_TEST(test_config_round_trip_restores_strings_in_one_erase);
     RUN_TEST(test_config_load_rejects_invalid_strings_before_open);
     RUN_TEST(test_config_load_sends_one_reset_after_success);

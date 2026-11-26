@@ -15,6 +15,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include "cli.h"
+#include "file_crypt.h"
+#include "file_io.h"
 
 static int do_history(int argc, char** argv)
 {
@@ -45,27 +47,6 @@ static int do_history(int argc, char** argv)
 }
 
 #ifdef ALLTRAX_HAVE_XML
-
-/* ------------------------------------------------------------------ */
-/* Built-in 3DES key and IV (make EMBEDDED_KEYS=0 omits them)         */
-/* ------------------------------------------------------------------ */
-
-#ifdef ALLTRAX_EMBEDDED_KEYS
-static const cli_key embedded_fieldmap_key = {
-    .encrypt = true,
-    .key = {
-        73, 45, 205, 127, 225, 133, 145, 178, 174, 203,
-        252, 8, 253, 19, 8, 108, 120, 51, 118, 17,
-        160, 85, 62, 188
-    },
-    .iv = {
-        48, 60, 181, 207, 29, 128, 123, 143
-    },
-};
-#define EMBEDDED_FIELDMAP_KEY (&embedded_fieldmap_key)
-#else
-#define EMBEDDED_FIELDMAP_KEY NULL
-#endif
 
 /* ------------------------------------------------------------------ */
 /* Field-map file parsing                                             */
@@ -168,8 +149,7 @@ static int load_map_file(const char* command, const char* path,
 {
     memset(out, 0, sizeof(*out));
     cli_key key;
-    if (cli_resolve_key(command, flags->key, "ALLTRAX_FIELDMAP_KEY",
-                        EMBEDDED_FIELDMAP_KEY, &key))
+    if (cli_resolve_key(command, flags->key, &cli_field_map_key_source, &key))
         return 1;
     size_t len;
     out->text = cli_read_file(path, &key, &len);
@@ -214,7 +194,7 @@ static int load_map_file(const char* command, const char* path,
     }
     if (!version_ok) {
         fprintf(stderr, "Error: %s: %s is not a field-map file (bad version line)\n",
-                command, path);
+                command, cli_input_name(path));
         free(lines);
         free_map_file(out);
         return 1;
@@ -226,7 +206,7 @@ static int load_map_file(const char* command, const char* path,
         bool hidden = false;
         if (!parse_record(lines, line_count, l, &out->records[out->count], &hidden)) {
             fprintf(stderr, "Error: %s: %s has a malformed map record at line %zu\n",
-                    command, path, l + 1);
+                    command, cli_input_name(path), l + 1);
             free(lines);
             free_map_file(out);
             return 1;
@@ -236,7 +216,8 @@ static int load_map_file(const char* command, const char* path,
     }
     free(lines);
     if (out->count == 0) {
-        fprintf(stderr, "Error: %s: %s contains no field maps\n", command, path);
+        fprintf(stderr, "Error: %s: %s contains no field maps\n", command,
+                cli_input_name(path));
         free_map_file(out);
         return 1;
     }
@@ -360,7 +341,7 @@ static const char* item_text(const alltrax_assignment* items, size_t count,
 
 static void print_key_status(void)
 {
-    cli_print_key_status(stderr, "field-map", "ALLTRAX_FIELDMAP_KEY", EMBEDDED_FIELDMAP_KEY);
+    cli_print_key_status(stderr, &cli_field_map_key_source);
 }
 
 static int do_list(int argc, char** argv)
@@ -368,7 +349,9 @@ static int do_list(int argc, char** argv)
     cli_flags flags;
     if (cli_parse_args(argc, argv, "field-map list", CLI_OPT_KEY, 1, 1,
                        &flags) < 0) {
-        fprintf(stderr, "Usage: alltrax field-map list [options] <file>\n");
+        fprintf(stderr, "Usage: alltrax field-map list [options] <file>\n"
+                        "\n"
+                        "With <file> -, the file is read from standard input.\n");
         cli_print_options(stderr, CLI_OPT_KEY);
         print_key_status();
         return 1;
@@ -432,7 +415,8 @@ static int do_upgrade(int argc, char** argv)
             "Usage: alltrax field-map upgrade [options] <file>\n"
             "\n"
             "Installs a newer version of the controller's field map from <file>,\n"
-            "keeping the speed sensor pole count (Tach_4_8).\n");
+            "keeping the speed sensor pole count (Tach_4_8). With <file> -, the file\n"
+            "is read from standard input.\n");
         cli_print_options(stderr, UPGRADE_OPTIONS);
         print_key_status();
         return 1;
@@ -459,7 +443,7 @@ static int do_upgrade(int argc, char** argv)
     }
     const map_record* rec = find_upgrade(&file, &cur);
     if (!rec) {
-        printf("No field-map upgrade for %s in %s\n", cur.name, argv[1]);
+        printf("No field-map upgrade for %s in %s\n", cur.name, cli_input_name(argv[1]));
         ret = 0;
         goto done;
     }
@@ -503,7 +487,8 @@ static int do_install(int argc, char** argv)
             "Usage: alltrax field-map install [options] <file> <name>\n"
             "\n"
             "Installs the named field map from <file>, including its speed sensor\n"
-            "pole count (Tach_4_8). <name> may be a map name or one of its aliases.\n");
+            "pole count (Tach_4_8). <name> may be a map name or one of its aliases.\n"
+            "With <file> -, the file is read from standard input.\n");
         cli_print_options(stderr, INSTALL_OPTIONS);
         print_key_status();
         return 1;
@@ -518,7 +503,7 @@ static int do_install(int argc, char** argv)
     const map_record* rec = find_by_name(&file, argv[2]);
     if (!rec) {
         fprintf(stderr, "Error: field-map install: no field map named %s in %s\n",
-                argv[2], argv[1]);
+                argv[2], cli_input_name(argv[1]));
         goto done;
     }
     size_t count;
@@ -579,6 +564,8 @@ int cmd_field_map(int argc, char** argv)
         "  history                Read the controller's field-map history\n"
         "  list <file>            List the maps in a field-map file\n"
         "  upgrade <file>         Install a newer version of the controller's map\n"
-        "  install <file> <name>  Install a named map (requires --field-map)\n");
+        "  install <file> <name>  Install a named map\n"
+        "\n"
+        "<file> - reads the field-map file from standard input.\n");
     return 1;
 }

@@ -11,8 +11,22 @@
 #include <stdio.h>
 #include <time.h>
 
+/* ------------------------------------------------------------------ */
+/* main.c: global options, opening the controller, errors             */
+/* ------------------------------------------------------------------ */
+
 /* Global --device path (NULL = auto-detect) */
 extern const char* cli_device_path;
+
+/* Open controller, printing errors to stderr. Returns ALLTRAX_OK on success. */
+alltrax_error cli_open(alltrax_controller** ctrl, bool writes);
+
+/* Print error with context to stderr */
+void cli_error(alltrax_controller* ctrl, alltrax_error err, const char* action);
+
+/* ------------------------------------------------------------------ */
+/* args.c: option parsing and write options                           */
+/* ------------------------------------------------------------------ */
 
 /* Global --debug-ignore-fw-bounds: cli_open() enables the library firmware
  * read override. It never widens writes. */
@@ -60,66 +74,6 @@ typedef struct {
     const char* watch;   /* --watch value, or NULL */
 } cli_flags;
 
-/* A 3DES-CBC key and IV. encrypt is false when files are read and
- * written unencrypted. */
-typedef struct {
-    bool encrypt;
-    unsigned char key[24];
-    unsigned char iv[8];
-} cli_key;
-
-/* Resolve a file key from the --key value (NULL means "auto"):
- *   none         unencrypted files
- *   <key>:<iv>   48 and 16 hex digits, used as given
- *   auto         the key in environment variable `env`, else `embedded`
- *                (NULL when no key is built in), else an error
- * The environment variable must hold <key>:<iv>; an empty one is ignored.
- * Builds without libcrypto accept only none.
- * Returns 0, or 1 after printing an error naming `command`. */
-int cli_resolve_key(const char* command, const char* value, const char* env,
-    const cli_key* embedded, cli_key* out);
-
-/* Print whether encrypted `what` files are available and whether a key is
- * built in (`embedded` is NULL when none is). */
-void cli_print_key_status(FILE* out, const char* what, const char* env,
-    const cli_key* embedded);
-
-/* Settings parsed from a config document (cmd_config.c, libxml2 builds). */
-typedef struct {
-    const alltrax_var_def* var;
-    double number;   /* numeric and bool variables */
-    char text[33];   /* string variables (at most 32 characters) */
-} cli_config_entry;
-
-#define CLI_CONFIG_MAX_CURVES 5
-
-typedef struct {
-    cli_config_entry* entries;
-    size_t count;
-    size_t skipped;  /* unknown elements */
-    alltrax_curve_data curves[CLI_CONFIG_MAX_CURVES];  /* complete, validated */
-    size_t curve_count;
-} cli_config;
-
-/* Read a file of at most 1 MiB, decrypting it unless key->encrypt is false.
- * Returns a NUL-terminated buffer, or NULL after printing an error. */
-char* cli_read_file(const char* path, const cli_key* key, size_t* len);
-
-/* Parse a config document: writable variables and curves. Any invalid value
- * or curve fails the whole document. Returns 0, or 1 after printing an error. */
-int cli_config_parse(const char* xml, size_t len, cli_config* out);
-void cli_config_free(cli_config* config);
-
-/* Assignments for every entry and curve, with room for one more item (the
- * field-map name). Items point into `config`. NULL when out of memory. */
-alltrax_assignment* cli_config_assignments(const cli_config* config,
-    size_t* count);
-
-/* Write items in one batch, adding the field-map name when needed, then print
- * what was written and report post-write actions. Returns 0 or 1. */
-int cli_config_write(alltrax_controller* ctrl, alltrax_assignment* items,
-    size_t count, const cli_flags* flags);
-
 /* Parse options anywhere in argv[1..argc-1]. Arguments starting with "--" are
  * options; only those in `allowed` are accepted. Positional arguments are moved
  * to argv[1..] in their original order and must number min_args..max_args
@@ -146,11 +100,9 @@ void cli_report_write(alltrax_controller* ctrl, const alltrax_write_report* repo
 /* Wait for the controller to reconnect after a reset, printing the outcome. */
 void cli_wait_for_reconnect(alltrax_controller* ctrl);
 
-/* Open controller, printing errors to stderr. Returns ALLTRAX_OK on success. */
-alltrax_error cli_open(alltrax_controller** ctrl, bool writes);
-
-/* Print error with context to stderr */
-void cli_error(alltrax_controller* ctrl, alltrax_error err, const char* action);
+/* ------------------------------------------------------------------ */
+/* field_map.c: throttle and field-map write guard                    */
+/* ------------------------------------------------------------------ */
 
 /* Settings that must match installed hardware. Field-map data: the writable
  * Field variables and the field and genfield curves. Throttle settings: the
@@ -180,6 +132,10 @@ alltrax_error cli_add_field_map_name(alltrax_controller* ctrl,
 /* After a successful field-map write, remind the user about the pole count. */
 void cli_field_map_written(const alltrax_assignment* items, size_t count);
 
+/* ------------------------------------------------------------------ */
+/* current.c: present settings and profile currents                   */
+/* ------------------------------------------------------------------ */
+
 /* Read user settings from the page a settings write starts from: the user
  * page, or the factory page while the user page is invalid (the write
  * restores it first). */
@@ -192,6 +148,10 @@ int cli_convert_profile_currents(alltrax_controller* ctrl,
     alltrax_assignment* items, const bool* in_amps, size_t count,
     alltrax_info* info, bool* have_info);
 
+/* ------------------------------------------------------------------ */
+/* rules.c: value rules                                               */
+/* ------------------------------------------------------------------ */
+
 /* Value rules for settings and curves entered through the CLI (rules.c).
  * Both return 0 to proceed, or 1 after printing the broken rule; with
  * --skip-rules they print a warning and return 0.
@@ -202,7 +162,47 @@ int cli_rules_check_curve(const alltrax_curve_data* curve, const cli_flags* flag
 int cli_rules_check(alltrax_controller* ctrl, const alltrax_assignment* items,
     size_t count, const alltrax_info* info, const cli_flags* flags);
 
-/* Subcommand handlers — each returns 0 on success, 1 on error */
+/* ------------------------------------------------------------------ */
+/* cmd_config.c: config documents (libxml2 builds)                    */
+/* ------------------------------------------------------------------ */
+
+/* Settings parsed from a config document (cmd_config.c, libxml2 builds). */
+typedef struct {
+    const alltrax_var_def* var;
+    double number;   /* numeric and bool variables */
+    char text[33];   /* string variables (at most 32 characters) */
+} cli_config_entry;
+
+#define CLI_CONFIG_MAX_CURVES 5
+
+typedef struct {
+    cli_config_entry* entries;
+    size_t count;
+    size_t skipped;  /* unknown elements */
+    alltrax_curve_data curves[CLI_CONFIG_MAX_CURVES];  /* complete, validated */
+    size_t curve_count;
+} cli_config;
+
+/* Parse a config document: writable variables and curves. Any invalid value
+ * or curve fails the whole document. Returns 0, or 1 after printing an error. */
+int cli_config_parse(const char* xml, size_t len, cli_config* out);
+void cli_config_free(cli_config* config);
+
+/* Assignments for every entry and curve, with room for one more item (the
+ * field-map name). Items point into `config`. NULL when out of memory. */
+alltrax_assignment* cli_config_assignments(const cli_config* config,
+    size_t* count);
+
+/* Write items in one batch, adding the field-map name when needed, then print
+ * what was written and report post-write actions. Returns 0 or 1. */
+int cli_config_write(alltrax_controller* ctrl, alltrax_assignment* items,
+    size_t count, const cli_flags* flags);
+
+/* ------------------------------------------------------------------ */
+/* cmd_*.c: subcommand handlers                                       */
+/* ------------------------------------------------------------------ */
+
+/* Each returns 0 on success, 1 on error. */
 int cmd_info(int argc, char** argv);
 int cmd_get(int argc, char** argv);
 int cmd_write(int argc, char** argv);

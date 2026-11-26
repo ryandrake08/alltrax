@@ -342,13 +342,14 @@ map count includes older entries that rolled off the history page.
 format. The file is not included with the CLI. It holds a version line and a
 series of maps; each map has a name, an integer version, optional alias
 names, and the map's settings. Maps marked hidden are ignored. A malformed map
-entry rejects the whole file before the controller is opened. These commands
-need libxml2.
+entry rejects the whole file before the controller is opened. A file name of
+`-` reads the file from standard input. These commands need libxml2.
 
 ```sh
 alltrax field-map list fields.txt
 alltrax field-map upgrade fields.txt
 alltrax field-map install fields.txt MOTOR-MAP
+alltrax field-map list - --key none < fields-plain.txt
 ```
 
 - `list` prints every map with its version and aliases, marks the controller's
@@ -402,7 +403,15 @@ alltrax config load --throttle --field-map settings.txt
 
 # Load plain XML
 alltrax config load --key none --throttle --field-map settings.xml
+
+# Standard output and standard input
+alltrax config save --key none - > settings.xml
+alltrax config load --key none --throttle --field-map - < settings.xml
 ```
+
+A file name of `-` means standard output for `config save` and standard input
+for `config load`. When saving to standard output, the status line goes to
+standard error. Files read from either source are at most 1 MiB.
 
 `config save` writes every writable setting and curve, including the field
 map. Strings are space-padded to their field size, and read-only values such
@@ -412,7 +421,8 @@ settings are not valid (Var_GoodSet ≠ 0): either only factory defaults are
 present, or no settings are loaded. Read, validity, and encryption failures
 exit with an error and leave an existing file unchanged. If writing the file
 itself fails (for example, a full disk), it exits with an error and removes
-the partial file; the previous contents are not kept.
+the partial file; the previous contents are not kept. A failed write to
+standard output is also an error.
 
 `config load` restores every writable setting in the file, including the
 `Throttle_Type_Name` string and all curves. A file with throttle or field-map
