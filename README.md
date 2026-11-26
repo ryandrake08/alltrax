@@ -647,18 +647,20 @@ against config and field-map handling compiled without them.
 ## USB permissions
 
 The controller appears as a HID device (`/dev/hidraw*`). By default this
-requires root access. To allow your user account to access it, create a udev
-rule:
+requires root access. To give members of the `plugdev` group access, create a
+udev rule:
 
 ```sh
-# /etc/udev/rules.d/99-alltrax.rules
-KERNEL=="hidraw*", ATTRS{idVendor}=="23d4", ATTRS{idProduct}=="0002", MODE="0666"
+# /etc/udev/rules.d/60-alltrax.rules
+KERNEL=="hidraw*", ATTRS{idVendor}=="23d4", ATTRS{idProduct}=="0002", MODE="0660", GROUP="plugdev"
 ```
 
-Then reload:
+Then reload the rules and add your account to the group (log in again for
+the group change to take effect):
 
 ```sh
 sudo udevadm control --reload-rules && sudo udevadm trigger
+sudo usermod -aG plugdev "$USER"
 ```
 
 On macOS, no extra permissions are needed — HID devices are accessible to
