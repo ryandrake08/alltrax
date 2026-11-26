@@ -38,18 +38,11 @@ typedef uint64_t cli_option_mask;
 #define CLI_OPT_MONITOR_RATE        (UINT64_C(1) << 8) /* takes a value */
 #define CLI_OPT_MONITOR_LOG         (UINT64_C(1) << 9) /* takes a value */
 #define CLI_OPT_WATCH               (UINT64_C(1) << 10) /* takes a value */
-
-/* Bits 32–63 are reserved for debug and development bypasses, in write
- * sequence order. */
-#define CLI_OPT_DEBUG_NO_RULES      (UINT64_C(1) << 32)
-#define CLI_OPT_DEBUG_NO_CAL        (UINT64_C(1) << 33)
-#define CLI_OPT_DEBUG_NO_VERIFY     (UINT64_C(1) << 34)
-#define CLI_OPT_DEBUG_NO_POST_WRITE (UINT64_C(1) << 35)
+/* Skip the value rules for settings and curves */
+#define CLI_OPT_SKIP_RULES          (UINT64_C(1) << 11)
 
 /* Options accepted by every command that writes settings */
-#define CLI_OPTS_WRITE (CLI_OPT_ALLOW_UNVALIDATED | \
-    CLI_OPT_DEBUG_NO_CAL | CLI_OPT_DEBUG_NO_VERIFY | \
-    CLI_OPT_DEBUG_NO_POST_WRITE)
+#define CLI_OPTS_WRITE CLI_OPT_ALLOW_UNVALIDATED
 
 /* Options parsed from argv */
 typedef struct {
@@ -58,10 +51,7 @@ typedef struct {
     bool field_map;
     bool plot;
     bool factory;
-    bool debug_no_rules;
-    bool debug_no_cal;
-    bool debug_no_verify;
-    bool debug_no_post_write;
+    bool skip_rules;
     const char* file;    /* --file value, or NULL */
     const char* preset;  /* --preset value, or NULL */
     const char* key;     /* --key value, or NULL */
@@ -138,8 +128,7 @@ int cli_config_write(alltrax_controller* ctrl, alltrax_assignment* items,
 int cli_parse_args(int argc, char** argv, const char* command,
     cli_option_mask allowed, int min_args, int max_args, cli_flags* flags);
 
-/* Print the options in `allowed`: user options, then debug bypasses under
- * their own heading. */
+/* Print the options in `allowed` under an "Options:" heading. */
 void cli_print_options(FILE* out, cli_option_mask allowed);
 
 /* Sleep until interval_ms after start (CLOCK_MONOTONIC); a signal ends the
@@ -205,7 +194,7 @@ int cli_convert_profile_currents(alltrax_controller* ctrl,
 
 /* Value rules for settings and curves entered through the CLI (rules.c).
  * Both return 0 to proceed, or 1 after printing the broken rule; with
- * --debug-no-rules they print a warning and return 0.
+ * --skip-rules they print a warning and return 0.
  * cli_rules_check_curve() needs no device. cli_rules_check() checks every
  * setting and curve in a batch, reading controller information only when a
  * rule needs it; `info` may pass information the caller already has. */

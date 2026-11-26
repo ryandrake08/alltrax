@@ -421,7 +421,7 @@ static int do_list(int argc, char** argv)
     return 0;
 }
 
-#define UPGRADE_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_DEBUG_NO_RULES)
+#define UPGRADE_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_SKIP_RULES)
 
 static int do_upgrade(int argc, char** argv)
 {
@@ -487,7 +487,7 @@ done:
     return ret;
 }
 
-#define INSTALL_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_DEBUG_NO_RULES)
+#define INSTALL_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_SKIP_RULES)
 
 static const char* pole_count(bool eight)
 {

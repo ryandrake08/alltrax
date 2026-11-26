@@ -525,10 +525,10 @@ static int test_invalid_throttle_config_rejected_before_transport(void)
 
 static int test_options_accepted_before_and_after_positionals(void)
 {
-    const cli_option_mask allowed = CLI_OPT_DEBUG_NO_CAL | CLI_OPT_ALLOW_UNVALIDATED |
+    const cli_option_mask allowed = CLI_OPT_SKIP_RULES | CLI_OPT_ALLOW_UNVALIDATED |
                                     CLI_OPT_PLOT | CLI_OPT_FILE;
     char* argv[] = {
-        "set", "--plot", "linearization", "--debug-no-cal", "-1,0",
+        "set", "--plot", "linearization", "--skip-rules", "-1,0",
         "--file", "lin.csv", "-", "--allow-unvalidated-firmware",
     };
     cli_flags flags;
@@ -537,9 +537,9 @@ static int test_options_accepted_before_and_after_positionals(void)
     ASSERT_STR_EQ(argv[2], "-1,0");
     ASSERT_STR_EQ(argv[3], "-");
     ASSERT_TRUE(flags.plot);
-    ASSERT_TRUE(flags.debug_no_cal);
+    ASSERT_TRUE(flags.skip_rules);
     ASSERT_TRUE(flags.allow_unvalidated_firmware);
-    ASSERT_FALSE(flags.debug_no_verify);
+    ASSERT_FALSE(flags.factory);
     ASSERT_STR_EQ(flags.file, "lin.csv");
     ASSERT_NULL(flags.preset);
     return 0;
@@ -550,7 +550,7 @@ static int test_invalid_options_and_argument_counts_rejected(void)
     const cli_option_mask allowed = CLI_OPT_PLOT | CLI_OPT_FILE;
     struct { int argc; char* argv[5]; int min, max; } bad[] = {
         { 2, { "cmd", "--bogus" }, 0, -1 },            /* unknown */
-        { 2, { "cmd", "--debug-no-cal" }, 0, -1 },     /* not accepted */
+        { 2, { "cmd", "--skip-rules" }, 0, -1 },   /* not accepted */
         { 2, { "cmd", "--file" }, 0, -1 },             /* missing value */
         { 3, { "cmd", "--file", "--plot" }, 0, -1 },   /* option as value */
         { 5, { "cmd", "--file", "a", "--file", "b" }, 0, -1 }, /* repeated */
@@ -571,19 +571,15 @@ static int test_invalid_options_and_argument_counts_rejected(void)
 
 static int test_write_options_map_to_library_options(void)
 {
-    char* argv[] = {
-        "write", "--debug-no-cal", "--debug-no-verify",
-        "--debug-no-post-write", "--allow-unvalidated-firmware", "--debug-no-rules",
-    };
+    char* argv[] = { "write", "--allow-unvalidated-firmware", "--skip-rules" };
     cli_flags flags;
-    ASSERT_EQ(cli_parse_args(6, argv, "write", CLI_OPTS_WRITE | CLI_OPT_DEBUG_NO_RULES,
+    ASSERT_EQ(cli_parse_args(3, argv, "write", CLI_OPTS_WRITE | CLI_OPT_SKIP_RULES,
                              0, -1, &flags), 0);
-    ASSERT_TRUE(flags.debug_no_rules);
+    ASSERT_TRUE(flags.skip_rules);
     alltrax_write_report report;
     alltrax_write_opts opts = cli_write_opts(&flags, &report);
     ASSERT_TRUE(opts.report == &report);
-    ASSERT_TRUE(opts.skip_cal && opts.skip_verify &&
-                opts.skip_post_write && opts.skip_fw_check);
+    ASSERT_TRUE(opts.skip_fw_check);
     return 0;
 }
 
@@ -3046,7 +3042,7 @@ static int run_curve_points(char* type, const char* const* points, size_t n, boo
         snprintf(text[i], sizeof(text[i]), "%s", points[i]);
         argv[argc++] = text[i];
     }
-    if (bypass) argv[argc++] = "--debug-no-rules";
+    if (bypass) argv[argc++] = "--skip-rules";
     writable_device_reset();
     return run_writable(cmd_curve, argc, argv);
 }
@@ -3090,7 +3086,7 @@ static int run_rule_write(const char* a, const char* b, bool bypass)
         snprintf(text[i], sizeof(text[i]), "%s", args[i]);
         argv[argc++] = text[i];
     }
-    if (bypass) argv[argc++] = "--debug-no-rules";
+    if (bypass) argv[argc++] = "--skip-rules";
     return run_writable(cmd_write, argc, argv);
 }
 
@@ -3138,7 +3134,7 @@ static int run_write_args(const char* const* args, size_t n, bool bypass)
         snprintf(text[i], sizeof(text[i]), "%s", args[i]);
         argv[argc++] = text[i];
     }
-    if (bypass) argv[argc++] = "--debug-no-rules";
+    if (bypass) argv[argc++] = "--skip-rules";
     return run_writable(cmd_write, argc, argv);
 }
 
@@ -3174,7 +3170,7 @@ static int test_voltage_rules_use_rated_voltage(void)
             set_volts(device.page, "BMS_Missing_HiBat_Vlim", 60.0);
             char assign[48];
             snprintf(assign, sizeof(assign), "%s", cases[i].assign);
-            char* argv[] = { "write", assign, "--debug-no-rules" };
+            char* argv[] = { "write", assign, "--skip-rules" };
             int rc = run_cli_output(cmd_write, bypass ? 3 : 2, argv, out, sizeof(out));
             bool ok = cases[i].ok || bypass;
             ASSERT_EQ(rc, ok ? 0 : 1);
@@ -3284,7 +3280,7 @@ static int test_config_load_applies_rules(void)
         unsigned mutations = device.mutations;
         writable_device_reset();
         char* bypass[] = { "config", "load", "--key", "none", path, "--throttle",
-                           "--debug-no-rules" };
+                           "--skip-rules" };
         int bypassed = run_writable(cmd_config, 7, bypass);
         remove(path);
         ASSERT_EQ(refused, 1);

@@ -667,7 +667,7 @@ char* cli_read_file(const char* path, const cli_key* key, size_t* len)
 }
 
 #define LOAD_OPTIONS (CLI_OPTS_WRITE | CLI_OPT_KEY | CLI_OPT_THROTTLE | CLI_OPT_FIELD_MAP | \
-                      CLI_OPT_DEBUG_NO_RULES)
+                      CLI_OPT_SKIP_RULES)
 
 /* ------------------------------------------------------------------ */
 /* alltrax config save <file>                                          */

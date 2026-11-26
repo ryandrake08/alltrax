@@ -294,7 +294,7 @@ static int do_set(int argc, char** argv)
 {
     cli_flags flags;
     const cli_option_mask allowed = CLI_OPTS_WRITE | CLI_OPT_FILE | CLI_OPT_PRESET |
-                                    CLI_OPT_DEBUG_NO_RULES;
+                                    CLI_OPT_SKIP_RULES;
     int nargs = cli_parse_args(argc, argv, "curve set", allowed, 1, -1, &flags);
     if (nargs < 0) {
         fprintf(stderr,

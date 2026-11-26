@@ -629,11 +629,9 @@ static int test_short_ram_write_does_not_wait_for_an_echo(void)
     alltrax_controller* ctrl = NULL;
     ASSERT_EQ(alltrax_open(&ctrl, NULL, true), ALLTRAX_OK);
     mock.write_result = 1;
-    const alltrax_var_def* fan = alltrax_find_var("Fan_On");
-    double value = 1;
-    const alltrax_write_opts opts = { .skip_cal = true };
     unsigned reads = mock.reads, writes = mock.writes;
-    ASSERT_EQ(alltrax_write_vars(ctrl, &fan, &value, 1, &opts), ALLTRAX_ERR_USB);
+    /* The calibration clear is a RAM write with no CAL bracket before it. */
+    ASSERT_EQ(alltrax_clear_autocal(ctrl, NULL), ALLTRAX_ERR_USB);
     ASSERT_EQ(mock.writes, writes + 1);
     ASSERT_EQ(mock.reads, reads);
     ASSERT_TRUE(strstr(ctrl->error_detail, "report 0x02") != NULL);

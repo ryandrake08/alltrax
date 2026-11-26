@@ -257,7 +257,7 @@ meaningless on a vehicle, or outside the controller's rating:
 
 Trailing 0,0 curve points are unused and ignored. Factory data and built-in
 presets (`curve reset`, `restore-defaults`, `throttle set`) are not checked.
-`--debug-no-rules` skips the rules.
+`--skip-rules` skips the rules and prints a warning.
 
 Before a FLASH write, the tool checks both settings pages. If the factory
 page is invalid, it refuses the write. If only the user settings page is
@@ -269,8 +269,9 @@ requested changes, and reports the recovery.
 | Option | Effect |
 |--------|--------|
 | `--allow-unvalidated-firmware` | Allow writes on unvalidated firmware within V0.001-V5.999 |
+| `--skip-rules` | Skip the [value rules](#value-rules) (`write`, `curve set`, `config load`, `field-map install`, `field-map upgrade`) |
 
-Debug bypasses are listed under [Debug and development options](#debug-and-development-options).
+Debug options are listed under [Debug and development options](#debug-and-development-options).
 
 ### Throttle and field-map settings
 
@@ -427,6 +428,7 @@ text of `config save` and `config load` shows whether a key is built in.
 | `--allow-unvalidated-firmware` | load | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--throttle` | load | Confirm writing the file's throttle settings |
 | `--field-map` | load | Confirm writing the file's field-map settings |
+| `--skip-rules` | load | Skip the [value rules](#value-rules) |
 
 ### Curve tables
 
@@ -538,21 +540,16 @@ cause the import to fail.
 | `--plot` | get | ASCII chart instead of table |
 | `--allow-unvalidated-firmware` | set, reset | Allow writes on unvalidated firmware within V0.001-V5.999 |
 | `--throttle`, `--field-map` | reset all | Confirm resetting the throttle curves and the field map |
+| `--skip-rules` | set | Skip the [value rules](#value-rules) |
 
 ### Debug and development options
 
-These bypass safety checks. They exist to diagnose problems and develop this
-tool, not for normal use, and are listed separately in every usage message.
+These exist to diagnose problems and develop this tool, not for normal use,
+and are listed under their own heading in the `alltrax` usage message.
 
 | Option | Applies to | Bypasses |
 |--------|-----------|----------|
 | `--debug-ignore-fw-bounds` | global (before the command) | Firmware bounds for reads (firmware outside V0.001-V5.999); never widens writes |
-| `--debug-no-rules` | `write`, `curve set`, `config load`, `field-map install`, `field-map upgrade` | [Value rules](#value-rules) |
-| `--debug-no-cal` | write commands | CAL/RUN mode bracket |
-| `--debug-no-verify` | write commands | FLASH read-back verification |
-| `--debug-no-post-write` | write commands | Automatic calibration clear, date stamp and reset |
-
-The write commands are `write`, `config load`, `curve set`, and `curve reset`.
 
 `alltrax debug-read <address> [length]` prints a hex dump of controller
 memory. It opens the controller read-only and never writes. Reads are limited
@@ -984,8 +981,8 @@ converted from display units to raw device format.
 
 Variable and curve writes attempt RUN restoration whenever CAL may have been
 sent, including when the CAL transfer or acknowledgement fails. Failures before
-CAL is attempted, a definite read-only rejection, and `skip_cal` do not trigger
-RUN cleanup. If the operation and restoration both fail, the original error
+CAL is attempted and a definite read-only rejection do not trigger RUN
+cleanup. If the operation and restoration both fail, the original error
 code is returned and `alltrax_last_error_detail()` includes both failures
 (abbreviated to fit its buffer). If only restoration fails, its error is
 returned explicitly as a RUN restoration failure.
@@ -1008,15 +1005,12 @@ and numeric parsing overflow or underflow.
 returns `ALLTRAX_ERR_INVALID_ARG` before device I/O. Use
 `alltrax_write_assignments()` for strings.
 
-Pass `NULL` for `opts` to use safe defaults (all checks enabled). Pass an
-`alltrax_write_opts` struct to control individual safety checks:
+Pass `NULL` for `opts` to use the defaults. Pass an `alltrax_write_opts`
+struct to allow unvalidated firmware or to collect a report:
 
 | Field | Effect |
 |-------|--------|
 | `skip_fw_check` | Allow writes on unvalidated firmware within V0.001-V5.999 (CLI `--allow-unvalidated-firmware`) |
-| `skip_cal` | Debug bypass: skip the CAL/RUN bracket |
-| `skip_verify` | Debug bypass: skip read-back verification (FLASH only) |
-| `skip_post_write` | Debug bypass: skip automatic calibration clear, date stamp and reset |
 | `report` | Optional `alltrax_write_report*`, cleared and then filled with the actions the write performed: `factory_restored`, `autocal_cleared`, `date_stamped`, `reset_sent`. Each flag is set once its action succeeded, so a failed write still reports what ran. |
 
 Each variable or curve may appear once per batch; repeated or overlapping
@@ -1030,7 +1024,7 @@ After a successful write, the library stamps FieldMap_Date when the batch
 contains `F_Table_Name`, clears throttle auto-calibration when it contains
 `Throttle_Type` or `HPD`, and sends one reset after any settings-page write
 except a batch of only the linearization curve and field-map data. A factory
-recovery always resets. `skip_post_write` skips all three.
+recovery always resets.
 
 **RAM variables** (`is_flash=false`) take effect immediately but are not
 persistent across power cycles.

@@ -776,7 +776,7 @@ typedef struct { uint8_t data[MAX_PAYLOAD]; int len; uint32_t addr; } ram_encode
 
 /* Commit a complete page, keeping GoodSet invalid until verification. */
 static alltrax_error commit_varset_page(alltrax_controller* ctrl,
-    uint8_t page_data[VARSET_SIZE], bool skip_verify)
+    uint8_t page_data[VARSET_SIZE])
 {
     /* Set GoodSet to 0xFFFF (write in progress) */
     page_data[0] = 0xFF;
@@ -795,22 +795,15 @@ static alltrax_error commit_varset_page(alltrax_controller* ctrl,
     }
 
     /* Read-back verification */
-    if (!skip_verify) {
-        uint8_t readback[VARSET_SIZE];
-
-        rc = read_memory_range(ctrl, VARSET_ADDR, VARSET_SIZE, readback);
-        if (rc) return rc;
-
-        if (memcmp(readback, page_data, VARSET_SIZE) != 0) {
-            for (size_t i = 0; i < VARSET_SIZE; i++) {
-                if (readback[i] != page_data[i]) {
-                    set_error_detail(ctrl,
-                        "FLASH verification failed at offset 0x%04X: "
-                        "wrote 0x%02X, read 0x%02X",
-                        (unsigned)i, page_data[i], readback[i]);
-                    break;
-                }
-            }
+    uint8_t readback[VARSET_SIZE];
+    rc = read_memory_range(ctrl, VARSET_ADDR, VARSET_SIZE, readback);
+    if (rc) return rc;
+    for (size_t i = 0; i < VARSET_SIZE; i++) {
+        if (readback[i] != page_data[i]) {
+            set_error_detail(ctrl,
+                "FLASH verification failed at offset 0x%04X: "
+                "wrote 0x%02X, read 0x%02X",
+                (unsigned)i, page_data[i], readback[i]);
             return ALLTRAX_ERR_FLASH;
         }
     }
@@ -887,18 +880,16 @@ static alltrax_error post_write(alltrax_controller* ctrl,
     const alltrax_assignment* items, size_t count, const alltrax_write_opts* opts,
     alltrax_write_report* report)
 {
-    bool clear_autocal = false, stamp_date = false, reset = false;
-    if (!opts->skip_post_write) {
-        reset = report->factory_restored;
-        for (size_t i = 0; i < count; i++) {
-            reset |= requests_reset(&items[i]);
-            if (!items[i].var) continue;
-            const char* name = items[i].var->name;
-            if (!strcmp(name, "Throttle_Type") || !strcmp(name, "HPD"))
-                clear_autocal = true;
-            if (!strcmp(name, "F_Table_Name"))
-                stamp_date = true;
-        }
+    bool clear_autocal = false, stamp_date = false;
+    bool reset = report->factory_restored;
+    for (size_t i = 0; i < count; i++) {
+        reset |= requests_reset(&items[i]);
+        if (!items[i].var) continue;
+        const char* name = items[i].var->name;
+        if (!strcmp(name, "Throttle_Type") || !strcmp(name, "HPD"))
+            clear_autocal = true;
+        if (!strcmp(name, "F_Table_Name"))
+            stamp_date = true;
     }
 
     if (stamp_date) {
@@ -1281,15 +1272,12 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
     /* ---- 3. Enter CAL mode (single bracket for all writes) ---- */
 
     bool cal_attempted = false;
-
-    if (!opts->skip_cal) {
-        rc = enter_cal(ctrl, &cal_attempted);
-        if (rc) return finish_cal_write(ctrl, cal_attempted, rc);
-    }
+    rc = enter_cal(ctrl, &cal_attempted);
+    if (rc) return finish_cal_write(ctrl, cal_attempted, rc);
 
     /* Restore a complete, valid base page before applying the batch. */
     if (recover) {
-        rc = commit_varset_page(ctrl, page_data, opts->skip_verify);
+        rc = commit_varset_page(ctrl, page_data);
         if (rc) goto restore_run;
         report->factory_restored = true;
     }
@@ -1311,7 +1299,7 @@ alltrax_error alltrax_write_assignments(alltrax_controller* ctrl,
             memcpy(page_data + flash_patches[i].offset, flash_patches[i].data,
                    (size_t)flash_patches[i].len);
         }
-        rc = commit_varset_page(ctrl, page_data, opts->skip_verify);
+        rc = commit_varset_page(ctrl, page_data);
         if (rc) goto restore_run;
     }
 
@@ -1385,7 +1373,7 @@ alltrax_error alltrax_restore_defaults(alltrax_controller* ctrl,
     if (patched)
         rc = enter_cal(ctrl, &cal_attempted);
     if (!rc)
-        rc = commit_varset_page(ctrl, page, false);
+        rc = commit_varset_page(ctrl, page);
     rc = finish_cal_write(ctrl, cal_attempted, rc);
     if (rc) return rc;
     report->factory_restored = true;

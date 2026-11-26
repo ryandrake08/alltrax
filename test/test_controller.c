@@ -332,7 +332,6 @@ static int test_string_assignments_rejected_before_device_access(void)
 {
     const char* names[] = { "Throttle_Type_Name", "F_Table_Name" };
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     const alltrax_write_opts* options[] = { NULL, &unchecked };
@@ -387,7 +386,6 @@ static int test_unsupported_identity_blocks_all_operations(void)
         { ALLTRAX_VID, ALLTRAX_PID_XCT, ALLTRAX_CONTROLLER_BMS2 },
     };
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     const alltrax_write_opts* options[] = { NULL, &unchecked };
@@ -440,7 +438,6 @@ static int test_read_only_variables_reject_entire_batch_before_io(void)
         "SerialNum", "Model",
     };
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     const alltrax_write_opts* options[] = { NULL, &unchecked };
@@ -488,7 +485,6 @@ static int test_invalid_numeric_batches_reject_before_io(void)
         0x1p63, -0x1p63, 999.49, 8000.5,
     };
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     const alltrax_write_opts* options[] = { NULL, &unchecked };
@@ -551,7 +547,6 @@ static int test_invalid_curve_points_reject_before_io(void)
 {
     const double invalid[] = { NAN, INFINITY, -INFINITY, DBL_MAX, -DBL_MAX, -1, 200 };
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     const alltrax_write_opts* options[] = { NULL, &unchecked };
@@ -639,7 +634,6 @@ static int test_invalid_throttle_types_reject_batch_before_io(void)
 {
     const double invalid[] = { 33, 12, 32, 255, -1, -0.1, 0.49, 0.5, 1.9, 10.9, 11.1 };
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     const alltrax_write_opts* options[] = { NULL, &unchecked };
@@ -738,16 +732,16 @@ static int test_all_canonical_variable_groups_remain_readable(void)
 }
 
 /* Exercise both variable paths and the separate curve entry point. */
-static alltrax_error mode_test_write(int operation, const alltrax_write_opts* opts)
+static alltrax_error mode_test_write(int operation)
 {
     if (operation < 2) {
         const alltrax_var_def* var = alltrax_find_var(operation == 0 ? "Fan_On" : "HPD");
         double value = 1;
-        return alltrax_write_vars(&mock.ctrl, &var, &value, 1, opts);
+        return alltrax_write_vars(&mock.ctrl, &var, &value, 1, NULL);
     }
     const alltrax_curve_def* def = alltrax_find_curve("linearization");
     const alltrax_curve_data data = { .def = def };
-    return alltrax_write_curve(&mock.ctrl, def, &data, opts);
+    return alltrax_write_curve(&mock.ctrl, def, &data, NULL);
 }
 
 static int test_failed_cal_entry_attempts_run_and_skips_requested_writes(void)
@@ -763,7 +757,7 @@ static int test_failed_cal_entry_attempts_run_and_skips_requested_writes(void)
             memcpy(original, mock.page, sizeof(original));
             if (fault == 7) mock.cal_transfer_error = true;
             else mock.cal_reply = (mode_reply_fault)fault;
-            ASSERT_EQ(mode_test_write(op, NULL), fault == 7 ? ALLTRAX_ERR_USB : expected[fault]);
+            ASSERT_EQ(mode_test_write(op), fault == 7 ? ALLTRAX_ERR_USB : expected[fault]);
             ASSERT_EQ(mock.cal_attempts, fault == MODE_REPLY_TIMEOUT ? 2 : 1);
             ASSERT_EQ(mock.run_attempts, 1);
             ASSERT_EQ(mock.mode, RUN_MODE_RUN);
@@ -787,7 +781,7 @@ static int test_non_run_and_failed_entry_do_not_write_modes(void)
             if (failure == 0) mock_fault(ADDR_RUN_MODE, 1, 0, 1);
             else if (failure == 1) mock.mode = RUN_MODE_CAL;
             else mock.cal_write_blocked = true;
-            ASSERT_EQ(mode_test_write(op, NULL),
+            ASSERT_EQ(mode_test_write(op),
                       failure == 0 ? ALLTRAX_ERR_PROTOCOL :
                       failure == 1 ? ALLTRAX_OK : ALLTRAX_ERR_BLOCKED);
             ASSERT_EQ(mock.cal_attempts, 0);
@@ -807,7 +801,7 @@ static int test_cal_and_run_failures_preserve_both_diagnostics(void)
         mock_reset();
         mock.cal_reply = MODE_REPLY_TIMEOUT;
         mock.run_transfer_error = true;
-        ASSERT_EQ(mode_test_write(op, NULL), ALLTRAX_ERR_TIMEOUT);
+        ASSERT_EQ(mode_test_write(op), ALLTRAX_ERR_TIMEOUT);
         ASSERT_EQ(mock.run_attempts, 1);
         ASSERT_EQ(mock.mode, RUN_MODE_CAL);
         ASSERT_TRUE(strstr(mock.ctrl.error_detail, "CAL acknowledgement timeout") != NULL);
@@ -816,7 +810,7 @@ static int test_cal_and_run_failures_preserve_both_diagnostics(void)
         mock_reset();
         mock.cal_transfer_error = true;
         mock.run_reply = MODE_REPLY_TIMEOUT;
-        ASSERT_EQ(mode_test_write(op, NULL), ALLTRAX_ERR_USB);
+        ASSERT_EQ(mode_test_write(op), ALLTRAX_ERR_USB);
         ASSERT_TRUE(strstr(mock.ctrl.error_detail, "CAL transfer failure") != NULL);
         ASSERT_TRUE(strstr(mock.ctrl.error_detail, "RUN restoration failed (-2)") != NULL);
         ASSERT_TRUE(strstr(mock.ctrl.error_detail, "RUN acknowledgement timeout") != NULL);
@@ -832,7 +826,7 @@ static int test_body_and_run_failures_preserve_original_error(void)
             if (op == 0) mock.fan_transfer_error = true;
             else mock_fault(VARSET_ADDR, MAX_PAYLOAD, 0, 1);
             if (cleanup_failure) mock.run_reply = MODE_REPLY_TIMEOUT;
-            ASSERT_EQ(mode_test_write(op, NULL), op == 0 ? ALLTRAX_ERR_USB : ALLTRAX_ERR_PROTOCOL);
+            ASSERT_EQ(mode_test_write(op), op == 0 ? ALLTRAX_ERR_USB : ALLTRAX_ERR_PROTOCOL);
             ASSERT_EQ(mock.cal_attempts, 1);
             ASSERT_EQ(mock.run_attempts, cleanup_failure ? 2 : 1);
             ASSERT_TRUE(strstr(mock.ctrl.error_detail,
@@ -854,29 +848,13 @@ static int test_run_failure_after_success_is_reported_explicitly(void)
             mock_reset();
             if (transfer_failure) mock.run_transfer_error = true;
             else mock.run_reply = MODE_REPLY_TIMEOUT;
-            ASSERT_EQ(mode_test_write(op, NULL), transfer_failure ? ALLTRAX_ERR_USB : ALLTRAX_ERR_TIMEOUT);
+            ASSERT_EQ(mode_test_write(op), transfer_failure ? ALLTRAX_ERR_USB : ALLTRAX_ERR_TIMEOUT);
             ASSERT_EQ(mock.run_attempts, transfer_failure ? 1 : 2);
             ASSERT_TRUE(strstr(mock.ctrl.error_detail, "RUN restoration failed") != NULL);
             ASSERT_EQ(mock.mode, transfer_failure ? RUN_MODE_CAL : RUN_MODE_RUN);
             ASSERT_EQ(mock.fan_writes, op == 0 ? 1 : 0);
             ASSERT_EQ(mock.erases, op == 0 ? 0 : 1);
         }
-    }
-    return 0;
-}
-
-static int test_skip_cal_does_not_introduce_mode_cleanup(void)
-{
-    const alltrax_write_opts opts = { .skip_cal = true };
-    for (int op = 0; op < 3; op++) {
-        mock_reset();
-        ASSERT_EQ(mode_test_write(op, &opts), ALLTRAX_OK);
-        ASSERT_EQ(mock.mode_writes, 0);
-        mock_reset();
-        if (op == 0) mock.fan_transfer_error = true;
-        else mock_fault(VARSET_ADDR, MAX_PAYLOAD, 0, 1);
-        ASSERT_EQ(mode_test_write(op, &opts), op == 0 ? ALLTRAX_ERR_USB : ALLTRAX_ERR_PROTOCOL);
-        ASSERT_EQ(mock.mode_writes, 0);
     }
     return 0;
 }
@@ -1547,13 +1525,6 @@ static int test_flash_verification_mismatch_keeps_goodset_invalid(void)
     ASSERT_EQ(get_le16(mock.page), 0xFFFF);
     ASSERT_EQ(mock.run_attempts, 1);
     ASSERT_EQ(mock.mode, RUN_MODE_RUN);
-
-    /* skip_verify omits the read-back, so the mismatch goes undetected. */
-    mock_reset();
-    mock.stuck_offset = offset + 1;
-    const alltrax_write_opts no_verify = { .skip_verify = true };
-    ASSERT_EQ(alltrax_write_vars(&mock.ctrl, &hpd, &one, 1, &no_verify), ALLTRAX_OK);
-    ASSERT_EQ(mock.goodset_clears, 1);
     return 0;
 }
 
@@ -1664,7 +1635,7 @@ static int test_restore_defaults_stops_if_factory_copy_does_not_verify(void)
     mock_reset();
     mock.stuck_offset = 3;
     alltrax_write_report report;
-    const alltrax_write_opts opts = { .skip_verify = true, .report = &report };
+    const alltrax_write_opts opts = { .report = &report };
     ASSERT_EQ(alltrax_restore_defaults(&mock.ctrl, &opts), ALLTRAX_ERR_FLASH);
     ASSERT_EQ(get_le16(mock.page), 0xFFFF);
     ASSERT_EQ(mock.date_writes, 0);
@@ -1761,14 +1732,11 @@ static int test_post_write_actions_and_single_reset(void)
             ASSERT_TRUE(mock.date[3] >= 1 && mock.date[3] <= 12);
         }
     }
-    for (int bypass = 0; bypass <= 1; bypass++) {
-        mock_reset();
-        const alltrax_write_opts opts = { .skip_post_write = bypass != 0 };
-        ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items,
-            sizeof(items) / sizeof(items[0]), &opts), ALLTRAX_OK);
-        ASSERT_EQ(mock.resets, !bypass);
-        ASSERT_STR_EQ(mock.post_order, bypass ? "R" : "RDCX");
-    }
+    mock_reset();
+    ASSERT_EQ(alltrax_write_assignments(&mock.ctrl, items,
+        sizeof(items) / sizeof(items[0]), NULL), ALLTRAX_OK);
+    ASSERT_EQ(mock.resets, 1);
+    ASSERT_STR_EQ(mock.post_order, "RDCX");
     return 0;
 }
 
@@ -1852,7 +1820,6 @@ static int test_non_catalog_variables_rejected_before_io(void)
     copies[7].is_flash = true;
     copies[7].address = 0x08004000;                          /* firmware area */
     const alltrax_write_opts unchecked = {
-        .skip_cal = true, .skip_verify = true,
         .skip_fw_check = true,
     };
     for (size_t i = 0; i <= 8; i++) {
@@ -1968,7 +1935,6 @@ int main(void)
     RUN_TEST(test_cal_and_run_failures_preserve_both_diagnostics);
     RUN_TEST(test_body_and_run_failures_preserve_original_error);
     RUN_TEST(test_run_failure_after_success_is_reported_explicitly);
-    RUN_TEST(test_skip_cal_does_not_introduce_mode_cleanup);
     RUN_TEST(test_firmware_policy_tiers);
     RUN_TEST(test_firmware_read_override_does_not_enable_writes);
     RUN_TEST(test_unvalidated_write_diagnostic_names_firmware);

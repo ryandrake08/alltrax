@@ -3,7 +3,7 @@
  *
  * The library refuses only what the controller cannot store. These rules
  * refuse values it would store but that are unsafe or meaningless on a
- * vehicle. --debug-no-rules skips them.
+ * vehicle. --skip-rules skips them.
  *
  * Curves:
  *   - Throttle curves (linearization, speed, torque) start at 0,0, end at
@@ -35,11 +35,11 @@
 #define MIN_ROLL_DETECT_AMPS 10.0
 #define MAX_THROTTLE_RATE    100.0
 
-static bool skip_rules(const cli_flags* flags)
+static bool rules_skipped(const cli_flags* flags)
 {
-    if (flags->debug_no_rules)
-        fprintf(stderr, "Warning: value rules skipped (--debug-no-rules)\n");
-    return flags->debug_no_rules;
+    if (flags->skip_rules)
+        fprintf(stderr, "Warning: value rules skipped (--skip-rules)\n");
+    return flags->skip_rules;
 }
 
 static int check_curve(const alltrax_curve_data* curve)
@@ -83,7 +83,7 @@ static int check_curve(const alltrax_curve_data* curve)
 
 int cli_rules_check_curve(const alltrax_curve_data* curve, const cli_flags* flags)
 {
-    return skip_rules(flags) ? 0 : check_curve(curve);
+    return rules_skipped(flags) ? 0 : check_curve(curve);
 }
 
 /* Profile setting name without its N_, U1_ or U2_ prefix, or NULL. */
@@ -253,7 +253,7 @@ static int check_voltage_order(alltrax_controller* ctrl,
 int cli_rules_check(alltrax_controller* ctrl, const alltrax_assignment* items,
     size_t count, const alltrax_info* info, const cli_flags* flags)
 {
-    if (skip_rules(flags)) return 0;
+    if (rules_skipped(flags)) return 0;
     alltrax_info read_info;
     bool have_info = info != NULL;
     if (info) read_info = *info;

@@ -11,7 +11,6 @@
 
 bool cli_ignore_fw_bounds = false;
 
-/* Debug bypasses are listed last and printed under their own heading. */
 static const struct {
     const char* name;
     cli_option_mask bit;
@@ -20,6 +19,8 @@ static const struct {
 } options[] = {
     { "--allow-unvalidated-firmware", CLI_OPT_ALLOW_UNVALIDATED, NULL,
       "Write to firmware V0.001-V5.999 not yet validated for writes" },
+    { "--skip-rules", CLI_OPT_SKIP_RULES, NULL,
+      "Skip the value rules for settings and curves" },
     { "--throttle", CLI_OPT_THROTTLE, NULL,
       "Let a bulk write include throttle settings (must match the installed throttle)" },
     { "--field-map", CLI_OPT_FIELD_MAP, NULL,
@@ -40,18 +41,8 @@ static const struct {
       "Append full monitor samples to a CSV file" },
     { "--watch", CLI_OPT_WATCH, "<ms>",
       "Read again every <ms> milliseconds until Ctrl+C" },
-    { "--debug-no-rules", CLI_OPT_DEBUG_NO_RULES, NULL,
-      "Skip the value rules for settings and curves" },
-    { "--debug-no-cal", CLI_OPT_DEBUG_NO_CAL, NULL,
-      "Skip the CAL/RUN mode bracket" },
-    { "--debug-no-verify", CLI_OPT_DEBUG_NO_VERIFY, NULL,
-      "Skip FLASH read-back verification" },
-    { "--debug-no-post-write", CLI_OPT_DEBUG_NO_POST_WRITE, NULL,
-      "Skip automatic calibration clear, date stamp and reset" },
 };
 #define OPTION_COUNT (sizeof(options) / sizeof(options[0]))
-#define DEBUG_OPTIONS (CLI_OPT_DEBUG_NO_RULES | CLI_OPT_DEBUG_NO_CAL | \
-                       CLI_OPT_DEBUG_NO_VERIFY | CLI_OPT_DEBUG_NO_POST_WRITE)
 
 static cli_option_mask option_bit(const char* arg)
 {
@@ -62,8 +53,10 @@ static cli_option_mask option_bit(const char* arg)
     return 0;
 }
 
-static void print_option_group(FILE* out, cli_option_mask allowed)
+void cli_print_options(FILE* out, cli_option_mask allowed)
 {
+    if (allowed)
+        fprintf(out, "\nOptions:\n");
     for (size_t i = 0; i < OPTION_COUNT; i++) {
         if (!(options[i].bit & allowed))
             continue;
@@ -72,18 +65,6 @@ static void print_option_group(FILE* out, cli_option_mask allowed)
                  options[i].value ? " " : "",
                  options[i].value ? options[i].value : "");
         fprintf(out, "  %-30s %s\n", label, options[i].help);
-    }
-}
-
-void cli_print_options(FILE* out, cli_option_mask allowed)
-{
-    if (allowed & ~DEBUG_OPTIONS) {
-        fprintf(out, "\nOptions:\n");
-        print_option_group(out, allowed & ~DEBUG_OPTIONS);
-    }
-    if (allowed & DEBUG_OPTIONS) {
-        fprintf(out, "\nDebug and development (bypasses safety checks):\n");
-        print_option_group(out, allowed & DEBUG_OPTIONS);
     }
 }
 
@@ -119,9 +100,6 @@ alltrax_write_opts cli_write_opts(const cli_flags* flags,
     alltrax_write_report* report)
 {
     return (alltrax_write_opts){
-        .skip_cal = flags->debug_no_cal,
-        .skip_verify = flags->debug_no_verify,
-        .skip_post_write = flags->debug_no_post_write,
         .skip_fw_check = flags->allow_unvalidated_firmware,
         .report = report,
     };
@@ -178,10 +156,7 @@ int cli_parse_args(int argc, char** argv, const char* command,
         case CLI_OPT_FIELD_MAP:         flags->field_map = true; break;
         case CLI_OPT_FACTORY:           flags->factory = true; break;
         case CLI_OPT_PLOT:              flags->plot = true; break;
-        case CLI_OPT_DEBUG_NO_RULES:    flags->debug_no_rules = true; break;
-        case CLI_OPT_DEBUG_NO_CAL:      flags->debug_no_cal = true; break;
-        case CLI_OPT_DEBUG_NO_VERIFY:   flags->debug_no_verify = true; break;
-        case CLI_OPT_DEBUG_NO_POST_WRITE: flags->debug_no_post_write = true; break;
+        case CLI_OPT_SKIP_RULES:        flags->skip_rules = true; break;
         default: break;
         }
     }

@@ -362,12 +362,7 @@ typedef struct {
  * and restoration fail, the original error is returned and error detail
  * contains both failures; a restoration-only failure returns its error. */
 typedef struct {
-    /* Debug and development bypasses */
-    bool skip_cal;           /* Skip CAL/RUN bracket and its restoration */
-    bool skip_verify;        /* Skip read-back verification (FLASH only) */
-    /* User options */
     bool skip_fw_check;      /* Allow unvalidated firmware within V0.001-V5.999 */
-    bool skip_post_write;    /* Debug bypass: skip automatic calibration clear, date stamp and reset */
     alltrax_write_report* report;  /* Optional; cleared, then filled by writes */
 } alltrax_write_opts;
 
