@@ -25,6 +25,15 @@
  *   - Roll-detect braking current is at least 10 A in magnitude.
  *   - Throttle rate and its analog maximum are at most 100 MU.
  *   - Speed limiting needs a speed sensor.
+ *   - User Inputs ranges: in User Inputs modes 1 and 2 each profile's speed
+ *     limit, throttle rate, regen armature current and forward speed form a
+ *     range from the plain setting (low end) to its _Max partner (high end),
+ *     and the analog input selects a point inside it. Mode 1 uses all three
+ *     profiles, mode 2 the Normal profile only. A live range must not be
+ *     inverted (regen compares magnitudes) or have an unset (-1) high end.
+ *     Switching into mode 1 or 2 lists the ranges that become live;
+ *     switching back to mode 0 warns about profiles left below their _Max,
+ *     since mode 0 uses the plain setting. Nothing is written implicitly.
  */
 
 #include <math.h>
@@ -250,6 +259,120 @@ static int check_voltage_order(alltrax_controller* ctrl,
     return 0;
 }
 
+static const char* const range_profiles[] = { "N_", "U1_", "U2_" };
+static const char* const range_settings[] = {
+    "Speed_Limit", "Throttle_Rate", "Max_Arm_Regen_Amps", "Forward_Speed",
+};
+#define RANGE_PAIRS 12
+#define RANGE_VARS (1 + 2 * RANGE_PAIRS)  /* UserInputs_State, then low/high pairs */
+
+static bool is_regen_pair(size_t pair)
+{
+    return pair % 4 == 2;
+}
+
+static void print_range_value(FILE* out, const alltrax_var_def* var, long raw)
+{
+    fprintf(out, var->scale == 1.0 ? "%.0f %s" : "%.1f %s", raw * var->scale, var->unit);
+}
+
+/* Refuse an inverted or unset live range; 0 when the range is usable. */
+static int check_range(const alltrax_var_def* low, const alltrax_var_def* high,
+    long low_raw, long high_raw, bool regen, long mode)
+{
+    if (!regen && high_raw == -1) {
+        fprintf(stderr, "Error: %s is not set (-1); in User Inputs mode %ld it is the "
+                "high end of the %s range\n", high->name, mode, low->name);
+        return 1;
+    }
+    if (regen ? labs(low_raw) <= labs(high_raw) : low_raw <= high_raw)
+        return 0;
+    fprintf(stderr, "Error: %s (", high->name);
+    print_range_value(stderr, high, high_raw);
+    fprintf(stderr, ") is below %s (", low->name);
+    print_range_value(stderr, low, low_raw);
+    fprintf(stderr, "); in User Inputs mode %ld they are the high and low ends "
+            "of one range\n", mode);
+    return 1;
+}
+
+static int check_user_input_ranges(alltrax_controller* ctrl,
+    const alltrax_assignment* items, size_t count)
+{
+    const alltrax_var_def* vars[RANGE_VARS];
+    long raw[RANGE_VARS];
+    bool given[RANGE_VARS] = { false };
+    bool any = false;
+    for (size_t v = 0; v < RANGE_VARS; v++) {
+        char name[40];
+        size_t pair = (v - 1) / 2;
+        if (v == 0)
+            snprintf(name, sizeof(name), "UserInputs_State");
+        else
+            snprintf(name, sizeof(name), "%s%s%s", range_profiles[pair / 4],
+                     range_settings[pair % 4], (v - 1) % 2 ? "_Max" : "");
+        vars[v] = alltrax_find_var(name);
+    }
+    for (size_t i = 0; i < count; i++) {
+        for (size_t v = 0; v < RANGE_VARS; v++) {
+            if (items[i].curve || items[i].var != vars[v] ||
+                alltrax_validate_var_value(vars[v], items[i].number))
+                continue;
+            raw[v] = lround(items[i].number / vars[v]->scale);
+            given[v] = any = true;
+        }
+    }
+    if (!any) return 0;
+
+    /* The current mode is needed even when the batch sets a new one. */
+    alltrax_var_value current[RANGE_VARS];
+    alltrax_error err = cli_read_current_settings(ctrl, vars, RANGE_VARS, current);
+    if (err) {
+        cli_error(ctrl, err, "reading User Inputs settings");
+        return 1;
+    }
+    for (size_t v = 0; v < RANGE_VARS; v++) {
+        if (!given[v])
+            raw[v] = lround(current[v].display / vars[v]->scale);
+    }
+    long old_mode = lround(current[0].display), mode = raw[0];
+
+    if (mode == 1 || mode == 2) {
+        bool entering = mode != old_mode;
+        size_t live = mode == 1 ? RANGE_PAIRS : 4;
+        for (size_t pair = 0; pair < live; pair++) {
+            size_t low = 1 + 2 * pair, high = low + 1;
+            if (!entering && !given[low] && !given[high]) continue;
+            if (check_range(vars[low], vars[high], raw[low], raw[high],
+                            is_regen_pair(pair), mode))
+                return 1;
+        }
+        if (entering) {
+            fprintf(stderr, "Note: in User Inputs mode %ld the analog input selects a "
+                    "value within each range:\n", mode);
+            for (size_t pair = 0; pair < live; pair++) {
+                size_t low = 1 + 2 * pair, high = low + 1;
+                fprintf(stderr, "  %-28s ", vars[low]->name);
+                print_range_value(stderr, vars[low], raw[low]);
+                fprintf(stderr, " to ");
+                print_range_value(stderr, vars[high], raw[high]);
+                fprintf(stderr, "\n");
+            }
+        }
+    } else if (mode == 0 && (old_mode == 1 || old_mode == 2)) {
+        for (size_t pair = 0; pair < RANGE_PAIRS; pair++) {
+            size_t low = 1 + 2 * pair, high = low + 1;
+            if (raw[high] == -1 || labs(raw[low]) >= labs(raw[high])) continue;
+            fprintf(stderr, "Warning: %s (", vars[low]->name);
+            print_range_value(stderr, vars[low], raw[low]);
+            fprintf(stderr, ") is below %s (", vars[high]->name);
+            print_range_value(stderr, vars[high], raw[high]);
+            fprintf(stderr, "); User Inputs mode 0 uses %s\n", vars[low]->name);
+        }
+    }
+    return 0;
+}
+
 int cli_rules_check(alltrax_controller* ctrl, const alltrax_assignment* items,
     size_t count, const alltrax_info* info, const cli_flags* flags)
 {
@@ -267,5 +390,6 @@ int cli_rules_check(alltrax_controller* ctrl, const alltrax_assignment* items,
             if (check_setting(ctrl, &items[i], &read_info, &have_info)) return 1;
         }
     }
-    return check_voltage_order(ctrl, items, count);
+    if (check_voltage_order(ctrl, items, count)) return 1;
+    return check_user_input_ranges(ctrl, items, count);
 }

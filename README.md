@@ -254,6 +254,7 @@ meaningless on a vehicle, or outside the controller's rating:
 | Voltage settings lie within 16.0–62.0 V (48 V controllers) or 20.0–90.0 V (72 V); other ratings cannot set them | Keeps cutoffs within the controller's rating |
 | `AnalogInputs_Threshold` + 1 V ≤ `LoBat_Vlim`; `LoBat_Vlim` + 1 V ≤ `HiBat_Vlim` and ≤ `BMS_Missing_HiBat_Vlim` ≤ `HiBat_Vlim` | Keeps the cutoffs in order. Values not in the batch are read from the settings the write changes (the factory settings while the user settings are invalid) |
 | `Throttle_Type` is one the hardware allows | |
+| In `UserInputs_State` 1 or 2, each live range runs from the plain setting up to its `_Max` partner: `*_Speed_Limit`, `*_Throttle_Rate`, `*_Forward_Speed` ≤ their `_Max`, `*_Max_Arm_Regen_Amps` no larger in magnitude than its `_Max`, and no `_Max` left unset (−1). Mode 1 uses the Normal, User 1 and User 2 profiles, mode 2 the Normal profile | In these modes the analog user input selects a value within each range. Values not in the batch are read from the controller |
 
 Trailing 0,0 curve points are unused and ignored. Factory data and built-in
 presets (`curve reset`, `restore-defaults`, `throttle set`) are not checked.
@@ -263,6 +264,26 @@ Before a FLASH write, the tool checks both settings pages. If the factory
 page is invalid, it refuses the write. If only the user settings page is
 invalid, it restores the factory page to user settings, applies the
 requested changes, and reports the recovery.
+
+### User Inputs ranges
+
+`UserInputs_State` selects how the controller's two user inputs are used:
+0 for on/off switches that select the User 1 and User 2 profiles, 1 and 2
+for analog inputs (an Alltrax function box). In modes 1 and 2 the speed
+limit, throttle rate, regen armature current and forward speed of each
+profile become ranges: the plain setting is the low end, its `_Max` partner
+the high end, and the analog input picks a point in between. In mode 0 only
+the plain setting is used and the `_Max` values have no effect.
+
+The tool never changes these values on its own; set both ends explicitly, for
+example `alltrax write UserInputs_State=1 N_Speed_Limit=1000
+N_Speed_Limit_Max=3000`. Besides the rule above:
+
+- A write that switches into mode 1 or 2 lists every range that becomes live,
+  so values left over from earlier use are visible before the controller
+  uses them.
+- A write that switches back to mode 0 warns about each profile whose plain
+  setting is below its `_Max`, because mode 0 uses the plain setting.
 
 ### Write options
 

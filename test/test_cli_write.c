@@ -3261,6 +3261,123 @@ static int test_voltage_order_rules(void)
     return 0;
 }
 
+/* Give all 12 low/high pairs a valid range, then apply overrides. */
+static void set_valid_ranges(void)
+{
+    const char* profiles[] = { "N_", "U1_", "U2_" };
+    const struct { const char* setting; double low, high; } ranges[] = {
+        { "Speed_Limit", 1000, 3000 }, { "Throttle_Rate", 10, 25 },
+        { "Max_Arm_Regen_Amps", -8, -16 }, { "Forward_Speed", 50, 100 },
+    };
+    for (size_t p = 0; p < 3; p++) {
+        for (size_t r = 0; r < 4; r++) {
+            char name[48];
+            snprintf(name, sizeof(name), "%s%s", profiles[p], ranges[r].setting);
+            set_volts(device.page, name, ranges[r].low);
+            snprintf(name, sizeof(name), "%s%s_Max", profiles[p], ranges[r].setting);
+            set_volts(device.page, name, ranges[r].high);
+        }
+    }
+}
+
+static int run_write_output(const char* const* args, size_t n, bool bypass,
+    char* out, size_t out_size)
+{
+    char text[6][48];
+    char* argv[9] = { "write" };
+    int argc = 1;
+    for (size_t i = 0; i < n && i < 6; i++) {
+        snprintf(text[i], sizeof(text[i]), "%s", args[i]);
+        argv[argc++] = text[i];
+    }
+    if (bypass) argv[argc++] = "--skip-rules";
+    return run_cli_output(cmd_write, argc, argv, out, out_size);
+}
+
+static int test_user_input_ranges_checked_when_live(void)
+{
+    static char out[8192];
+    const char* mode1[] = { "UserInputs_State=1" };
+    const char* mode2[] = { "UserInputs_State=2" };
+
+    /* Valid ranges: allowed, and the ranges that become live are listed. */
+    writable_device_reset();
+    set_valid_ranges();
+    ASSERT_EQ(run_write_output(mode1, 1, false, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "Note: in User Inputs mode 1") != NULL);
+    ASSERT_TRUE(strstr(out, "N_Speed_Limit") != NULL);
+    ASSERT_TRUE(strstr(out, "U2_Forward_Speed") != NULL);
+    ASSERT_EQ(device.erases, 1);
+
+    /* An inverted range is refused before any write. */
+    writable_device_reset();
+    set_valid_ranges();
+    set_volts(device.page, "N_Speed_Limit_Max", 900);
+    ASSERT_EQ(run_write_output(mode1, 1, false, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "N_Speed_Limit_Max") != NULL);
+    ASSERT_EQ(device.mutations, 0);
+
+    /* Regen is negative: a larger magnitude at the low end is inverted. */
+    writable_device_reset();
+    set_valid_ranges();
+    set_volts(device.page, "U1_Max_Arm_Regen_Amps", -20);
+    ASSERT_EQ(run_write_output(mode1, 1, false, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "U1_Max_Arm_Regen_Amps") != NULL);
+    ASSERT_EQ(device.mutations, 0);
+
+    /* An unset high end (-1) is refused with its own message. */
+    writable_device_reset();
+    ASSERT_EQ(run_write_output(mode1, 1, false, out, sizeof(out)), 1);
+    ASSERT_TRUE(strstr(out, "is not set") != NULL);
+    ASSERT_EQ(device.mutations, 0);
+
+    /* Mode 2 uses the Normal profile only; User 1 and User 2 are not checked. */
+    writable_device_reset();
+    set_valid_ranges();
+    set_volts(device.page, "U1_Speed_Limit_Max", 900);
+    ASSERT_EQ(run_write_output(mode2, 1, false, out, sizeof(out)), 0);
+    ASSERT_NULL(strstr(out, "U1_Speed_Limit"));
+
+    /* Already in mode 1: writing one end of a pair checks that pair. */
+    writable_device_reset();
+    set_valid_ranges();
+    set_volts(device.page, "UserInputs_State", 1);
+    const char* low_max[] = { "N_Forward_Speed_Max=40" };
+    ASSERT_EQ(run_write_output(low_max, 1, false, out, sizeof(out)), 1);
+    ASSERT_EQ(device.mutations, 0);
+    const char* fine[] = { "N_Forward_Speed_Max=80" };
+    writable_device_reset();
+    set_valid_ranges();
+    set_volts(device.page, "UserInputs_State", 1);
+    ASSERT_EQ(run_write_output(fine, 1, false, out, sizeof(out)), 0);
+    ASSERT_NULL(strstr(out, "Note:"));
+
+    /* --skip-rules writes the batch as given. */
+    writable_device_reset();
+    ASSERT_EQ(run_write_output(mode1, 1, true, out, sizeof(out)), 0);
+    ASSERT_EQ(device.erases, 1);
+    return 0;
+}
+
+static int test_user_input_ranges_warn_when_leaving_analog_mode(void)
+{
+    static char out[8192];
+    const char* mode0[] = { "UserInputs_State=0" };
+    writable_device_reset();
+    set_valid_ranges();
+    set_volts(device.page, "UserInputs_State", 1);
+    ASSERT_EQ(run_write_output(mode0, 1, false, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "Warning: N_Forward_Speed (50 %) is below N_Forward_Speed_Max (100 %)") != NULL);
+    ASSERT_EQ(device.erases, 1);
+
+    /* Staying in mode 0 prints nothing about ranges. */
+    writable_device_reset();
+    set_valid_ranges();
+    ASSERT_EQ(run_write_output(mode0, 1, false, out, sizeof(out)), 0);
+    ASSERT_NULL(strstr(out, "is below"));
+    return 0;
+}
+
 static int test_throttle_type_rules_use_hardware_mask(void)
 {
     const char* unsupported[] = { "Throttle_Type=2" };
@@ -3382,6 +3499,8 @@ int main(void)
     RUN_TEST(test_voltage_rules_use_rated_voltage);
     RUN_TEST(test_voltage_order_rules);
     RUN_TEST(test_throttle_type_rules_use_hardware_mask);
+    RUN_TEST(test_user_input_ranges_checked_when_live);
+    RUN_TEST(test_user_input_ranges_warn_when_leaving_analog_mode);
     RUN_TEST(test_named_writes_need_no_confirmation);
     RUN_TEST(test_curve_reset_all_requires_both_confirmations);
     RUN_TEST(test_field_map_writes_include_current_name);
