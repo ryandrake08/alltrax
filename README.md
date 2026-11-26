@@ -70,7 +70,7 @@ Alltrax Controller Monitor
 | `alltrax fan-test` | Start a timed fan test with the keyswitch on |
 | `alltrax monitor [--rate <ms>] [--log <file.csv>]` | Live controller readings (Ctrl+C to stop) |
 | `alltrax monitor throttle` | Live throttle readings (Ctrl+C to stop) |
-| `alltrax errors` | Active error flags and error history |
+| `alltrax errors` | Active error flags and error history (keyswitch on) |
 | `alltrax config save [flags] <file>` | Save all settings to file |
 | `alltrax config load [flags] <file>` | Load settings from file and write to device |
 | `alltrax curve list` | List available curve types |

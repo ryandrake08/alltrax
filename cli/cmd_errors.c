@@ -23,6 +23,13 @@ int cmd_errors(int argc, char** argv)
         return 1;
     }
 
+    /* With the keyswitch off the flags and history are not meaningful. */
+    if (!data.keyswitch) {
+        printf("Errors unavailable with keyswitch off\n");
+        alltrax_close(ctrl);
+        return 0;
+    }
+
     /* Active errors */
     printf("Active Errors:\n");
     int any_active = 0;

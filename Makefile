@@ -128,7 +128,7 @@ $(CONTROLLER_TEST_BIN): $(BUILD)/test_controller.o $(filter-out $(BUILD)/transpo
 # a fake transport/open. Config coverage follows the optional libraries.
 CLI_TEST_CONFIG_OBJ := $(if $(HAS_XML),$(BUILD)/cmd_config.o)
 CLI_TEST_CONFIG_LIBS := $(CRYPTO_LIBS) $(XML_LIBS)
-CLI_WRITE_TEST_OBJ := $(BUILD)/args.o $(BUILD)/current.o $(BUILD)/field_map.o $(BUILD)/rules.o $(BUILD)/cmd_get.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(BUILD)/cmd_throttle.o $(BUILD)/cmd_monitor.o $(BUILD)/cmd_reset.o $(BUILD)/cmd_restore_defaults.o $(BUILD)/cmd_fan_test.o $(BUILD)/cmd_debug_read.o $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
+CLI_WRITE_TEST_OBJ := $(BUILD)/args.o $(BUILD)/current.o $(BUILD)/field_map.o $(BUILD)/rules.o $(BUILD)/cmd_get.o $(BUILD)/cmd_write.o $(BUILD)/cmd_curve.o $(BUILD)/cmd_throttle.o $(BUILD)/cmd_monitor.o $(BUILD)/cmd_reset.o $(BUILD)/cmd_restore_defaults.o $(BUILD)/cmd_fan_test.o $(BUILD)/cmd_debug_read.o $(BUILD)/cmd_errors.o $(filter-out $(BUILD)/transport.o,$(LIB_OBJ))
 $(CLI_WRITE_TEST_BIN): $(BUILD)/test_cli_write.o $(CLI_TEST_CONFIG_OBJ) $(BUILD)/cmd_field_map.o $(CLI_WRITE_TEST_OBJ)
 	$(CC) $(LDFLAGS) -o $@ $^ $(CLI_TEST_CONFIG_LIBS) -lm
 
