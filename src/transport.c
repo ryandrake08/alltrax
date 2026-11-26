@@ -8,15 +8,41 @@
 #define _POSIX_C_SOURCE 200809L
 #include "internal.h"
 #include <errno.h>
+#include <fcntl.h>
 #include <hidapi.h>
 #include <stdlib.h>
+#include <sys/file.h>
 #include <time.h>
+#include <unistd.h>
 
 #define DEFAULT_TIMEOUT_MS 750
 #define HID_WRITE_ATTEMPTS 4
 #define DRAIN_QUIET_MS 32
 #define DRAIN_MAX_REPORTS 16
 #define RECONNECT_POLL_MS 250
+
+static const char* lock_path = "/tmp/alltrax.lock";
+
+void transport_set_lock_path(const char* path)
+{
+    lock_path = path;
+}
+
+/* Take the exclusive process lock. A read-only descriptor can hold a flock(),
+ * so a lock file created by another user still works. */
+static alltrax_error acquire_lock(int* fd_out)
+{
+    int fd = open(lock_path, O_RDONLY | O_CREAT | O_NOFOLLOW | O_CLOEXEC, 0666);
+    if (fd < 0)
+        return ALLTRAX_ERR_LOCK;
+    if (flock(fd, LOCK_EX | LOCK_NB) != 0) {
+        alltrax_error rc = errno == EWOULDBLOCK ? ALLTRAX_ERR_BUSY : ALLTRAX_ERR_LOCK;
+        close(fd);
+        return rc;
+    }
+    *fd_out = fd;
+    return ALLTRAX_OK;
+}
 
 static bool is_xct_device(const struct hid_device_info* d)
 {
@@ -38,6 +64,10 @@ alltrax_error alltrax_open(alltrax_controller** out,
 {
     if (!out || *out)
         return ALLTRAX_ERR_INVALID_ARG;
+    int lock_fd;
+    alltrax_error lock_rc = acquire_lock(&lock_fd);
+    if (lock_rc)
+        return lock_rc;
 
     /* Use enumeration on all supported hidapi versions. An explicit path must
      * match a supported entry before it is opened or receives any traffic. */
@@ -77,6 +107,8 @@ alltrax_error alltrax_open(alltrax_controller** out,
         ctrl->allow_writes = allow_writes;
         rc = identify_controller(ctrl);
         if (!rc) {
+            ctrl->locked = true;
+            ctrl->lock_fd = lock_fd;
             *out = ctrl;
             break;
         }
@@ -84,6 +116,8 @@ alltrax_error alltrax_open(alltrax_controller** out,
         if (device_path) break;
     }
     hid_free_enumeration(devs);
+    if (rc)
+        close(lock_fd);
     return rc;
 }
 
@@ -96,6 +130,8 @@ void alltrax_close(alltrax_controller* ctrl)
         hid_close(ctrl->hid);
         ctrl->hid = NULL;
     }
+    if (ctrl->locked)
+        close(ctrl->lock_fd);
 
     free(ctrl->device_path);
     free(ctrl);
@@ -131,8 +167,14 @@ static bool probe_identity(const char* path, int timeout_ms, char model[16],
     return true;
 }
 
-size_t alltrax_list_devices(const char* path, alltrax_device_visitor visit, void* user)
+alltrax_error alltrax_list_devices(const char* path, alltrax_device_visitor visit,
+    void* user, size_t* count_out)
 {
+    if (!count_out) return ALLTRAX_ERR_INVALID_ARG;
+    *count_out = 0;
+    int lock_fd;
+    alltrax_error rc = acquire_lock(&lock_fd);
+    if (rc) return rc;
     size_t count = 0;
     struct hid_device_info* devs = hid_enumerate(ALLTRAX_VID, 0);
     for (const struct hid_device_info* d = devs; d; d = d->next) {
@@ -146,7 +188,9 @@ size_t alltrax_list_devices(const char* path, alltrax_device_visitor visit, void
         }
     }
     hid_free_enumeration(devs);
-    return count;
+    close(lock_fd);
+    *count_out = count;
+    return ALLTRAX_OK;
 }
 
 static int64_t monotonic_ms(void)
@@ -327,6 +371,8 @@ const char* alltrax_strerror(alltrax_error err)
     case ALLTRAX_ERR_NO_MEMORY:   return "Memory allocation failed";
     case ALLTRAX_ERR_UNSUPPORTED: return "Unsupported device (requires Alltrax XCT family, USB 23d4:0002)";
     case ALLTRAX_ERR_BOOTLOADER:  return "Controller is in bootloader mode";
+    case ALLTRAX_ERR_BUSY:        return "Controller in use by another alltrax process";
+    case ALLTRAX_ERR_LOCK:        return "Cannot use the alltrax lock file (/tmp/alltrax.lock)";
     }
     return "Unknown error";
 }

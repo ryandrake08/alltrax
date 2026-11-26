@@ -731,9 +731,12 @@ static int test_cli_devices_prints_supported_path_model_and_serial(void)
     ASSERT_EQ(cmd_devices(1, argv), 1);  /* None found */
     add_device("/dev/first", ALLTRAX_VID, ALLTRAX_PID_XCT, "XCT48400-DCS");
     add_device("/dev/unsupported", ALLTRAX_VID, ALLTRAX_PID_SPM, "SPM");
-    ASSERT_EQ(alltrax_list_devices("/dev/unsupported", NULL, NULL), 0);
+    size_t count = 9;
+    ASSERT_EQ(alltrax_list_devices("/dev/unsupported", NULL, NULL, &count), ALLTRAX_OK);
+    ASSERT_EQ(count, 0);
     mock.models[0] = "SPM"; /* Wrong model even with the expected PID. */
-    ASSERT_EQ(alltrax_list_devices("/dev/first", NULL, NULL), 0);
+    ASSERT_EQ(alltrax_list_devices("/dev/first", NULL, NULL, &count), ALLTRAX_OK);
+    ASSERT_EQ(count, 0);
     return 0;
 }
 
@@ -785,8 +788,48 @@ static int test_reset_wait_matches_controller_recovered_in_place(void)
     return 0;
 }
 
+static char test_lock_path[64];
+
+static int test_second_client_is_refused_while_one_is_connected(void)
+{
+    mock_reset();
+    add_device("xct", 0x23D4, 2, "XCT48400-DCS");
+    alltrax_controller* first = NULL;
+    alltrax_controller* second = NULL;
+    ASSERT_EQ(alltrax_open(&first, NULL, false), ALLTRAX_OK);
+    unsigned opens = mock.opens, enumerations = mock.enumerations;
+    ASSERT_EQ(alltrax_open(&second, NULL, false), ALLTRAX_ERR_BUSY);
+    ASSERT_NULL(second);
+    size_t count = 9;
+    ASSERT_EQ(alltrax_list_devices(NULL, NULL, NULL, &count), ALLTRAX_ERR_BUSY);
+    ASSERT_EQ(count, 0);
+    ASSERT_EQ(mock.opens, opens);  /* Refused before any USB access */
+    ASSERT_EQ(mock.enumerations, enumerations);
+    alltrax_close(first);
+    ASSERT_EQ(alltrax_open(&second, NULL, false), ALLTRAX_OK);
+    alltrax_close(second);
+    return 0;
+}
+
+static int test_unusable_lock_file_fails_before_usb_access(void)
+{
+    mock_reset();
+    add_device("xct", 0x23D4, 2, "XCT48400-DCS");
+    transport_set_lock_path("/nonexistent-dir/alltrax.lock");
+    alltrax_controller* ctrl = NULL;
+    alltrax_error rc = alltrax_open(&ctrl, NULL, false);
+    transport_set_lock_path(test_lock_path);
+    ASSERT_EQ(rc, ALLTRAX_ERR_LOCK);
+    ASSERT_NULL(ctrl);
+    ASSERT_EQ(mock.enumerations, 0);
+    return 0;
+}
+
 int main(void)
 {
+    snprintf(test_lock_path, sizeof(test_lock_path), "/tmp/alltrax-test-%ld.lock",
+             (long)getpid());
+    transport_set_lock_path(test_lock_path);
     printf("transport (simulated hidapi):\n");
     RUN_TEST(test_timeout_drains_stale_input_and_resends_once);
     RUN_TEST(test_hid_write_retries_negative_results);
@@ -814,6 +857,9 @@ int main(void)
     RUN_TEST(test_partial_reports_never_reach_value_decoding);
     RUN_TEST(test_incomplete_identification_transfers_close_device);
     RUN_TEST(test_short_ram_write_does_not_wait_for_an_echo);
+    RUN_TEST(test_second_client_is_refused_while_one_is_connected);
+    RUN_TEST(test_unusable_lock_file_fails_before_usb_access);
+    remove(test_lock_path);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);
     return test_fail_count > 0 ? 1 : 0;
 }

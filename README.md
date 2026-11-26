@@ -666,6 +666,11 @@ sudo usermod -aG plugdev "$USER"
 On macOS, no extra permissions are needed — HID devices are accessible to
 regular users.
 
+Only one `alltrax` command can use the controllers at a time. While one runs,
+for example `alltrax monitor`, another command stops with "Controller in use
+by another alltrax process" before sending anything. Two programs talking to
+the controller at once would receive each other's replies.
+
 ## Library API
 
 The C library (`liballtrax-usb.a`) provides the full public API. The CLI is a
@@ -758,6 +763,8 @@ All functions that can fail return `alltrax_error`:
 | `ALLTRAX_ERR_UNSUPPORTED` | Unsupported USB identity or controller family |
 | `ALLTRAX_ERR_BLOCKED` | Write blocked (`allow_writes=false`) |
 | `ALLTRAX_ERR_NO_MEMORY` | Memory allocation failed |
+| `ALLTRAX_ERR_BUSY` | Another handle or process holds the controller lock |
+| `ALLTRAX_ERR_LOCK` | The lock file `/tmp/alltrax.lock` cannot be opened or locked |
 
 HID transfers require exactly 64 bytes, including the Report ID. An incomplete
 write returns `ALLTRAX_ERR_USB`; a positive-length incomplete read returns
@@ -1284,9 +1291,21 @@ again. It returns `ALLTRAX_OK`, `ALLTRAX_ERR_TIMEOUT`, or
 `ALLTRAX_ERR_INVALID_ARG` if no reset was sent. The handle itself stays stale:
 close it and open a new one. The CLI waits by default.
 
+```c
+alltrax_error alltrax_list_devices(const char* path, alltrax_device_visitor visit,
+    void* user, size_t* count);
+```
+
 `alltrax_list_devices()` probes enumerated devices with read-only requests.
 It calls the supplied visitor with each responsive controller's path, model,
-and serial number. The path and model strings are valid during the callback.
+and serial number, and stores the number found in `*count`. The path and
+model strings are valid during the callback.
+
+One process at a time talks to controllers. `alltrax_open()` and
+`alltrax_list_devices()` take an exclusive lock on `/tmp/alltrax.lock`
+before any USB access and return `ALLTRAX_ERR_BUSY` while another handle or
+process holds it; `alltrax_close()` releases it. The lock covers this
+library only, not other programs such as the Windows Toolkit.
 
 ## Variable Reference
 

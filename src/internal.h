@@ -33,6 +33,8 @@ struct alltrax_controller {
     bool         bootloader_mode;
     bool         firmware_read_override;
     bool         allow_writes;
+    bool         locked;       /* lock_fd holds the process lock */
+    int          lock_fd;
     char         error_detail[256];
 };
 
@@ -173,6 +175,9 @@ alltrax_error transport_read(alltrax_controller* ctrl,
     uint8_t buf[PACKET_SIZE]);
 /* Discard pending reports until the open device's input is quiet. */
 alltrax_error transport_drain(alltrax_controller* ctrl);
+
+/* Use another lock file (tests). */
+void transport_set_lock_path(const char* path);
 
 /* controller.c: validate the model and read revisions and startup mode after
  * USB identity is established. */

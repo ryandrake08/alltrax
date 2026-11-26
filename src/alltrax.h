@@ -64,6 +64,8 @@ typedef enum {
     ALLTRAX_ERR_NO_MEMORY   = -11,  /* Memory allocation failed */
     ALLTRAX_ERR_UNSUPPORTED = -12,  /* Unsupported USB identity or controller family */
     ALLTRAX_ERR_BOOTLOADER  = -13,  /* Settings and reset unavailable in bootloader mode */
+    ALLTRAX_ERR_BUSY        = -14,  /* Another process holds the controller lock */
+    ALLTRAX_ERR_LOCK        = -15,  /* The lock file cannot be opened or locked */
 } alltrax_error;
 
 const char* alltrax_strerror(alltrax_error err);
@@ -116,14 +118,20 @@ alltrax_error alltrax_open(alltrax_controller** out,
 /* Close and free a controller handle. NULL is a no-op; a freed handle is invalid. */
 void alltrax_close(alltrax_controller* ctrl);
 
+/* One process at a time talks to controllers. alltrax_open() and
+ * alltrax_list_devices() take an exclusive lock on /tmp/alltrax.lock before
+ * any USB access and return ALLTRAX_ERR_BUSY while another handle or process
+ * holds it (ALLTRAX_ERR_LOCK if the lock file cannot be used).
+ * alltrax_close() releases it. The lock covers this library only. */
+
 /* Enumerate validated XCT-family devices using read-only USB requests.
  * If path is non-NULL, only that path is considered. Calls visit (if non-NULL)
- * once per responsive device and returns the count. Copy path and model if
- * needed after the callback returns. */
+ * once per responsive device and stores the count in *count. Copy path and
+ * model if needed after the callback returns. */
 typedef void (*alltrax_device_visitor)(const char* path, const char* model,
     uint32_t serial, void* user);
-size_t alltrax_list_devices(const char* path, alltrax_device_visitor visit,
-    void* user);
+alltrax_error alltrax_list_devices(const char* path, alltrax_device_visitor visit,
+    void* user, size_t* count);
 
 /* alltrax_open() reads the boot and program revisions and StartUpSwitch.
  * Bootloader mode permits alltrax_get_info() and blocks other controller
