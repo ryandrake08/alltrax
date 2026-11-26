@@ -88,7 +88,7 @@ FLAGS_TEXT := $(CC) $(CFLAGS) $(CPPFLAGS) $(HIDAPI_CFLAGS) $(CRYPTO_CFLAGS) $(XM
 
 # --- Sources ---
 
-LIB_SRC  := src/protocol.c src/transport.c src/controller.c src/variables.c
+LIB_SRC  := src/protocol.c src/transport.c src/device_io.c src/identity.c src/read.c src/write.c src/variables.c
 CLI_SRC  := cli/main.c cli/args.c cli/current.c cli/field_map.c cli/cmd_info.c cli/cmd_devices.c cli/cmd_get.c cli/cmd_write.c cli/cmd_reset.c cli/cmd_restore_defaults.c cli/cmd_fan_test.c cli/cmd_monitor.c cli/cmd_errors.c cli/cmd_curve.c cli/cmd_throttle.c cli/cmd_field_map.c cli/cmd_debug_read.c cli/rules.c $(if $(HAS_XML),cli/cmd_config.c)
 TEST_SRC := test/test_main.c test/test_protocol.c test/test_variables.c test/test_curves.c
 
@@ -112,6 +112,7 @@ ALL_SRC := $(LIB_SRC) $(CLI_SRC) $(TEST_SRC) test/test_controller.c test/test_cl
 all: $(CLI) $(TEST_BIN) $(CONTROLLER_TEST_BIN) $(CLI_WRITE_TEST_BIN) $(NOKEYS_TEST_BIN) $(TRANSPORT_TEST_BIN) $(COMPDB)
 
 $(LIB): $(LIB_OBJ)
+	rm -f $@
 	$(AR) rcs $@ $^
 
 $(CLI): $(CLI_OBJ) $(LIB)

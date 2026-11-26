@@ -393,6 +393,23 @@ bool catalog_has_var(const alltrax_var_def* var)
     return false;
 }
 
+/* Device operations accept only library variable entries, so every address
+ * and span comes from the catalog (checked by test_catalog_invariants). */
+alltrax_error validate_var_for_io(alltrax_controller* ctrl,
+    const alltrax_var_def* var, bool writing)
+{
+    if (!catalog_has_var(var)) {
+        set_error_detail(ctrl, "Not a library variable entry; use the pointers "
+                         "returned by alltrax_find_var() or alltrax_get_var_defs()");
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+    if (writing && !var->writable) {
+        set_error_detail(ctrl, "Variable is read-only: %s", var->name);
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+    return ALLTRAX_OK;
+}
+
 const alltrax_var_def* alltrax_get_var_defs(alltrax_var_group group, size_t* count)
 {
     if ((size_t)group >= GROUP_TABLE_SIZE) {
@@ -748,6 +765,58 @@ const alltrax_curve_def* alltrax_curve_by_index(size_t index)
     if (index >= CURVE_DEF_COUNT)
         return NULL;
     return &curve_defs[index];
+}
+
+/* Curve operations accept only library curve entries (see validate_var_for_io). */
+alltrax_error validate_curve_def(alltrax_controller* ctrl,
+    const alltrax_curve_def* def)
+{
+    if (!catalog_has_curve(def)) {
+        if (ctrl) set_error_detail(ctrl, "Not a library curve entry; use the "
+                                   "pointers returned by alltrax_find_curve() or "
+                                   "alltrax_curve_by_index()");
+        return ALLTRAX_ERR_INVALID_ARG;
+    }
+    return ALLTRAX_OK;
+}
+
+/* Check and encode one axis. Failure leaves the destination unchanged. */
+alltrax_error encode_curve_array(const double* values, double scale, int16_t raw_max,
+    uint8_t* buf)
+{
+    if (!values || !buf || !isfinite(scale) || scale <= 0 || raw_max < 0)
+        return ALLTRAX_ERR_INVALID_ARG;
+
+    const alltrax_var_def axis = {
+        .type = ALLTRAX_TYPE_INT16, .scale = scale,
+        .raw_min = 0, .raw_max = raw_max,
+    };
+    uint8_t encoded[ALLTRAX_CURVE_POINTS * 2];
+    for (int i = 0; i < ALLTRAX_CURVE_POINTS; i++) {
+        if (alltrax_encode_var(&axis, values[i], encoded + i * 2) != 2)
+            return ALLTRAX_ERR_INVALID_ARG;
+    }
+    memcpy(buf, encoded, sizeof(encoded));
+    return ALLTRAX_OK;
+}
+
+alltrax_error encode_curve_data(const alltrax_curve_def* def,
+    const alltrax_curve_data* data, uint8_t* x, uint8_t* y)
+{
+    if (!def || !data)
+        return ALLTRAX_ERR_INVALID_ARG;
+    alltrax_error rc = encode_curve_array(data->x, def->x_scale, def->x_raw_max, x);
+    if (rc) return rc;
+    return encode_curve_array(data->y, def->y_scale, def->y_raw_max, y);
+}
+
+alltrax_error alltrax_validate_curve(const alltrax_curve_def* def,
+    const alltrax_curve_data* data)
+{
+    alltrax_error rc = validate_curve_def(NULL, def);
+    if (rc) return rc;
+    uint8_t x[ALLTRAX_CURVE_POINTS * 2], y[ALLTRAX_CURVE_POINTS * 2];
+    return encode_curve_data(def, data, x, y);
 }
 
 /* ------------------------------------------------------------------ */

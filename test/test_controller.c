@@ -1687,6 +1687,24 @@ static int test_restore_defaults_clears_calibration_on_throttle_change(void)
     return 0;
 }
 
+/* A failed post-write action names the action and stops the later ones. */
+static int test_restore_defaults_reports_failed_post_write_action(void)
+{
+    mock_reset();
+    mock.factory[0xA0] = 3;  /* Throttle_Type differs from the running page. */
+    mock.page[0xA0] = 4;
+    mock.backup_echo_xor[8] = 1;  /* Throttle minima did not clear. */
+    alltrax_write_report report;
+    const alltrax_write_opts opts = { .report = &report };
+    ASSERT_EQ(alltrax_restore_defaults(&mock.ctrl, &opts), ALLTRAX_ERR_VERIFY);
+    ASSERT_TRUE(strstr(mock.ctrl.error_detail, "Settings written, but clearing "
+                       "throttle auto-calibration failed") != NULL);
+    ASSERT_TRUE(report.factory_restored && report.date_stamped);
+    ASSERT_FALSE(report.autocal_cleared || report.reset_sent);
+    ASSERT_EQ(mock.resets, 0);
+    return 0;
+}
+
 static int test_backup_clear_ignores_the_firmware_updated_word(void)
 {
     mock_reset();
@@ -1961,6 +1979,7 @@ int main(void)
     RUN_TEST(test_restore_defaults_stops_if_factory_copy_does_not_verify);
     RUN_TEST(test_restore_defaults_cal_failure_leaves_user_page);
     RUN_TEST(test_restore_defaults_clears_calibration_on_throttle_change);
+    RUN_TEST(test_restore_defaults_reports_failed_post_write_action);
     RUN_TEST(test_backup_clear_ignores_the_firmware_updated_word);
     RUN_TEST(test_flash_recovery_checks_and_clears_flags);
     printf("\n%d passed, %d failed\n", test_pass_count, test_fail_count);

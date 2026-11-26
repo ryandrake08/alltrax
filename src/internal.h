@@ -1,8 +1,8 @@
 /*
  * internal.h — Internal shared definitions for liballtrax-usb
  *
- * Not part of the public API. Used by protocol.c, transport.c,
- * controller.c, and variables.c.
+ * Not part of the public API. Used by protocol.c, transport.c, device_io.c,
+ * identity.c, read.c, write.c and variables.c.
  */
 
 #ifndef ALLTRAX_INTERNAL_H
@@ -129,60 +129,8 @@ struct alltrax_controller {
 #define ALLTRAX_PID_SPM 0x0001   /* SPM, SPB, SR, BMS, BMS2 */
 
 /* ------------------------------------------------------------------ */
-/* Internal function declarations                                      */
+/* Shared helpers                                                      */
 /* ------------------------------------------------------------------ */
-
-/* protocol.c */
-void build_read_request(uint32_t addr, uint8_t num_bytes, uint8_t buf[PACKET_SIZE]);
-void build_write_request(uint32_t addr, const uint8_t* data, uint8_t data_len,
-    uint8_t buf[PACKET_SIZE]);
-void build_page_erase_request(uint8_t page, uint8_t buf[PACKET_SIZE]);
-void build_reset_request(uint8_t buf[PACKET_SIZE]);
-void build_flash_get_flag_request(uint8_t flag, uint8_t buf[PACKET_SIZE]);
-void build_flash_clear_flags_request(uint8_t flags, uint8_t buf[PACKET_SIZE]);
-alltrax_error parse_response(const uint8_t data[PACKET_SIZE],
-    uint8_t expected_type, uint8_t* result, uint8_t* num_bytes,
-    uint8_t payload[MAX_PAYLOAD]);
-
-/* variables.c */
-#define MAX_STRING_SIZE 32
-
-/* Zero indicates an invalid type or size (strings: 1-32, other sizes: 0). */
-size_t alltrax_var_byte_size(const alltrax_var_def* var);
-
-/* True only for entries of the library's variable and curve tables. Device
- * operations accept only these. Their shapes and spans are checked by
- * test_catalog_invariants. */
-bool catalog_has_var(const alltrax_var_def* var);
-bool catalog_has_curve(const alltrax_curve_def* def);
-alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
-    const alltrax_var_def* var, uint32_t base_address, alltrax_var_value* out);
-/* Returns encoded byte count, or 0 for invalid values/unsupported types.
- * On failure the output buffer is unchanged. */
-int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf);
-/* Encode a string variable: trailing spaces trimmed, at most the field size,
- * printable ASCII (0x20-0x7E), space-padded to the field size. Returns the
- * field size, or 0 if invalid; on failure the buffer is unchanged. */
-int alltrax_encode_string(const alltrax_var_def* var, const char* text,
-    uint8_t* buf);
-
-/* transport.c */
-/* Success requires a complete 64-byte report. A short write is ERR_USB;
- * a positive short read is ERR_PROTOCOL; zero-byte reads are ERR_TIMEOUT. */
-alltrax_error transport_write(alltrax_controller* ctrl,
-    const uint8_t data[PACKET_SIZE]);
-alltrax_error transport_read(alltrax_controller* ctrl,
-    uint8_t buf[PACKET_SIZE]);
-/* Discard pending reports until the open device's input is quiet. */
-alltrax_error transport_drain(alltrax_controller* ctrl);
-
-/* Use another lock file (tests). */
-void transport_set_lock_path(const char* path);
-
-/* controller.c: validate the model and read revisions and startup mode after
- * USB identity is established. */
-alltrax_error identify_controller(alltrax_controller* ctrl);
-alltrax_controller_type detect_controller_type(const char* model);
 
 /* Byte helpers */
 /* Subtraction keeps both offset and absolute-address span checks overflow-safe. */
@@ -210,7 +158,6 @@ static inline uint32_t get_le32(const uint8_t* buf)
          | ((uint32_t)buf[3] << 24);
 }
 
-/* Copy a space/null-padded string from a payload, null-terminate, trim */
 /* Decode a fixed-size device string: NUL becomes a space, other bytes
  * outside printable ASCII (0x20-0x7E) become '?', and trailing spaces are
  * trimmed. The result is always printable ASCII. */
@@ -257,5 +204,91 @@ static inline alltrax_error require_xct_controller(alltrax_controller* ctrl)
     }
     return ALLTRAX_OK;
 }
+
+/* ------------------------------------------------------------------ */
+/* Internal function declarations                                      */
+/* ------------------------------------------------------------------ */
+
+/* protocol.c */
+void build_read_request(uint32_t addr, uint8_t num_bytes, uint8_t buf[PACKET_SIZE]);
+void build_write_request(uint32_t addr, const uint8_t* data, uint8_t data_len,
+    uint8_t buf[PACKET_SIZE]);
+void build_page_erase_request(uint8_t page, uint8_t buf[PACKET_SIZE]);
+void build_reset_request(uint8_t buf[PACKET_SIZE]);
+void build_flash_get_flag_request(uint8_t flag, uint8_t buf[PACKET_SIZE]);
+void build_flash_clear_flags_request(uint8_t flags, uint8_t buf[PACKET_SIZE]);
+alltrax_error parse_response(const uint8_t data[PACKET_SIZE],
+    uint8_t expected_type, uint8_t* result, uint8_t* num_bytes,
+    uint8_t payload[MAX_PAYLOAD]);
+
+/* transport.c */
+/* Success requires a complete 64-byte report. A short write is ERR_USB;
+ * a positive short read is ERR_PROTOCOL; zero-byte reads are ERR_TIMEOUT. */
+alltrax_error transport_write(alltrax_controller* ctrl,
+    const uint8_t data[PACKET_SIZE]);
+alltrax_error transport_read(alltrax_controller* ctrl,
+    uint8_t buf[PACKET_SIZE]);
+/* Discard pending reports until the open device's input is quiet. */
+alltrax_error transport_drain(alltrax_controller* ctrl);
+
+/* Use another lock file (tests). */
+void transport_set_lock_path(const char* path);
+
+/* device_io.c: one request/response exchange per packet, retried once on a
+ * timeout. Lengths are 1-MAX_PAYLOAD except read_memory_range(). */
+alltrax_error read_memory(alltrax_controller* ctrl, uint32_t addr,
+    size_t num_bytes, uint8_t* buf);
+alltrax_error read_memory_range(alltrax_controller* ctrl, uint32_t addr,
+    size_t total_bytes, uint8_t* buf);
+/* Write len bytes and require the echo of the first echo_len to match. */
+alltrax_error write_memory_echo(alltrax_controller* ctrl, uint32_t addr,
+    const uint8_t* data, size_t len, size_t echo_len);
+alltrax_error write_memory(alltrax_controller* ctrl, uint32_t addr,
+    const uint8_t* data, size_t len);
+/* Erase the VARSET page; program FLASH. Both clear FLASH error flags and
+ * retry once after a device failure or timeout. */
+alltrax_error page_erase(alltrax_controller* ctrl);
+alltrax_error program_flash(alltrax_controller* ctrl, uint32_t addr,
+    const uint8_t* data, size_t len);
+
+/* identity.c: validate the model and read revisions and startup mode after
+ * USB identity is established. */
+alltrax_error identify_controller(alltrax_controller* ctrl);
+alltrax_controller_type detect_controller_type(const char* model);
+/* Firmware gates for device operations (see identity.c for the bounds). */
+alltrax_error require_readable_firmware(alltrax_controller* ctrl);
+alltrax_error require_writable_firmware(alltrax_controller* ctrl,
+    bool skip_fw_check);
+
+/* variables.c */
+#define MAX_STRING_SIZE 32
+
+/* Zero indicates an invalid type or size (strings: 1-32, other sizes: 0). */
+size_t alltrax_var_byte_size(const alltrax_var_def* var);
+
+/* True only for entries of the library's variable and curve tables. Device
+ * operations accept only these. Their shapes and spans are checked by
+ * test_catalog_invariants. */
+bool catalog_has_var(const alltrax_var_def* var);
+bool catalog_has_curve(const alltrax_curve_def* def);
+/* Require a catalog entry (and, when writing, a writable variable). */
+alltrax_error validate_var_for_io(alltrax_controller* ctrl,
+    const alltrax_var_def* var, bool writing);
+/* Require a catalog curve entry; ctrl may be NULL. */
+alltrax_error validate_curve_def(alltrax_controller* ctrl,
+    const alltrax_curve_def* def);
+/* Encode both 16-point axes within the curve's raw bounds, without I/O. */
+alltrax_error encode_curve_data(const alltrax_curve_def* def,
+    const alltrax_curve_data* data, uint8_t* x, uint8_t* y);
+alltrax_error alltrax_decode_var(const uint8_t* data, size_t data_len,
+    const alltrax_var_def* var, uint32_t base_address, alltrax_var_value* out);
+/* Returns encoded byte count, or 0 for invalid values/unsupported types.
+ * On failure the output buffer is unchanged. */
+int alltrax_encode_var(const alltrax_var_def* var, double value, uint8_t* buf);
+/* Encode a string variable: trailing spaces trimmed, at most the field size,
+ * printable ASCII (0x20-0x7E), space-padded to the field size. Returns the
+ * field size, or 0 if invalid; on failure the buffer is unchanged. */
+int alltrax_encode_string(const alltrax_var_def* var, const char* text,
+    uint8_t* buf);
 
 #endif /* ALLTRAX_INTERNAL_H */
