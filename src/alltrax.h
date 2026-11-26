@@ -540,7 +540,7 @@ alltrax_error alltrax_read_memory(alltrax_controller* ctrl, uint32_t address,
 
 typedef struct {
     uint8_t  errors[17];
-    uint16_t error_history[17];
+    uint16_t error_history[17];  /* ms left of a 10 s window after each error */
 
     bool    keyswitch, reverse, forward, footswitch;
     bool    fan_status, charger, blower, horn;

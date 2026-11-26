@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include "cli.h"
 
+#define HISTORY_HOLD_MS 9999
+
 int cmd_errors(int argc, char** argv)
 {
     cli_flags flags;
@@ -42,13 +44,16 @@ int cmd_errors(int argc, char** argv)
     if (!any_active)
         printf("  (none)\n");
 
-    /* Error history */
-    printf("\nError History:\n");
+    /* Each history entry holds the milliseconds left of a 10-second window:
+     * the firmware sets it to HISTORY_HOLD_MS while the error is active and
+     * counts it down by 1 per millisecond after the error clears. */
+    printf("\nError History (last 10 seconds):\n");
     int any_history = 0;
     for (int i = 0; i < 17; i++) {
-        if (data.error_history[i]) {
-            printf("  %-30s %u\n", alltrax_error_flag_name(i),
-                   data.error_history[i]);
+        unsigned left = data.error_history[i];
+        if (left) {
+            unsigned ago = left < HISTORY_HOLD_MS ? HISTORY_HOLD_MS - left : 0;
+            printf("  %-30s %.1f s ago\n", alltrax_error_flag_name(i), ago / 1000.0);
             any_history = 1;
         }
     }

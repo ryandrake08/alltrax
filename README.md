@@ -70,7 +70,7 @@ Alltrax Controller Monitor
 | `alltrax fan-test` | Start a timed fan test with the keyswitch on |
 | `alltrax monitor [--rate <ms>] [--log <file.csv>]` | Live controller readings (Ctrl+C to stop) |
 | `alltrax monitor throttle` | Live throttle readings (Ctrl+C to stop) |
-| `alltrax errors` | Active error flags and error history (keyswitch on) |
+| `alltrax errors` | Active error flags, and the errors active in the last 10 seconds with how long ago (keyswitch on) |
 | `alltrax config save [flags] <file>` | Save all settings to file |
 | `alltrax config load [flags] <file>` | Load settings from file and write to device |
 | `alltrax curve list` | List available curve types |
@@ -1208,7 +1208,7 @@ Reads real-time status in a single call (6 USB reads internally).
 | Field | Type | Description |
 |-------|------|-------------|
 | `errors[17]` | `uint8_t` | Active error flags (one per error type) |
-| `error_history[17]` | `uint16_t` | Raw error history values; nonzero means the error has occurred (units unverified) |
+| `error_history[17]` | `uint16_t` | Milliseconds left of a 10-second window after each error: 9999 while the error is active, then counting down by 1 per millisecond to 0 once it clears |
 | `battery_volts` | `double` | Battery voltage (V) |
 | `output_amps` | `double` | Output current (A) |
 | `battery_amps` | `double` | Battery current (A) |

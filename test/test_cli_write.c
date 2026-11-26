@@ -1550,7 +1550,21 @@ static int test_errors_unavailable_with_keyswitch_off(void)
     writable_device_reset();
     device.keyswitch = 1;
     ASSERT_EQ(run_cli_output(cmd_errors, 1, argv, out, sizeof(out)), 0);
-    ASSERT_STR_EQ(out, "Active Errors:\n  (none)\n\nError History:\n  (none)\n");
+    ASSERT_STR_EQ(out, "Active Errors:\n  (none)\n\n"
+                       "Error History (last 10 seconds):\n  (none)\n");
+    return 0;
+}
+
+static int test_errors_history_shows_seconds_since_active(void)
+{
+    static char out[4096];
+    char* argv[] = { "errors" };
+    writable_device_reset();
+    device.keyswitch = 1;
+    device.value_addr = 0x2000F036;  /* Low Battery history: 9699 ms left */
+    device.value = 9699;
+    ASSERT_EQ(run_cli_output(cmd_errors, 1, argv, out, sizeof(out)), 0);
+    ASSERT_TRUE(strstr(out, "  Low Battery                    0.3 s ago\n") != NULL);
     return 0;
 }
 
@@ -3331,6 +3345,7 @@ int main(void)
     RUN_TEST(test_get_profile_current_shows_amps_and_signed_percent);
     RUN_TEST(test_write_reports_field_map_date_stamp);
     RUN_TEST(test_errors_unavailable_with_keyswitch_off);
+    RUN_TEST(test_errors_history_shows_seconds_since_active);
     RUN_TEST(test_get_rejects_unknown_names_before_open);
     RUN_TEST(test_debug_read_rejects_bad_arguments_before_open);
     RUN_TEST(test_debug_read_prints_bytes_and_value);
